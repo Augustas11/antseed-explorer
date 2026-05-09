@@ -1,73 +1,33 @@
 # AntSeed Demand Explorer
 
-An on-chain index of **buyer activity** on the [AntSeed](https://antseed.com)
-P2P AI services network. Provider/seller activity is already surfaced on
-`antseed.com/network`; this app fills the gap on the demand side: who is
-spending USDC on inference, with which providers, and how reliably.
+> Live at **[antfeed.org](https://antfeed.org)**
 
-The project produces:
-
-1. **Buyer profiles** — per-address volume, sessions, unique sellers, ghost-session count, and a derived **Buyer Trust Score** (0–100).
-2. **Network leaderboard** — sortable, filterable buyer ranking.
-3. **Network overview** — daily settlement volume, active buyers, last 30d.
-4. **Token-level session detail** — input / output tokens and request count per settled session, decoded from `ChannelSettled.metadata`.
-5. **Public scoring API** — `GET /api/score/[address]` returns the score JSON.
+An open-source, on-chain index of **buyer activity** on the [AntSeed](https://antseed.com) P2P AI services network. Provider/seller activity is already surfaced on `antseed.com/network`; this app fills the gap on the demand side: who is spending USDC on inference, with which providers, and how reliably.
 
 Not affiliated with the AntSeed team.
 
 ---
 
+## What it does
+
+1. **Buyer profiles** — per-address volume, sessions, unique sellers, ghost-session count, and a derived **Buyer Trust Score** (0–100).
+2. **Network leaderboard** — sortable, filterable buyer ranking.
+3. **Network overview** — daily settlement volume, active buyers, last 30 days.
+4. **Token-level session detail** — input/output tokens and request count per settled session, decoded from `ChannelSettled.metadata`.
+5. **Public scoring API** — `GET /api/score/[address]` returns the trust score JSON for any address.
+
+---
+
 ## Stack
 
-- Next.js 14 (App Router) + TypeScript on **Vercel**
+- Next.js 14 (App Router) + TypeScript
 - [viem](https://viem.sh) for Base reads (no wallet, read-only)
-- **Neon Postgres** + **Drizzle ORM** (HTTP driver, serverless-friendly)
+- Neon Postgres + Drizzle ORM (HTTP driver, serverless-friendly)
 - Tailwind CSS, Recharts
-- **Vercel Cron** runs `/api/cron/sync` once a day (Hobby plan max). For
-  minute-level freshness, [cron-job.org](https://cron-job.org) pulses the same
-  endpoint with the `CRON_SECRET` bearer token.
 
 ---
 
-## One-time deploy (Vercel + Neon)
-
-### Fastest path — automated CLI
-
-From a fresh clone:
-
-```bash
-./scripts/deploy.sh
-```
-
-Handles everything except the Neon DB creation (one click in the Vercel dashboard) and cron-job.org wiring (final 2 min).
-
-### Manual path
-
-If you'd rather click through the dashboard:
-
-1. **Push to GitHub.** This repo lives at `Augustas11/antseed-explorer`.
-2. **vercel.com → Import → pick the repo → Deploy.** First build will fail (no DB yet) — expected.
-3. **Vercel project → Storage → Add → Neon Postgres** → accept defaults → **Connect Project**.
-   This injects `DATABASE_URL` into all envs automatically.
-4. **Vercel project → Settings → Environment Variables**, add:
-   ```
-   RPC_URL          https://base.drpc.org
-   CHAIN_ID         8453
-   CRON_SECRET      <openssl rand -hex 32>
-   LOG_BATCH_SIZE   2000
-   ```
-5. **Trigger redeploy.** Build runs `drizzle-kit migrate && next build` — schema is applied, app comes up.
-6. **(Optional) Seed historical data** from your local SQLite file (see "Importing legacy data" below).
-7. **Cron — pick one.**
-   - **Vercel Hobby (default)** — `vercel.json` schedules `/api/cron/sync` daily at 00:00 UTC. That's the upper limit on Hobby plans. The site will fall up to 24h behind chain head between ticks.
-   - **Live data on Hobby** — leave the daily Vercel cron as a backstop **and** wire [cron-job.org](https://cron-job.org) to POST `https://your-app.vercel.app/api/cron/sync` every 1–2 minutes with header `Authorization: Bearer <CRON_SECRET>`. Free, reliable, no plan upgrade.
-   - **Vercel Pro** — change `vercel.json` to `*/2 * * * *` (or whatever cadence you want) and skip cron-job.org.
-
-That's it. No state to manage.
-
----
-
-## Local dev
+## Getting started locally
 
 ```bash
 cp .env.example .env       # fill DATABASE_URL with a Neon DB or a local Postgres
@@ -79,28 +39,13 @@ npm run dev
 | Script | What it does |
 |---|---|
 | `npm run dev` | Local Next.js dev server |
-| `npm run build` | Production build (no migrations) |
-| `npm run db:generate` | Diff schema against the DB and emit a new migration in `drizzle/` |
-| `npm run db:push` | Apply schema directly (no migration history — dev-only) |
+| `npm run build` | Production build |
+| `npm run db:generate` | Diff schema and emit a new migration in `drizzle/` |
+| `npm run db:push` | Apply schema directly (dev-only, no migration history) |
 | `npm run db:migrate` | Apply pending migrations from `drizzle/` |
 | `npm run db:studio` | Open Drizzle Studio for browsing the DB |
 | `npm run sync` | Run a one-shot indexer pass against the configured DB |
 | `npm run sync loop` | Loop until caught up to chain head |
-| `npm run import:sqlite` | Importer for legacy `data/explorer.db` |
-
----
-
-## Importing legacy data
-
-If you ran the SQLite version first and want to keep your indexed history:
-
-```bash
-# from the directory that contains the legacy data/explorer.db
-DATABASE_URL=postgres://…neon… npm run import:sqlite
-```
-
-Idempotent. It dedupes events on `(tx_hash, log_index)` and overwrites profile
-rows with the latest values. Running it again does nothing.
 
 ---
 
@@ -108,12 +53,12 @@ rows with the latest values. Running it again does nothing.
 
 | var | default | meaning |
 |---|---|---|
-| `DATABASE_URL` | required | Neon Postgres connection string. Auto-injected when you connect Neon via Vercel marketplace. |
+| `DATABASE_URL` | required | Postgres connection string. |
 | `RPC_URL` | `https://base.drpc.org` | Base RPC. DRPC and Tenderly free tiers allow large `eth_getLogs` ranges. |
 | `CHAIN_ID` | `8453` | `8453` Base mainnet, `84532` Base Sepolia. |
 | `CRON_SECRET` | none | Required in production. Cron requests must send `Authorization: Bearer <CRON_SECRET>`. |
 | `LOG_BATCH_SIZE` | `2000` | Max blocks per `getLogs`. Indexer auto-shrinks if RPC complains. |
-| `CHANNELS_ADDRESS` | `0xBA66d3b4f...` | Override only if you've forked. |
+| `CHANNELS_ADDRESS` | `0xBA66d3b4f...` | Override only if you've forked to a different contract. |
 | `START_BLOCK` | deployment block | First block to index from. |
 
 ---
@@ -132,10 +77,7 @@ Single contract: **`AntseedChannels`** on Base mainnet,
 | `ChannelWithdrawn` | buyer pulled refund. |
 | `CloseRequested` | grace-period close started. |
 
-Per-buyer aggregates are recomputed in SQL on every sync — no event replay
-needed for score recomputes. The indexer runs `reconcileDrift()` after each
-pass; if `SUM(events.delta_usdc) != SUM(buyer_profiles.total_settled_usdc)`,
-every buyer is recomputed (catches rare partial-sync races).
+Per-buyer aggregates are recomputed in SQL on every sync — no event replay needed for score recomputes. The indexer runs `reconcileDrift()` after each pass to catch rare partial-sync races.
 
 ---
 
@@ -148,20 +90,18 @@ every buyer is recomputed (catches rare partial-sync races).
 - **Diversity (0–25)** — `<3` unique sellers = 0; 3 = 10; 10+ = 25.
 - **Reliability (0–20)** — `settled / (settled + ghost) × 20`.
 
-A buyer with ≥3 distinct settled sellers earns the **Qualified Proven Sign**
-badge (per the protocol's reputation framing).
+A buyer with ≥3 distinct settled sellers earns the **Qualified Proven Sign** badge.
 
 ---
 
 ## Public APIs
 
 ```
-GET  /api/stats                      Network aggregates + 30d daily series + drift sanity check
+GET  /api/stats                      Network aggregates + 30d daily series
 GET  /api/buyers?limit=&offset=&qualified=&minScore=&sort=
 GET  /api/buyers/{address}           Full profile + sessions + top sellers
-GET  /api/score/{address}            Trust score JSON ("seed of public scoring API")
-POST /api/sync?force=1               Manual indexer pass (used by Sync now button)
-GET  /api/cron/sync                  Cron-only (requires CRON_SECRET)
+GET  /api/score/{address}            Trust score JSON
+POST /api/sync?force=1               Manual indexer pass
 ```
 
 `/api/score/{address}` example:
@@ -195,7 +135,7 @@ antseed-explorer/
     buyers/page.tsx             # /buyers leaderboard
     buyers/[address]/page.tsx   # buyer profile
     api/
-      cron/sync/route.ts        # cron-driven indexer pass (Vercel Cron)
+      cron/sync/route.ts        # cron-driven indexer pass
       sync/route.ts             # manual sync (Sync now button)
       buyers/route.ts
       buyers/[address]/route.ts
@@ -213,7 +153,19 @@ antseed-explorer/
     format.ts
   scripts/
     sync-cli.ts                 # local CLI sync against DATABASE_URL
-    import-sqlite.ts            # one-shot legacy SQLite importer
   drizzle/                      # generated migrations
   vercel.json                   # cron config + maxDuration
 ```
+
+---
+
+## Contributing
+
+Issues and PRs are welcome. The most useful contributions right now:
+
+- Improved scoring models or new score dimensions
+- Additional on-chain event types or contract support
+- UI improvements and new views (e.g. seller-side explorer)
+- Better RPC resilience / retry logic in the indexer
+
+Open an issue to discuss before submitting a large change.
