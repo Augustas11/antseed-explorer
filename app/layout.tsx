@@ -5,6 +5,7 @@ import SyncButton from "./components/SyncButton";
 import { Analytics } from "@vercel/analytics/next";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://www.antfeed.org"),
   title: "AntSeed Demand Explorer",
   description: "On-chain buyer intelligence for the AntSeed P2P AI network",
 };
