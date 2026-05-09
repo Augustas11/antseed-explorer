@@ -33,11 +33,9 @@ export default async function BuyerProfilePage({
     ghostSessions: buyer.ghost_sessions,
   });
 
-  const [sessions, topSellers, monthly] = await Promise.all([
-    getBuyerSessions(buyer.address, 50),
-    getBuyerSellerSummary(buyer.address, 10),
-    getBuyerMonthlyVolume(buyer.address),
-  ]);
+  const sessions = await getBuyerSessions(buyer.address, 50);
+  const topSellers = await getBuyerSellerSummary(buyer.address, 10);
+  const monthly = await getBuyerMonthlyVolume(buyer.address);
   const providerMap = await lookupProviders([
     ...sessions.map((s) => s.seller_address),
     ...topSellers.map((s) => s.seller_address),

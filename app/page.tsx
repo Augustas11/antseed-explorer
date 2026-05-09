@@ -12,11 +12,11 @@ export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   // No page-load sync on Vercel — cron handles indexing.
-  const [stats, daily, top] = await Promise.all([
-    getNetworkStats(),
-    getDailyVolume(30),
-    listBuyers({ limit: 10, sort: "score" }),
-  ]);
+  // Serialized — Promise.all of multiple Neon HTTP queries occasionally
+  // returns empty rows on cold-start serverless invocations.
+  const stats = await getNetworkStats();
+  const daily = await getDailyVolume(30);
+  const top = await listBuyers({ limit: 10, sort: "score" });
 
   const isMock = !!process.env.SEED_MODE;
 
@@ -88,9 +88,9 @@ export default async function HomePage() {
         </div>
         {top.length === 0 ? (
           <div className="p-8 text-center text-muted text-sm">
-            No buyers indexed yet. Hit <span className="text-ink">Sync now</span>{" "}
-            (top right) to scan recent blocks, or run{" "}
-            <code className="text-ink">npm run seed</code> for demo data.
+            No buyers indexed yet. The cron runs every minute — give it 60s,
+            or hit <span className="text-ink">Sync now</span> (top right) to
+            trigger it manually.
           </div>
         ) : (
           <table className="tbl">
