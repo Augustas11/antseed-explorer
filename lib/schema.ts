@@ -1,0 +1,86 @@
+// Drizzle schema for the Postgres backend (Neon).
+// Mirrors the original SQLite schema 1:1 in semantics; types tightened where
+// Postgres lets us be precise (numeric instead of REAL for USDC, bigint for
+// token counts, timestamptz for indexer state timestamps).
+
+import {
+  bigint,
+  boolean,
+  doublePrecision,
+  index,
+  integer,
+  pgTable,
+  primaryKey,
+  serial,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+
+export const events = pgTable(
+  "events",
+  {
+    id: serial("id").primaryKey(),
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    eventType: text("event_type").notNull(),
+    buyerAddress: text("buyer_address"),
+    sellerAddress: text("seller_address"),
+    channelId: text("channel_id"),
+    maxAmountUsdc: doublePrecision("max_amount_usdc"),
+    deltaUsdc: doublePrecision("delta_usdc"),
+    refundUsdc: doublePrecision("refund_usdc"),
+    settledAmountUsdc: doublePrecision("settled_amount_usdc"),
+    inputTokens: bigint("input_tokens", { mode: "number" }),
+    outputTokens: bigint("output_tokens", { mode: "number" }),
+    requestCount: integer("request_count"),
+    timestamp: bigint("timestamp", { mode: "number" }),
+    rawLog: text("raw_log"),
+  },
+  (t) => ({
+    uxTxLog: uniqueIndex("events_tx_log_uniq").on(t.txHash, t.logIndex),
+    ixBuyer: index("events_buyer_idx").on(t.buyerAddress),
+    ixSeller: index("events_seller_idx").on(t.sellerAddress),
+    ixBlock: index("events_block_idx").on(t.blockNumber),
+    ixType: index("events_type_idx").on(t.eventType),
+    ixChannel: index("events_channel_idx").on(t.channelId),
+  }),
+);
+
+export const buyerProfiles = pgTable(
+  "buyer_profiles",
+  {
+    address: text("address").primaryKey(),
+    totalSessions: integer("total_sessions").notNull().default(0),
+    totalSettledUsdc: doublePrecision("total_settled_usdc").notNull().default(0),
+    uniqueSellers: integer("unique_sellers").notNull().default(0),
+    ghostSessions: integer("ghost_sessions").notNull().default(0),
+    firstSeenBlock: bigint("first_seen_block", { mode: "number" }),
+    lastSeenBlock: bigint("last_seen_block", { mode: "number" }),
+    firstSeenTs: bigint("first_seen_ts", { mode: "number" }),
+    lastSeenTs: bigint("last_seen_ts", { mode: "number" }),
+    trustScore: doublePrecision("trust_score").notNull().default(0),
+    qualified: boolean("qualified").notNull().default(false),
+    updatedAt: bigint("updated_at", { mode: "number" }),
+  },
+  (t) => ({
+    ixScore: index("buyer_score_idx").on(t.trustScore),
+    ixVolume: index("buyer_volume_idx").on(t.totalSettledUsdc),
+  }),
+);
+
+export const indexerState = pgTable("indexer_state", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
+export const providerDirectory = pgTable("provider_directory", {
+  address: text("address").primaryKey(),
+  displayName: text("display_name"),
+  peerId: text("peer_id"),
+  region: text("region"),
+  trustScore: doublePrecision("trust_score"),
+  services: text("services"), // JSON array
+  pricing: text("pricing"),   // JSON object
+  updatedAt: bigint("updated_at", { mode: "number" }),
+});

@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #0a0b0f;
+  color: #e7e9ee;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: inherit; }
+
+@layer components {
+  .panel {
+    @apply bg-panel border border-edge rounded-xl;
+  }
+  .stat {
+    @apply panel p-4 flex flex-col gap-1;
+  }
+  .stat-label {
+    @apply text-xs uppercase tracking-wider text-muted;
+  }
+  .stat-value {
+    @apply text-2xl font-semibold text-ink;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border;
+  }
+  .badge-good { @apply bg-accent/10 border-accent/30 text-accent; }
+  .badge-warn { @apply bg-warn/10 border-warn/30 text-warn; }
+  .badge-bad  { @apply bg-bad/10 border-bad/30 text-bad; }
+  .badge-muted { @apply bg-edge border-edge text-muted; }
+  .pill {
+    @apply px-2 py-0.5 text-[11px] uppercase tracking-wider rounded border border-edge text-muted;
+  }
+  table.tbl {
+    @apply w-full text-sm;
+  }
+  table.tbl th {
+    @apply text-left text-xs uppercase tracking-wider text-muted py-2 px-3 border-b border-edge font-normal;
+  }
+  table.tbl td {
+    @apply py-2.5 px-3 border-b border-edge/60;
+  }
+  table.tbl tbody tr:hover {
+    @apply bg-edge/40;
+  }
+  .btn {
+    @apply px-3 py-1.5 text-sm rounded-md border border-edge bg-panel hover:bg-edge transition;
+  }
+  .btn-accent {
+    @apply px-3 py-1.5 text-sm rounded-md bg-accent text-bg font-medium hover:opacity-90 transition;
+  }
+}
