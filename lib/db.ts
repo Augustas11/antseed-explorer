@@ -21,7 +21,11 @@ function init() {
       "DATABASE_URL is not set. Configure it in your Vercel project Settings → Environment Variables, or in .env for local dev.",
     );
   }
-  _sql = neon(url);
+  // fetchOptions: { cache: "no-store" } — Next.js 14's App Router caches
+  // fetch() responses by default. Without this, Neon HTTP query results
+  // get served from Next.js's fetch cache and the dashboard goes stale
+  // even though the underlying Postgres data updated.
+  _sql = neon(url, { fetchOptions: { cache: "no-store" } });
   _db = drizzle(_sql, { schema });
   return _db;
 }

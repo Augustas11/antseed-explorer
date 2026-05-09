@@ -3,6 +3,8 @@ import { getNetworkStats, getDailyVolume, getProfileDrift } from "@/lib/queries"
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
 
 export async function GET() {
   // Serialized — Promise.all of many Neon HTTP requests from a cold Vercel
