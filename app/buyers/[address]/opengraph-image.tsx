@@ -78,7 +78,8 @@ export default async function BuyerOG({
             AntSeed
           </div>
           <div style={{ fontSize: 26, color: "#8a8f9c" }}>Demand Explorer</div>
-          <div style={{ marginLeft: "auto", fontSize: 18, color: "#8a8f9c" }}>
+          <div style={{ flexGrow: 1 }} />
+          <div style={{ fontSize: 18, color: "#8a8f9c" }}>
             BUYER PROFILE
           </div>
         </div>
@@ -128,15 +129,17 @@ export default async function BuyerOG({
           </div>
         </div>
 
+        <div style={{ flexGrow: 1 }} />
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            marginTop: "auto",
             fontSize: 18,
             color: "#8a8f9c",
-            borderTop: "1px solid #1f2230",
+            borderTopWidth: 1,
+            borderTopStyle: "solid",
+            borderTopColor: "#1f2230",
             paddingTop: 20,
           }}
         >
