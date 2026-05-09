@@ -5,10 +5,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [stats, daily, drift] = await Promise.all([
-    getNetworkStats(),
-    getDailyVolume(30),
-    getProfileDrift(),
-  ]);
+  // Serialized — Promise.all of many Neon HTTP requests from a cold Vercel
+  // serverless instance occasionally returned empty rows. Sequential calls
+  // are still <500ms total and 100% reliable.
+  const stats = await getNetworkStats();
+  const daily = await getDailyVolume(30);
+  const drift = await getProfileDrift();
   return NextResponse.json({ ...stats, daily, drift });
 }

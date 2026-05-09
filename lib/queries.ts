@@ -186,41 +186,38 @@ export async function getBuyerSellerSummary(
 }
 
 export async function getNetworkStats() {
-  const [b, agg, qual, lastBlock, lastSync, lastHead] = await Promise.all([
-    db.select({ n: count() }).from(buyerProfiles),
-    db
-      .select({
-        volume: sql<number>`coalesce(sum(${buyerProfiles.totalSettledUsdc}),0)::float as volume`,
-        sessions: sql<number>`coalesce(sum(${buyerProfiles.totalSessions}),0)::int as sessions`,
-        ghosts: sql<number>`coalesce(sum(${buyerProfiles.ghostSessions}),0)::int as ghosts`,
-      })
-      .from(buyerProfiles),
-    db
-      .select({ n: count() })
-      .from(buyerProfiles)
-      .where(eq(buyerProfiles.qualified, true)),
-    // Raw SQL for state lookups — the Drizzle select-with-where pattern was
-    // returning empty rows for this table (likely tied to "key" being a
-    // borderline-reserved identifier).
-    db.execute<{ value: string }>(
-      sql`SELECT value FROM indexer_state WHERE key = 'last_indexed_block' LIMIT 1`,
-    ),
-    db.execute<{ value: string }>(
-      sql`SELECT value FROM indexer_state WHERE key = 'last_sync_ts' LIMIT 1`,
-    ),
-    db.execute<{ value: string }>(
-      sql`SELECT value FROM indexer_state WHERE key = 'last_head_block' LIMIT 1`,
-    ),
-  ]);
+  // One round-trip — combine all aggregates into a single query.
+  // Avoids serverless cold-start connection-setup races with Neon's HTTP driver.
+  const r = await db.execute<{
+    total_buyers: number;
+    qualified_buyers: number;
+    total_volume: number;
+    total_sessions: number;
+    total_ghosts: number;
+    last_indexed_block: string | null;
+    last_head_block: string | null;
+    last_sync_ts: string | null;
+  }>(sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM buyer_profiles) AS total_buyers,
+      (SELECT COUNT(*)::int FROM buyer_profiles WHERE qualified = true) AS qualified_buyers,
+      (SELECT COALESCE(SUM(total_settled_usdc),0)::float FROM buyer_profiles) AS total_volume,
+      (SELECT COALESCE(SUM(total_sessions),0)::int FROM buyer_profiles) AS total_sessions,
+      (SELECT COALESCE(SUM(ghost_sessions),0)::int FROM buyer_profiles) AS total_ghosts,
+      (SELECT value FROM indexer_state WHERE key = 'last_indexed_block') AS last_indexed_block,
+      (SELECT value FROM indexer_state WHERE key = 'last_head_block') AS last_head_block,
+      (SELECT value FROM indexer_state WHERE key = 'last_sync_ts') AS last_sync_ts
+  `);
+  const x = r.rows[0];
   return {
-    totalBuyers: b[0]?.n ?? 0,
-    qualifiedBuyers: qual[0]?.n ?? 0,
-    totalVolumeUsdc: agg[0]?.volume ?? 0,
-    totalSessions: agg[0]?.sessions ?? 0,
-    totalGhosts: agg[0]?.ghosts ?? 0,
-    lastIndexedBlock: lastBlock.rows[0] ? Number(lastBlock.rows[0].value) : null,
-    lastHeadBlock: lastHead.rows[0] ? Number(lastHead.rows[0].value) : null,
-    lastSyncTs: lastSync.rows[0] ? Number(lastSync.rows[0].value) : null,
+    totalBuyers: Number(x?.total_buyers ?? 0),
+    qualifiedBuyers: Number(x?.qualified_buyers ?? 0),
+    totalVolumeUsdc: Number(x?.total_volume ?? 0),
+    totalSessions: Number(x?.total_sessions ?? 0),
+    totalGhosts: Number(x?.total_ghosts ?? 0),
+    lastIndexedBlock: x?.last_indexed_block ? Number(x.last_indexed_block) : null,
+    lastHeadBlock: x?.last_head_block ? Number(x.last_head_block) : null,
+    lastSyncTs: x?.last_sync_ts ? Number(x.last_sync_ts) : null,
   };
 }
 
