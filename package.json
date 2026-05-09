@@ -12,7 +12,7 @@
     "db:studio": "drizzle-kit studio",
     "import:sqlite": "tsx scripts/import-sqlite.ts",
     "sync": "tsx scripts/sync-cli.ts",
-    "vercel-build": "drizzle-kit migrate && next build"
+    "vercel-build": "tsx scripts/migrate.ts && next build"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
