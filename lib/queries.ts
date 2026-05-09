@@ -222,6 +222,11 @@ export async function getNetworkStats() {
 }
 
 export async function getDailyVolume(days = 30) {
+  // sql.raw(String(days)) — Drizzle's parameterized binding via Neon HTTP
+  // returns empty rows for arithmetic on bigint columns when the param is a
+  // plain JS number; raw inlining works reliably. `days` is internal, not
+  // user input, so this is safe.
+  const d = Math.max(1, Math.floor(days));
   const rows = await db.execute<{
     day: string;
     sessions: number;
@@ -235,7 +240,7 @@ export async function getDailyVolume(days = 30) {
     FROM events
     WHERE event_type='settled'
       AND timestamp IS NOT NULL
-      AND timestamp > extract(epoch from now())::bigint - ${days} * 86400
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
     GROUP BY day
     ORDER BY day ASC
   `);
@@ -245,14 +250,16 @@ export async function getDailyVolume(days = 30) {
 export async function getProfileDrift() {
   const rows = await db.execute<{ events_usdc: number; profiles_usdc: number }>(sql`
     SELECT
-      (SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled')::float AS events_usdc,
-      (SELECT COALESCE(SUM(total_settled_usdc),0) FROM buyer_profiles)::float AS profiles_usdc
+      (SELECT COALESCE(SUM(delta_usdc),0)::float FROM events WHERE event_type='settled') AS events_usdc,
+      (SELECT COALESCE(SUM(total_settled_usdc),0)::float FROM buyer_profiles) AS profiles_usdc
   `);
-  const r = rows.rows[0] || { events_usdc: 0, profiles_usdc: 0 };
+  const r = rows.rows[0];
+  const ev = Number(r?.events_usdc ?? 0);
+  const pr = Number(r?.profiles_usdc ?? 0);
   return {
-    eventsUsdc: r.events_usdc,
-    profilesUsdc: r.profiles_usdc,
-    driftUsdc: +(r.events_usdc - r.profiles_usdc).toFixed(6),
+    eventsUsdc: ev,
+    profilesUsdc: pr,
+    driftUsdc: +(ev - pr).toFixed(6),
   };
 }
 
@@ -293,22 +300,32 @@ export async function lookupProvider(
 export async function lookupProviders(
   addresses: (string | null | undefined)[],
 ): Promise<Map<string, ProviderRow>> {
-  const lc = addresses
-    .filter((a): a is string => !!a)
-    .map((a) => a.toLowerCase());
+  const lc = [
+    ...new Set(
+      addresses.filter((a): a is string => !!a).map((a) => a.toLowerCase()),
+    ),
+  ];
   if (lc.length === 0) return new Map();
-  const rows = await db
-    .select()
-    .from(providerDirectory)
-    .where(sql`${providerDirectory.address} = ANY(${lc})`);
+  // Inline the address list — array params via Neon HTTP have been unreliable.
+  // Each address is a strict 0x + 40 hex chars, so we sanitize and inline.
+  const safe = lc
+    .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
+    .map((a) => `'${a}'`)
+    .join(",");
+  if (!safe) return new Map();
+  const rows = (
+    await db.execute<any>(
+      sql`SELECT * FROM provider_directory WHERE address IN (${sql.raw(safe)})`,
+    )
+  ).rows;
   const m = new Map<string, ProviderRow>();
   for (const r of rows) {
     m.set(r.address, {
       address: r.address,
-      display_name: r.displayName,
-      peer_id: r.peerId,
+      display_name: r.display_name,
+      peer_id: r.peer_id,
       region: r.region,
-      trust_score: r.trustScore,
+      trust_score: r.trust_score,
       services: parseJson<string[]>(r.services) ?? [],
       pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
     });
