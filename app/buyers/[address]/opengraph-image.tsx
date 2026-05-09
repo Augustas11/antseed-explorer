@@ -90,10 +90,15 @@ export default async function BuyerOG({
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
-              padding: "28px 36px",
+              paddingTop: 28,
+              paddingBottom: 28,
+              paddingLeft: 36,
+              paddingRight: 36,
               borderRadius: 16,
               background: scoreBg,
-              border: `2px solid ${scoreColor}`,
+              borderWidth: 2,
+              borderStyle: "solid",
+              borderColor: scoreColor,
             }}
           >
             <div style={{ fontSize: 16, color: "#8a8f9c", textTransform: "uppercase", letterSpacing: 1.5 }}>
@@ -104,14 +109,15 @@ export default async function BuyerOG({
             </div>
             {score.qualified && (
               <div style={{ marginTop: 12, fontSize: 18, color: "#7cf2c8" }}>
-                ✓ Qualified
+                Qualified
               </div>
             )}
           </div>
 
           {/* Address + headline stats */}
-          <div style={{ display: "flex", flexDirection: "column", flex: 1, marginTop: 4 }}>
-            <div style={{ fontSize: 28, fontFamily: "monospace", color: "#e7e9ee", letterSpacing: -0.5 }}>
+          <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, marginTop: 4 }}>
+            {/* Satori has no bundled monospace; fall back to inherited system-ui */}
+            <div style={{ fontSize: 28, color: "#e7e9ee" }}>
               {shortAddr(buyer.address, 10, 8)}
             </div>
             <div style={{ display: "flex", gap: 48, marginTop: 36 }}>
