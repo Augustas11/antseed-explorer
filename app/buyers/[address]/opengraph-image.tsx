@@ -67,84 +67,18 @@ export default async function BuyerOG({
           height: "100%",
           display: "flex",
           flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "center",
           background: "#0a0b10",
           color: "#e7e9ee",
-          padding: 70,
+          fontSize: 36,
           fontFamily: "system-ui, sans-serif",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <div style={{ fontSize: 26, color: "#7cf2c8", fontWeight: 600 }}>
-            AntSeed
-          </div>
-          <div style={{ fontSize: 26, color: "#8a8f9c" }}>Demand Explorer</div>
-          <div style={{ flexGrow: 1 }} />
-          <div style={{ fontSize: 18, color: "#8a8f9c" }}>
-            BUYER PROFILE
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 50, marginTop: 50, alignItems: "flex-start" }}>
-          {/* Score */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              paddingTop: 28,
-              paddingBottom: 28,
-              paddingLeft: 36,
-              paddingRight: 36,
-              borderRadius: 16,
-              background: scoreBg,
-              borderWidth: 2,
-              borderStyle: "solid",
-              borderColor: scoreColor,
-            }}
-          >
-            <div style={{ fontSize: 16, color: "#8a8f9c", textTransform: "uppercase", letterSpacing: 1.5 }}>
-              Trust Score
-            </div>
-            <div style={{ fontSize: 132, fontWeight: 800, color: scoreColor, lineHeight: 1, marginTop: 8 }}>
-              {score.total}
-            </div>
-            {score.qualified && (
-              <div style={{ marginTop: 12, fontSize: 18, color: "#7cf2c8" }}>
-                Qualified
-              </div>
-            )}
-          </div>
-
-          {/* Address + headline stats */}
-          <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, marginTop: 4 }}>
-            {/* Satori has no bundled monospace; fall back to inherited system-ui */}
-            <div style={{ fontSize: 28, color: "#e7e9ee" }}>
-              {shortAddr(buyer.address, 10, 8)}
-            </div>
-            <div style={{ display: "flex", gap: 48, marginTop: 36 }}>
-              <Stat label="USDC settled" value={fmtUsd(buyer.total_settled_usdc)} />
-              <Stat label="Sessions" value={fmtNum(buyer.total_sessions)} />
-              <Stat label="Sellers" value={fmtNum(buyer.unique_sellers)} />
-            </div>
-          </div>
-        </div>
-
-        <div style={{ flexGrow: 1 }} />
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            fontSize: 18,
-            color: "#8a8f9c",
-            borderTopWidth: 1,
-            borderTopStyle: "solid",
-            borderTopColor: "#1f2230",
-            paddingTop: 20,
-          }}
-        >
-          <div>antfeed.org/buyers/{shortAddr(buyer.address, 6, 4)}</div>
-          <div>On-chain buyer intelligence</div>
+        <div style={{ color: "#7cf2c8", fontSize: 32 }}>AntSeed Demand Explorer</div>
+        <div style={{ marginTop: 24 }}>Trust {score.total}</div>
+        <div style={{ marginTop: 12, fontSize: 22 }}>
+          {shortAddr(buyer.address)}
         </div>
       </div>
     ),
