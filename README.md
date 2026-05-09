@@ -23,7 +23,9 @@ Not affiliated with the AntSeed team.
 - [viem](https://viem.sh) for Base reads (no wallet, read-only)
 - **Neon Postgres** + **Drizzle ORM** (HTTP driver, serverless-friendly)
 - Tailwind CSS, Recharts
-- **Vercel Cron** (or cron-job.org on Hobby tier) drives indexing every minute
+- **Vercel Cron** runs `/api/cron/sync` once a day (Hobby plan max). For
+  minute-level freshness, [cron-job.org](https://cron-job.org) pulses the same
+  endpoint with the `CRON_SECRET` bearer token.
 
 ---
 
@@ -56,7 +58,10 @@ If you'd rather click through the dashboard:
    ```
 5. **Trigger redeploy.** Build runs `drizzle-kit migrate && next build` — schema is applied, app comes up.
 6. **(Optional) Seed historical data** from your local SQLite file (see "Importing legacy data" below).
-7. The cron at `/api/cron/sync` fires every minute via `vercel.json`. On Hobby plan, the `* * * * *` schedule resolves to **once per day** — for true minute-level cron, either upgrade to Pro **or** disable Vercel Cron and use [cron-job.org](https://cron-job.org) to POST to `https://your-app.vercel.app/api/cron/sync` with header `Authorization: Bearer <CRON_SECRET>`.
+7. **Cron — pick one.**
+   - **Vercel Hobby (default)** — `vercel.json` schedules `/api/cron/sync` daily at 00:00 UTC. That's the upper limit on Hobby plans. The site will fall up to 24h behind chain head between ticks.
+   - **Live data on Hobby** — leave the daily Vercel cron as a backstop **and** wire [cron-job.org](https://cron-job.org) to POST `https://your-app.vercel.app/api/cron/sync` every 1–2 minutes with header `Authorization: Bearer <CRON_SECRET>`. Free, reliable, no plan upgrade.
+   - **Vercel Pro** — change `vercel.json` to `*/2 * * * *` (or whatever cadence you want) and skip cron-job.org.
 
 That's it. No state to manage.
 

@@ -56,4 +56,31 @@ export async function setState(key: string, value: string) {
     .onConflictDoUpdate({ target: indexerState.key, set: { value } });
 }
 
+// Atomic try-acquire: a single SQL statement that either claims the lock
+// (existing value parses as an int older than `staleAfterMs`, or row absent)
+// or returns nothing. Lets us safely run the indexer from cron + manual sync
+// without racing on `last_indexed_block`.
+const SYNC_LOCK_KEY = "indexer_running_at";
+
+export async function tryAcquireSyncLock(staleAfterMs = 90_000): Promise<boolean> {
+  const now = Date.now();
+  const cutoff = now - staleAfterMs;
+  // sql.raw inlines safe ints — see queries.ts for the same pattern under
+  // Neon HTTP's binding quirks.
+  const r = await init().execute<{ value: string }>(sql`
+    INSERT INTO indexer_state (key, value)
+    VALUES ('${sql.raw(SYNC_LOCK_KEY)}', '${sql.raw(String(now))}')
+    ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value
+      WHERE indexer_state.value ~ '^[0-9]+$'
+        AND indexer_state.value::bigint < ${sql.raw(String(cutoff))}
+    RETURNING value
+  `);
+  return r.rows.length > 0;
+}
+
+export async function releaseSyncLock() {
+  await setState(SYNC_LOCK_KEY, "0");
+}
+
 export type DB = ReturnType<typeof init>;

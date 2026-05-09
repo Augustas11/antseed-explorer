@@ -88,9 +88,8 @@ export default async function HomePage() {
         </div>
         {top.length === 0 ? (
           <div className="p-8 text-center text-muted text-sm">
-            No buyers indexed yet. The cron runs every minute — give it 60s,
-            or hit <span className="text-ink">Sync now</span> (top right) to
-            trigger it manually.
+            No buyers indexed yet. Hit <span className="text-ink">Sync now</span>{" "}
+            (top right) to trigger an indexing pass, or wait for the next cron tick.
           </div>
         ) : (
           <table className="tbl">
@@ -156,7 +155,7 @@ export default async function HomePage() {
               <span className={cls}>
                 ⚠ Behind chain head by{" "}
                 <span className="font-mono">{gap.toLocaleString()}</span>{" "}
-                blocks ({hours > 0 ? `~${hours}h` : "<1h"}). Cron should catch up shortly.
+                blocks ({hours > 0 ? `~${hours}h` : "<1h"}). Next cron tick will catch up.
               </span>
             </>
           );

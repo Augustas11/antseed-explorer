@@ -10,10 +10,14 @@ export const maxDuration = 60;
 
 function authorized(req: NextRequest): boolean {
   // Vercel Cron sets `Authorization: Bearer <CRON_SECRET>` automatically when
-  // CRON_SECRET is set in env. External pingers (cron-job.org) can use the
-  // same header.
+  // CRON_SECRET is set in env. External pingers (cron-job.org) use the same.
   const expected = process.env.CRON_SECRET;
-  if (!expected) return true; // dev-mode: allow if not configured
+  if (!expected) {
+    // Fail closed in production — a missing secret means a misconfigured deploy,
+    // not an invitation to drain RPC + Neon credits.
+    if (process.env.NODE_ENV === "production") return false;
+    return true; // dev convenience only
+  }
   const got = req.headers.get("authorization");
   return got === `Bearer ${expected}`;
 }

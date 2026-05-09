@@ -6,7 +6,7 @@ import {
   channelsAbi,
   type EventType,
 } from "./antseed";
-import { db, getState, setState } from "./db";
+import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./db";
 import { events as eventsTbl, buyerProfiles, providerDirectory } from "./schema";
 import { sql } from "drizzle-orm";
 import { calculateTrustScore } from "./score";
@@ -14,6 +14,8 @@ import { calculateTrustScore } from "./score";
 const ENV_BATCH_SIZE = BigInt(process.env.LOG_BATCH_SIZE || 2000);
 const SYNC_DEBOUNCE_MS = 60_000;
 const USDC_DECIMALS = 1_000_000;
+const PROVIDER_REFRESH_MS = 60 * 60 * 1000; // 1h
+const PROVIDER_FETCH_TIMEOUT_MS = 5_000;
 
 const channelsAddress = (process.env.CHANNELS_ADDRESS ||
   CONTRACTS.AntseedChannels) as `0x${string}`;
@@ -51,6 +53,30 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
     };
   }
 
+  // Concurrency lock — cron + manual sync can fire simultaneously, and Neon
+  // HTTP is connectionless so two passes can race on `last_indexed_block`.
+  // Stale-after exceeds the 60s deadline so a killed instance recovers.
+  const acquired = await tryAcquireSyncLock(90_000);
+  if (!acquired) {
+    const last = await getState("last_indexed_block");
+    return {
+      ok: true,
+      fromBlock: last || "0",
+      toBlock: last || "0",
+      eventsAdded: 0,
+      buyersTouched: 0,
+      skipped: "locked",
+    };
+  }
+
+  try {
+    return await runSync(opts);
+  } finally {
+    await releaseSyncLock();
+  }
+}
+
+async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
   const lastIndexedStr = await getState("last_indexed_block");
   const lastIndexed = BigInt(
     lastIndexedStr || (startBlockEnv - 1n).toString(),
@@ -364,9 +390,17 @@ export async function reconcileDrift() {
 // ============================================================================
 
 export async function refreshProviderDirectory() {
+  // Throttle to once an hour — peer listings change slowly and this fetch
+  // ran on every cron tick, burning the function budget on a non-essential.
+  const last = await getState("provider_dir_refreshed_at");
+  if (last && Date.now() - Number(last) < PROVIDER_REFRESH_MS) return;
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PROVIDER_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch("https://network.antseed.com/stats", {
       cache: "no-store",
+      signal: ctl.signal,
     });
     if (!res.ok) return;
     const data = (await res.json()) as { peers?: any[] };
@@ -412,6 +446,9 @@ export async function refreshProviderDirectory() {
         },
       });
   } catch {
-    // Non-fatal — network unreachable from cron host.
+    // Non-fatal — network unreachable, timed out, or upstream returned junk.
+  } finally {
+    clearTimeout(timer);
+    await setState("provider_dir_refreshed_at", Date.now().toString());
   }
 }
