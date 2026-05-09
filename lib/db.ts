@@ -6,7 +6,7 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
 import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
-import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import * as schema from "./schema";
 import { indexerState } from "./schema";
 
@@ -37,12 +37,12 @@ export const db = new Proxy({} as NeonHttpDatabase<typeof schema>, {
 });
 
 export async function getState(key: string): Promise<string | null> {
-  const rows = await init()
-    .select({ value: indexerState.value })
-    .from(indexerState)
-    .where(eq(indexerState.key, key))
-    .limit(1);
-  return rows[0]?.value ?? null;
+  // Raw SQL — Drizzle's select+where on indexer_state returns empty rows on
+  // some Neon/Drizzle version combos (likely "key" being a near-reserved word).
+  const r = await init().execute<{ value: string }>(
+    sql`SELECT value FROM indexer_state WHERE key = ${key} LIMIT 1`,
+  );
+  return r.rows[0]?.value ?? null;
 }
 
 export async function setState(key: string, value: string) {

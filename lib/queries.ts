@@ -199,21 +199,18 @@ export async function getNetworkStats() {
       .select({ n: count() })
       .from(buyerProfiles)
       .where(eq(buyerProfiles.qualified, true)),
-    db
-      .select({ value: indexerState.value })
-      .from(indexerState)
-      .where(eq(indexerState.key, "last_indexed_block"))
-      .limit(1),
-    db
-      .select({ value: indexerState.value })
-      .from(indexerState)
-      .where(eq(indexerState.key, "last_sync_ts"))
-      .limit(1),
-    db
-      .select({ value: indexerState.value })
-      .from(indexerState)
-      .where(eq(indexerState.key, "last_head_block"))
-      .limit(1),
+    // Raw SQL for state lookups — the Drizzle select-with-where pattern was
+    // returning empty rows for this table (likely tied to "key" being a
+    // borderline-reserved identifier).
+    db.execute<{ value: string }>(
+      sql`SELECT value FROM indexer_state WHERE key = 'last_indexed_block' LIMIT 1`,
+    ),
+    db.execute<{ value: string }>(
+      sql`SELECT value FROM indexer_state WHERE key = 'last_sync_ts' LIMIT 1`,
+    ),
+    db.execute<{ value: string }>(
+      sql`SELECT value FROM indexer_state WHERE key = 'last_head_block' LIMIT 1`,
+    ),
   ]);
   return {
     totalBuyers: b[0]?.n ?? 0,
@@ -221,9 +218,9 @@ export async function getNetworkStats() {
     totalVolumeUsdc: agg[0]?.volume ?? 0,
     totalSessions: agg[0]?.sessions ?? 0,
     totalGhosts: agg[0]?.ghosts ?? 0,
-    lastIndexedBlock: lastBlock[0] ? Number(lastBlock[0].value) : null,
-    lastHeadBlock: lastHead[0] ? Number(lastHead[0].value) : null,
-    lastSyncTs: lastSync[0] ? Number(lastSync[0].value) : null,
+    lastIndexedBlock: lastBlock.rows[0] ? Number(lastBlock.rows[0].value) : null,
+    lastHeadBlock: lastHead.rows[0] ? Number(lastHead.rows[0].value) : null,
+    lastSyncTs: lastSync.rows[0] ? Number(lastSync.rows[0].value) : null,
   };
 }
 
