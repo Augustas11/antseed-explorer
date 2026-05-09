@@ -29,7 +29,19 @@ Not affiliated with the AntSeed team.
 
 ## One-time deploy (Vercel + Neon)
 
-This repo is wired for one-click Vercel deploy. From a fresh clone:
+### Fastest path — automated CLI
+
+From a fresh clone:
+
+```bash
+./scripts/deploy.sh
+```
+
+Handles everything except the Neon DB creation (one click in the Vercel dashboard) and cron-job.org wiring (final 2 min).
+
+### Manual path
+
+If you'd rather click through the dashboard:
 
 1. **Push to GitHub.** This repo lives at `Augustas11/antseed-explorer`.
 2. **vercel.com → Import → pick the repo → Deploy.** First build will fail (no DB yet) — expected.
