@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
   getBuyer,
@@ -16,6 +17,30 @@ import { MonthlyVolumeChart } from "../../components/Charts";
 import CopyButton from "../../components/CopyButton";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: { address: string };
+}): Promise<Metadata> {
+  const buyer = await getBuyer(params.address).catch(() => null);
+  const short = shortAddr(params.address);
+  if (!buyer) {
+    return {
+      title: `Buyer ${short} — not indexed | AntSeed Demand Explorer`,
+      description: `No on-chain activity indexed for ${short} on the AntSeed P2P AI services network.`,
+    };
+  }
+  const qualified = buyer.qualified ? "Qualified" : "Not qualified";
+  const title = `Buyer ${short} — Trust ${Math.round(buyer.trust_score)} | AntSeed Demand Explorer`;
+  const description = `${qualified} buyer on the AntSeed P2P AI network. Settled ${fmtUsd(buyer.total_settled_usdc)} USDC across ${fmtNum(buyer.total_sessions)} sessions with ${fmtNum(buyer.unique_sellers)} sellers.`;
+  return {
+    title,
+    description,
+    openGraph: { title, description, type: "profile" },
+    twitter: { card: "summary_large_image", title, description },
+  };
+}
 
 export default async function BuyerProfilePage({
   params,
