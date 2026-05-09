@@ -8,6 +8,7 @@ import {
 import {
   and,
   asc,
+  count,
   countDistinct,
   desc,
   eq,
@@ -90,7 +91,7 @@ export async function countBuyers(opts: {
   const conditions = [gte(buyerProfiles.trustScore, minScore)];
   if (opts.qualifiedOnly) conditions.push(eq(buyerProfiles.qualified, true));
   const r = await db
-    .select({ n: sql<number>`count(*)::int` })
+    .select({ n: count() })
     .from(buyerProfiles)
     .where(and(...conditions));
   return r[0]?.n ?? 0;
@@ -186,16 +187,16 @@ export async function getBuyerSellerSummary(
 
 export async function getNetworkStats() {
   const [b, agg, qual, lastBlock, lastSync, lastHead] = await Promise.all([
-    db.select({ n: sql<number>`count(*)::int` }).from(buyerProfiles),
+    db.select({ n: count() }).from(buyerProfiles),
     db
       .select({
-        volume: sql<number>`coalesce(sum(${buyerProfiles.totalSettledUsdc}),0)::float`,
-        sessions: sql<number>`coalesce(sum(${buyerProfiles.totalSessions}),0)::int`,
-        ghosts: sql<number>`coalesce(sum(${buyerProfiles.ghostSessions}),0)::int`,
+        volume: sql<number>`coalesce(sum(${buyerProfiles.totalSettledUsdc}),0)::float as volume`,
+        sessions: sql<number>`coalesce(sum(${buyerProfiles.totalSessions}),0)::int as sessions`,
+        ghosts: sql<number>`coalesce(sum(${buyerProfiles.ghostSessions}),0)::int as ghosts`,
       })
       .from(buyerProfiles),
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({ n: count() })
       .from(buyerProfiles)
       .where(eq(buyerProfiles.qualified, true)),
     db
