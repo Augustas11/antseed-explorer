@@ -69,6 +69,12 @@ echo "    b) Sign up free at ${cyan}https://neon.tech${r} and copy the connectio
 echo
 ask "Paste your Neon DATABASE_URL (or press Enter if already set in Vercel):"
 read -r DB_URL_INPUT
+# Strip leading/trailing whitespace and surrounding quotes if the user pasted
+# the URL inside ' or " — `read -r` keeps those as literal characters.
+DB_URL_INPUT="${DB_URL_INPUT#"${DB_URL_INPUT%%[![:space:]]*}"}"
+DB_URL_INPUT="${DB_URL_INPUT%"${DB_URL_INPUT##*[![:space:]]}"}"
+[[ "$DB_URL_INPUT" =~ ^\".*\"$ || "$DB_URL_INPUT" =~ ^\'.*\'$ ]] \
+  && DB_URL_INPUT="${DB_URL_INPUT:1:-1}"
 echo
 
 # ---------- 6. Push env vars ----------
