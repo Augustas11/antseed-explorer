@@ -2,6 +2,7 @@ import "./globals.css";
 import Link from "next/link";
 import type { Metadata } from "next";
 import SyncButton from "./components/SyncButton";
+import { Analytics } from "@vercel/analytics/next";
 
 export const metadata: Metadata = {
   title: "AntSeed Demand Explorer",
@@ -66,6 +67,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </a>{" "}
           P2P AI services network. Not affiliated with the AntSeed team.
         </footer>
+        <Analytics />
       </body>
     </html>
   );
