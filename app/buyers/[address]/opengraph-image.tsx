@@ -167,7 +167,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function shortAddr(a: string, head = 6, tail = 4): string {
   if (a.length <= head + tail) return a;
-  return `${a.slice(0, head)}…${a.slice(-tail)}`;
+  return `${a.slice(0, head)}...${a.slice(-tail)}`;
 }
 
 function fmtNum(n: number | null | undefined): string {
