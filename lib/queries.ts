@@ -57,30 +57,40 @@ export async function listBuyers(opts: {
   minScore?: number;
   sort?: "score" | "volume" | "sessions" | "first_seen";
 } = {}): Promise<BuyerRow[]> {
-  const limit = opts.limit ?? 25;
-  const offset = opts.offset ?? 0;
-  const minScore = opts.minScore ?? 0;
+  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const minScore = Math.max(0, Math.min(100, opts.minScore ?? 0));
+  const orderCol =
+    opts.sort === "volume" ? "total_settled_usdc DESC"
+    : opts.sort === "sessions" ? "total_sessions DESC"
+    : opts.sort === "first_seen" ? "first_seen_block ASC NULLS LAST"
+    : "trust_score DESC";
+  const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
 
-  const conditions = [gte(buyerProfiles.trustScore, minScore)];
-  if (opts.qualifiedOnly) conditions.push(eq(buyerProfiles.qualified, true));
-
-  const orderBy =
-    opts.sort === "volume"
-      ? desc(buyerProfiles.totalSettledUsdc)
-      : opts.sort === "sessions"
-        ? desc(buyerProfiles.totalSessions)
-        : opts.sort === "first_seen"
-          ? asc(buyerProfiles.firstSeenBlock)
-          : desc(buyerProfiles.trustScore);
-
-  const rows = await db
-    .select()
-    .from(buyerProfiles)
-    .where(and(...conditions))
-    .orderBy(orderBy)
-    .limit(limit)
-    .offset(offset);
-  return rows.map(shapeBuyer);
+  // Raw SQL — Drizzle's chained query builder under Neon HTTP returned empty
+  // rows for specific (sort, limit) combinations on Vercel cold starts.
+  // No user input is interpolated; all values are sanitized integers / fixed enum strings.
+  const r = await db.execute<any>(sql`
+    SELECT * FROM buyer_profiles
+    WHERE trust_score >= ${sql.raw(String(minScore))}
+    ${sql.raw(qualClause)}
+    ORDER BY ${sql.raw(orderCol)}
+    LIMIT ${sql.raw(String(limit))}
+    OFFSET ${sql.raw(String(offset))}
+  `);
+  return r.rows.map((row: any) => ({
+    address: row.address,
+    total_sessions: Number(row.total_sessions ?? 0),
+    total_settled_usdc: Number(row.total_settled_usdc ?? 0),
+    unique_sellers: Number(row.unique_sellers ?? 0),
+    ghost_sessions: Number(row.ghost_sessions ?? 0),
+    first_seen_block: row.first_seen_block != null ? Number(row.first_seen_block) : null,
+    last_seen_block: row.last_seen_block != null ? Number(row.last_seen_block) : null,
+    first_seen_ts: row.first_seen_ts != null ? Number(row.first_seen_ts) : null,
+    last_seen_ts: row.last_seen_ts != null ? Number(row.last_seen_ts) : null,
+    trust_score: Number(row.trust_score ?? 0),
+    qualified: row.qualified ? 1 : 0,
+  }));
 }
 
 export async function countBuyers(opts: {
