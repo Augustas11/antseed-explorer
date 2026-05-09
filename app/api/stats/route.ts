@@ -2,9 +2,13 @@ import { NextResponse } from "next/server";
 import { getNetworkStats, getDailyVolume, getProfileDrift } from "@/lib/queries";
 
 export const runtime = "nodejs";
+// Aggregates change at most every minute (when the indexer pulses).
+// 30s edge cache + SWR keeps Neon out of the request path for 95% of hits.
 export const dynamic = "force-dynamic";
-export const fetchCache = "force-no-store";
-export const revalidate = 0;
+
+const RESPONSE_HEADERS = {
+  "Cache-Control": "public, s-maxage=30, stale-while-revalidate=120",
+};
 
 export async function GET() {
   // Serialized — Promise.all of many Neon HTTP requests from a cold Vercel
@@ -13,5 +17,8 @@ export async function GET() {
   const stats = await getNetworkStats();
   const daily = await getDailyVolume(30);
   const drift = await getProfileDrift();
-  return NextResponse.json({ ...stats, daily, drift });
+  return NextResponse.json(
+    { ...stats, daily, drift },
+    { headers: RESPONSE_HEADERS },
+  );
 }

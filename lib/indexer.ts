@@ -370,13 +370,16 @@ export async function recomputeBuyer(address: string) {
 }
 
 // Self-healing: if events sum != profiles sum, recompute every buyer.
+// Tolerance is $0.01 (1 cent) — JS double summation of many USDC values
+// can drift well above 0.0001, which used to fire this on every pass and
+// trigger a full table recompute for no real divergence.
 export async function reconcileDrift() {
   const r = await db.execute<{ delta: number }>(sql`
     SELECT
       ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled')
        - (SELECT COALESCE(SUM(total_settled_usdc),0) FROM buyer_profiles))::float AS delta
   `);
-  if (Math.abs(r.rows[0]?.delta ?? 0) < 0.0001) return;
+  if (Math.abs(r.rows[0]?.delta ?? 0) < 0.01) return;
   const buyers = await db
     .selectDistinct({ a: eventsTbl.buyerAddress })
     .from(eventsTbl)
