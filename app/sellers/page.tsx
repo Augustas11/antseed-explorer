@@ -1,7 +1,6 @@
 import Link from "next/link";
-import { listBuyers, countBuyers, lookupProviders } from "@/lib/queries";
+import { listSellers, countSellers, lookupProviders } from "@/lib/queries";
 import { fmtNum, fmtUsd, fmtDate, shortAddr } from "@/lib/format";
-import { ScoreBadge, QualifiedBadge } from "../components/Badges";
 import SortableHeader from "../components/SortableHeader";
 import VerifiedLabel from "../components/VerifiedLabel";
 
@@ -9,22 +8,11 @@ export const dynamic = "force-dynamic";
 
 interface SP {
   page?: string;
-  qualified?: string;
-  minScore?: string;
   sort?: string;
   dir?: string;
 }
 
-const sortLabels: Record<string, string> = {
-  volume: "USDC volume",
-  sessions: "sessions",
-  first_seen: "first seen",
-  unique_sellers: "seller diversity",
-  ghosts: "ghost sessions",
-  score: "trust score",
-};
-
-export default async function BuyersPage({
+export default async function SellersPage({
   searchParams,
 }: {
   searchParams: SP;
@@ -32,14 +20,12 @@ export default async function BuyersPage({
   const page = Math.max(1, Number(searchParams.page || 1));
   const limit = 25;
   const offset = (page - 1) * limit;
-  const qualifiedOnly = searchParams.qualified === "1";
-  const minScore = Number(searchParams.minScore) || 0;
   const sort = (searchParams.sort || "volume") as any;
   const dir = (searchParams.dir || "desc") as "asc" | "desc";
 
   const [rows, total] = await Promise.all([
-    listBuyers({ limit, offset, qualifiedOnly, minScore, sort }),
-    countBuyers({ qualifiedOnly, minScore }),
+    listSellers({ limit, offset, sort, dir }),
+    countSellers(),
   ]);
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
@@ -48,72 +34,37 @@ export default async function BuyersPage({
   function pageHref(p: number) {
     const sp = new URLSearchParams();
     sp.set("page", String(p));
-    if (qualifiedOnly) sp.set("qualified", "1");
-    if (minScore) sp.set("minScore", String(minScore));
     if (sort !== "volume") sp.set("sort", sort);
     if (dir !== "desc") sp.set("dir", dir);
-    return `/buyers?${sp.toString()}`;
+    return `/sellers?${sp.toString()}`;
   }
 
-  const sortLabel = sortLabels[sort] ?? sort;
-
   const sharedParams: Record<string, string> = {};
-  if (qualifiedOnly) sharedParams.qualified = "1";
-  if (minScore) sharedParams.minScore = String(minScore);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-end justify-between flex-wrap gap-3">
+      <div className="flex items-end justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Top {fmtNum(total)} buyers — sort by {sortLabel}
+            Seller Leaderboard
           </h1>
           <p className="text-muted text-sm mt-1">
-            {fmtNum(total)} buyers match this filter.
+            {fmtNum(total)} sellers on the network.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <a
-            href={`/api/buyers?format=csv&sort=${sort}`}
-            className="btn text-xs"
-            download
-          >
-            ↓ CSV
-          </a>
-          <form className="flex items-center gap-3" method="get">
-            <label className="text-xs text-muted flex items-center gap-2">
-              <input
-                type="checkbox"
-                name="qualified"
-                value="1"
-                defaultChecked={qualifiedOnly}
-                className="accent-accent"
-              />
-              Qualified only
-            </label>
-            <label className="text-xs text-muted flex items-center gap-2">
-              min score
-              <input
-                type="number"
-                name="minScore"
-                defaultValue={minScore || ""}
-                placeholder="0"
-                min={0}
-                max={100}
-                className="w-16 bg-panel border border-edge rounded px-2 py-1 text-ink"
-              />
-            </label>
-            <button className="btn" type="submit">
-              Apply
-            </button>
-          </form>
-        </div>
+        <a
+          href={`/api/sellers?format=csv&sort=${sort}`}
+          className="btn text-xs"
+          download
+        >
+          ↓ CSV
+        </a>
       </div>
 
       <div className="panel">
         {rows.length === 0 ? (
           <div className="p-8 text-center text-muted text-sm">
-            No buyers match. Try a lower min score or unqualified.
+            No sellers indexed yet.
           </div>
         ) : (
           <table className="tbl">
@@ -126,10 +77,10 @@ export default async function BuyersPage({
                     field="volume"
                     current={sort}
                     dir={dir}
-                    basePath="/buyers"
+                    basePath="/sellers"
                     extraParams={sharedParams}
                   >
-                    USDC
+                    USDC earned
                   </SortableHeader>
                 </th>
                 <th>
@@ -137,7 +88,7 @@ export default async function BuyersPage({
                     field="sessions"
                     current={sort}
                     dir={dir}
-                    basePath="/buyers"
+                    basePath="/sellers"
                     extraParams={sharedParams}
                   >
                     Sessions
@@ -145,13 +96,13 @@ export default async function BuyersPage({
                 </th>
                 <th>
                   <SortableHeader
-                    field="unique_sellers"
+                    field="buyers"
                     current={sort}
                     dir={dir}
-                    basePath="/buyers"
+                    basePath="/sellers"
                     extraParams={sharedParams}
                   >
-                    Sellers
+                    Buyers
                   </SortableHeader>
                 </th>
                 <th>
@@ -159,7 +110,7 @@ export default async function BuyersPage({
                     field="ghosts"
                     current={sort}
                     dir={dir}
-                    basePath="/buyers"
+                    basePath="/sellers"
                     extraParams={sharedParams}
                   >
                     Ghosts
@@ -170,55 +121,41 @@ export default async function BuyersPage({
                     field="first_seen"
                     current={sort}
                     dir={dir}
-                    basePath="/buyers"
+                    basePath="/sellers"
                     extraParams={sharedParams}
                     defaultDir="asc"
                   >
                     First seen
                   </SortableHeader>
                 </th>
-                <th>
-                  <SortableHeader
-                    field="score"
-                    current={sort}
-                    dir={dir}
-                    basePath="/buyers"
-                    extraParams={sharedParams}
-                  >
-                    Trust
-                  </SortableHeader>
-                </th>
-                <th></th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((b, i) => (
-                <tr key={b.address}>
+              {rows.map((s, i) => (
+                <tr key={s.address}>
                   <td className="text-muted">{offset + i + 1}</td>
                   <td>
                     <Link
-                      href={`/buyers/${b.address}`}
+                      href={`/sellers/${s.address}`}
                       className="font-mono text-accent hover:underline"
                     >
-                      {shortAddr(b.address)}
+                      {shortAddr(s.address)}
                     </Link>
                     <VerifiedLabel
-                      displayName={providerMap.get(b.address)?.display_name ?? null}
+                      displayName={providerMap.get(s.address)?.display_name ?? null}
                     />
                   </td>
-                  <td>{fmtUsd(b.total_settled_usdc)}</td>
-                  <td>{fmtNum(b.total_sessions)}</td>
-                  <td>{fmtNum(b.unique_sellers)}</td>
-                  <td className={b.ghost_sessions > 0 ? "text-bad" : "text-muted"}>
-                    {fmtNum(b.ghost_sessions)}
+                  <td>{fmtUsd(s.total_earned_usdc)}</td>
+                  <td>{fmtNum(s.total_sessions)}</td>
+                  <td>{fmtNum(s.unique_buyers)}</td>
+                  <td
+                    className={
+                      s.ghost_sessions > 0 ? "text-bad" : "text-muted"
+                    }
+                  >
+                    {fmtNum(s.ghost_sessions)}
                   </td>
-                  <td className="text-muted">{fmtDate(b.first_seen_ts)}</td>
-                  <td>
-                    <ScoreBadge score={b.trust_score} />
-                  </td>
-                  <td>
-                    <QualifiedBadge qualified={!!b.qualified} />
-                  </td>
+                  <td className="text-muted">{fmtDate(s.first_seen_ts)}</td>
                 </tr>
               ))}
             </tbody>

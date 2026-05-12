@@ -1,21 +1,47 @@
 import Link from "next/link";
 import {
   getDailyVolume,
+  getHourlyVolume,
   getNetworkStats,
+  getRecentEvents,
   listBuyers,
 } from "@/lib/queries";
 import { fmtNum, fmtRelative, fmtUsd, shortAddr } from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "./components/Badges";
 import { ActiveBuyersChart, VolumeChart } from "./components/Charts";
+import TimeRangePills from "./components/TimeRangePills";
+import ActivityFeed from "./components/ActivityFeed";
 
 export const dynamic = "force-dynamic";
 
-export default async function HomePage() {
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: { range?: string };
+}) {
   // No page-load sync on Vercel — cron handles indexing.
   // Serialized — Promise.all of multiple Neon HTTP queries occasionally
   // returns empty rows on cold-start serverless invocations.
+  const range = searchParams.range || "30d";
+  const rangeLabel =
+    range === "24h"
+      ? "last 24h"
+      : range === "7d"
+      ? "last 7d"
+      : range === "all"
+      ? "all time"
+      : "last 30d";
+
   const stats = await getNetworkStats();
-  const daily = await getDailyVolume(30);
+  const daily =
+    range === "24h"
+      ? await getHourlyVolume(24)
+      : range === "7d"
+      ? await getDailyVolume(7)
+      : range === "all"
+      ? await getDailyVolume(9999)
+      : await getDailyVolume(30);
+  const recent = await getRecentEvents(20);
   const top = await listBuyers({ limit: 10, sort: "score" });
 
   const isMock = !!process.env.SEED_MODE;
@@ -65,19 +91,21 @@ export default async function HomePage() {
       <section className="grid md:grid-cols-2 gap-4">
         <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-medium">Settlement volume — last 30d</h2>
-            <span className="pill">USDC / day</span>
+            <h2 className="font-medium">Settlement volume — {rangeLabel}</h2>
+            <TimeRangePills current={range} basePath="/" />
           </div>
           <VolumeChart data={daily} />
         </div>
         <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-medium">Active buyers — last 30d</h2>
-            <span className="pill">unique addresses</span>
+            <h2 className="font-medium">Active buyers — {rangeLabel}</h2>
+            <TimeRangePills current={range} basePath="/" />
           </div>
           <ActiveBuyersChart data={daily} />
         </div>
       </section>
+
+      <ActivityFeed events={recent} />
 
       <section className="panel">
         <div className="flex items-center justify-between p-4 border-b border-edge">

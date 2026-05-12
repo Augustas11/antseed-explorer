@@ -2,6 +2,7 @@ import "./globals.css";
 import Link from "next/link";
 import type { Metadata } from "next";
 import SyncButton from "./components/SyncButton";
+import SearchBar from "./components/SearchBar";
 import { Analytics } from "@vercel/analytics/next";
 
 export const metadata: Metadata = {
@@ -23,6 +24,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <nav className="flex items-center gap-4 text-sm text-muted">
                 <Link href="/" className="hover:text-ink">Network</Link>
                 <Link href="/buyers" className="hover:text-ink">Buyers</Link>
+                <Link href="/sellers" className="hover:text-ink">Sellers</Link>
+                <Link href="/channels" className="hover:text-ink">Channels</Link>
+                <Link href="/services" className="hover:text-ink">Services</Link>
                 <a
                   href="https://antseed.com/docs/payments"
                   target="_blank"
@@ -34,6 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </nav>
             </div>
             <div className="flex items-center gap-3">
+              <SearchBar />
               <a
                 href="https://github.com/Augustas11/antseed-explorer"
                 target="_blank"

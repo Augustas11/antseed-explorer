@@ -55,7 +55,7 @@ export async function listBuyers(opts: {
   offset?: number;
   qualifiedOnly?: boolean;
   minScore?: number;
-  sort?: "score" | "volume" | "sessions" | "first_seen";
+  sort?: "score" | "volume" | "sessions" | "first_seen" | "unique_sellers" | "ghosts";
 } = {}): Promise<BuyerRow[]> {
   const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
@@ -64,6 +64,8 @@ export async function listBuyers(opts: {
     opts.sort === "volume" ? "total_settled_usdc DESC"
     : opts.sort === "sessions" ? "total_sessions DESC"
     : opts.sort === "first_seen" ? "first_seen_block ASC NULLS LAST"
+    : opts.sort === "unique_sellers" ? "unique_sellers DESC"
+    : opts.sort === "ghosts" ? "ghost_sessions DESC"
     : "trust_score DESC";
   const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
 
@@ -353,4 +355,518 @@ function parseJson<T>(s: string | null | undefined): T | null {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// lookupAddress
+// ---------------------------------------------------------------------------
+
+export async function lookupAddress(
+  addr: string,
+): Promise<{ type: "buyer" | "seller"; address: string } | null> {
+  const normalized = addr.toLowerCase();
+
+  // Check buyer_profiles first
+  const buyerRows = await db
+    .select({ address: buyerProfiles.address })
+    .from(buyerProfiles)
+    .where(eq(buyerProfiles.address, normalized))
+    .limit(1);
+  if (buyerRows.length > 0) {
+    return { type: "buyer", address: normalized };
+  }
+
+  // Check events for seller_address
+  const sellerRows = await db
+    .select({ sellerAddress: eventsTbl.sellerAddress })
+    .from(eventsTbl)
+    .where(eq(eventsTbl.sellerAddress, normalized))
+    .limit(1);
+  if (sellerRows.length > 0) {
+    return { type: "seller", address: normalized };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// SellerRow + seller queries
+// ---------------------------------------------------------------------------
+
+export interface SellerRow {
+  address: string;
+  unique_buyers: number;
+  total_sessions: number;
+  total_earned_usdc: number;
+  ghost_sessions: number;
+  first_seen_ts: number | null;
+  last_seen_ts: number | null;
+  first_seen_block: number | null;
+  last_seen_block: number | null;
+}
+
+function shapeSellerRow(row: any): SellerRow {
+  return {
+    address: row.address,
+    unique_buyers: Number(row.unique_buyers ?? 0),
+    total_sessions: Number(row.total_sessions ?? 0),
+    total_earned_usdc: Number(row.total_earned_usdc ?? 0),
+    ghost_sessions: Number(row.ghost_sessions ?? 0),
+    first_seen_ts: row.first_seen_ts != null ? Number(row.first_seen_ts) : null,
+    last_seen_ts: row.last_seen_ts != null ? Number(row.last_seen_ts) : null,
+    first_seen_block: row.first_seen_block != null ? Number(row.first_seen_block) : null,
+    last_seen_block: row.last_seen_block != null ? Number(row.last_seen_block) : null,
+  };
+}
+
+export async function listSellers(opts: {
+  limit?: number;
+  offset?: number;
+  sort?: "volume" | "sessions" | "buyers" | "ghosts" | "first_seen";
+  dir?: "asc" | "desc";
+} = {}): Promise<SellerRow[]> {
+  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const sortColMap: Record<string, string> = {
+    volume: "total_earned_usdc",
+    sessions: "total_sessions",
+    buyers: "unique_buyers",
+    ghosts: "ghost_sessions",
+    first_seen: "first_seen_ts",
+  };
+  const sortCol = sortColMap[opts.sort ?? ""] ?? "total_earned_usdc";
+  // first_seen defaults to asc; everything else defaults to desc
+  const dir = opts.dir ?? (opts.sort === "first_seen" ? "asc" : "desc");
+  const orderExpr = `${sortCol} ${dir.toUpperCase()}`;
+
+  const r = await db.execute<any>(sql`
+    SELECT
+      seller_address                                                         AS address,
+      COUNT(DISTINCT buyer_address)::int                                     AS unique_buyers,
+      COUNT(*) FILTER (WHERE event_type = 'settled')::int                    AS total_sessions,
+      COALESCE(SUM(delta_usdc) FILTER (WHERE event_type = 'settled'), 0)::float AS total_earned_usdc,
+      COUNT(*) FILTER (WHERE event_type = 'closed' AND (settled_amount_usdc IS NULL OR settled_amount_usdc = 0))::int AS ghost_sessions,
+      MIN(timestamp)                                                         AS first_seen_ts,
+      MAX(timestamp)                                                         AS last_seen_ts,
+      MIN(block_number)                                                      AS first_seen_block,
+      MAX(block_number)                                                      AS last_seen_block
+    FROM events
+    WHERE seller_address IS NOT NULL
+    GROUP BY seller_address
+    ORDER BY ${sql.raw(orderExpr)}
+    LIMIT ${sql.raw(String(limit))}
+    OFFSET ${sql.raw(String(offset))}
+  `);
+  return r.rows.map(shapeSellerRow);
+}
+
+export async function countSellers(): Promise<number> {
+  const r = await db.execute<{ n: number }>(sql`
+    SELECT COUNT(DISTINCT seller_address)::int AS n
+    FROM events
+    WHERE seller_address IS NOT NULL
+  `);
+  return Number(r.rows[0]?.n ?? 0);
+}
+
+export async function getSeller(address: string): Promise<SellerRow | null> {
+  const r = await db.execute<any>(sql`
+    SELECT
+      seller_address                                                         AS address,
+      COUNT(DISTINCT buyer_address)::int                                     AS unique_buyers,
+      COUNT(*) FILTER (WHERE event_type = 'settled')::int                    AS total_sessions,
+      COALESCE(SUM(delta_usdc) FILTER (WHERE event_type = 'settled'), 0)::float AS total_earned_usdc,
+      COUNT(*) FILTER (WHERE event_type = 'closed' AND (settled_amount_usdc IS NULL OR settled_amount_usdc = 0))::int AS ghost_sessions,
+      MIN(timestamp)                                                         AS first_seen_ts,
+      MAX(timestamp)                                                         AS last_seen_ts,
+      MIN(block_number)                                                      AS first_seen_block,
+      MAX(block_number)                                                      AS last_seen_block
+    FROM events
+    WHERE seller_address = ${address.toLowerCase()}
+  `);
+  const row = r.rows[0];
+  if (!row || row.address == null) return null;
+  return shapeSellerRow(row);
+}
+
+export async function getSellerMonthlyVolume(address: string) {
+  const rows = await db.execute<{
+    month: string;
+    sessions: number;
+    volume: number;
+  }>(sql`
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM') AS month,
+           COUNT(*)::int AS sessions,
+           COALESCE(SUM(delta_usdc),0)::float AS volume
+    FROM events
+    WHERE seller_address = ${address.toLowerCase()}
+      AND event_type = 'settled'
+      AND timestamp IS NOT NULL AND timestamp > 0
+    GROUP BY month
+    ORDER BY month ASC
+  `);
+  return rows.rows;
+}
+
+export async function getSellerBuyerSummary(
+  address: string,
+  limit = 10,
+): Promise<{ buyer_address: string; sessions: number; total_usdc: number }[]> {
+  const rows = await db.execute<{
+    buyer_address: string;
+    sessions: number;
+    total_usdc: number;
+  }>(sql`
+    SELECT buyer_address,
+           COUNT(*)::int AS sessions,
+           COALESCE(SUM(delta_usdc),0)::float AS total_usdc
+    FROM events
+    WHERE seller_address = ${address.toLowerCase()}
+      AND event_type = 'settled'
+    GROUP BY buyer_address
+    ORDER BY total_usdc DESC
+    LIMIT ${limit}
+  `);
+  return rows.rows;
+}
+
+// ---------------------------------------------------------------------------
+// getHourlyVolume
+// ---------------------------------------------------------------------------
+
+export async function getHourlyVolume(hours = 24): Promise<
+  { day: string; sessions: number; volume: number; active_buyers: number }[]
+> {
+  const h = Math.max(1, Math.floor(hours));
+  const rows = await db.execute<{
+    day: string;
+    sessions: number;
+    volume: number;
+    active_buyers: number;
+  }>(sql`
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD HH24:00') AS day,
+           COUNT(*)::int AS sessions,
+           COALESCE(SUM(delta_usdc),0)::float AS volume,
+           COUNT(DISTINCT buyer_address)::int AS active_buyers
+    FROM events
+    WHERE event_type='settled'
+      AND timestamp IS NOT NULL
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+    GROUP BY day
+    ORDER BY day ASC
+  `);
+  return rows.rows;
+}
+
+// ---------------------------------------------------------------------------
+// RecentEventRow + getRecentEvents
+// ---------------------------------------------------------------------------
+
+export interface RecentEventRow {
+  tx_hash: string;
+  log_index: number;
+  block_number: number;
+  event_type: string;
+  buyer_address: string | null;
+  seller_address: string | null;
+  channel_id: string | null;
+  delta_usdc: number | null;
+  settled_amount_usdc: number | null;
+  timestamp: number | null;
+}
+
+export async function getRecentEvents(limit = 20): Promise<RecentEventRow[]> {
+  const rows = await db
+    .select({
+      txHash: eventsTbl.txHash,
+      logIndex: eventsTbl.logIndex,
+      blockNumber: eventsTbl.blockNumber,
+      eventType: eventsTbl.eventType,
+      buyerAddress: eventsTbl.buyerAddress,
+      sellerAddress: eventsTbl.sellerAddress,
+      channelId: eventsTbl.channelId,
+      deltaUsdc: eventsTbl.deltaUsdc,
+      settledAmountUsdc: eventsTbl.settledAmountUsdc,
+      timestamp: eventsTbl.timestamp,
+    })
+    .from(eventsTbl)
+    .orderBy(desc(eventsTbl.blockNumber), desc(eventsTbl.logIndex))
+    .limit(limit);
+  return rows.map((e) => ({
+    tx_hash: e.txHash,
+    log_index: e.logIndex,
+    block_number: e.blockNumber,
+    event_type: e.eventType,
+    buyer_address: e.buyerAddress,
+    seller_address: e.sellerAddress,
+    channel_id: e.channelId,
+    delta_usdc: e.deltaUsdc,
+    settled_amount_usdc: e.settledAmountUsdc,
+    timestamp: e.timestamp,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// ChannelRow + channel queries
+// ---------------------------------------------------------------------------
+
+export interface ChannelRow {
+  channel_id: string;
+  buyer_address: string | null;
+  seller_address: string | null;
+  opened_block: number | null;
+  last_block: number | null;
+  opened_ts: number | null;
+  last_ts: number | null;
+  max_amount_usdc: number | null;
+  settled_amount_usdc: number | null;
+  total_delta_usdc: number | null;
+  event_count: number;
+  state: "Open" | "Settled" | "Created";
+}
+
+function shapeChannelRow(row: any): ChannelRow {
+  const state: ChannelRow["state"] =
+    row.closed ? "Settled" : row.reserved ? "Open" : "Created";
+  return {
+    channel_id: row.channel_id,
+    buyer_address: row.buyer_address ?? null,
+    seller_address: row.seller_address ?? null,
+    opened_block: row.opened_block != null ? Number(row.opened_block) : null,
+    last_block: row.last_block != null ? Number(row.last_block) : null,
+    opened_ts: row.opened_ts != null ? Number(row.opened_ts) : null,
+    last_ts: row.last_ts != null ? Number(row.last_ts) : null,
+    max_amount_usdc: row.max_amount_usdc != null ? Number(row.max_amount_usdc) : null,
+    settled_amount_usdc: row.settled_amount_usdc != null ? Number(row.settled_amount_usdc) : null,
+    total_delta_usdc: row.total_delta_usdc != null ? Number(row.total_delta_usdc) : null,
+    event_count: Number(row.event_count ?? 0),
+    state,
+  };
+}
+
+export async function listChannels(opts: {
+  limit?: number;
+  offset?: number;
+  sort?: "amount" | "settled" | "events" | "opened" | "last_activity";
+  dir?: "asc" | "desc";
+} = {}): Promise<ChannelRow[]> {
+  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const sortColMap: Record<string, string> = {
+    amount: "max_amount_usdc",
+    settled: "settled_amount_usdc",
+    events: "event_count",
+    opened: "opened_ts",
+    last_activity: "last_ts",
+  };
+  const sortCol = sortColMap[opts.sort ?? ""] ?? "opened_ts";
+  const dir = opts.dir ?? "desc";
+  const orderExpr = `${sortCol} ${dir.toUpperCase()}`;
+
+  const r = await db.execute<any>(sql`
+    SELECT
+      channel_id,
+      MIN(buyer_address)            AS buyer_address,
+      MIN(seller_address)           AS seller_address,
+      MIN(block_number)             AS opened_block,
+      MAX(block_number)             AS last_block,
+      MIN(timestamp)                AS opened_ts,
+      MAX(timestamp)                AS last_ts,
+      MAX(max_amount_usdc)          AS max_amount_usdc,
+      MAX(settled_amount_usdc)      AS settled_amount_usdc,
+      COALESCE(SUM(delta_usdc), 0)  AS total_delta_usdc,
+      bool_or(event_type = 'Closed')   AS closed,
+      bool_or(event_type = 'Reserved') AS reserved,
+      COUNT(*)::int                 AS event_count
+    FROM events
+    WHERE channel_id IS NOT NULL
+    GROUP BY channel_id
+    ORDER BY ${sql.raw(orderExpr)}
+    LIMIT ${sql.raw(String(limit))}
+    OFFSET ${sql.raw(String(offset))}
+  `);
+  return r.rows.map(shapeChannelRow);
+}
+
+export async function countChannels(): Promise<number> {
+  const r = await db.execute<{ n: number }>(sql`
+    SELECT COUNT(DISTINCT channel_id)::int AS n
+    FROM events
+    WHERE channel_id IS NOT NULL
+  `);
+  return Number(r.rows[0]?.n ?? 0);
+}
+
+export async function getChannel(id: string): Promise<ChannelRow | null> {
+  const r = await db.execute<any>(sql`
+    SELECT
+      channel_id,
+      MIN(buyer_address)            AS buyer_address,
+      MIN(seller_address)           AS seller_address,
+      MIN(block_number)             AS opened_block,
+      MAX(block_number)             AS last_block,
+      MIN(timestamp)                AS opened_ts,
+      MAX(timestamp)                AS last_ts,
+      MAX(max_amount_usdc)          AS max_amount_usdc,
+      MAX(settled_amount_usdc)      AS settled_amount_usdc,
+      COALESCE(SUM(delta_usdc), 0)  AS total_delta_usdc,
+      bool_or(event_type = 'Closed')   AS closed,
+      bool_or(event_type = 'Reserved') AS reserved,
+      COUNT(*)::int                 AS event_count
+    FROM events
+    WHERE channel_id = ${id}
+    GROUP BY channel_id
+  `);
+  const row = r.rows[0];
+  if (!row || row.channel_id == null) return null;
+  return shapeChannelRow(row);
+}
+
+export async function getChannelEvents(
+  channelId: string,
+  limit = 100,
+) {
+  const rows = await db
+    .select({
+      txHash: eventsTbl.txHash,
+      logIndex: eventsTbl.logIndex,
+      blockNumber: eventsTbl.blockNumber,
+      eventType: eventsTbl.eventType,
+      buyerAddress: eventsTbl.buyerAddress,
+      sellerAddress: eventsTbl.sellerAddress,
+      channelId: eventsTbl.channelId,
+      deltaUsdc: eventsTbl.deltaUsdc,
+      settledAmountUsdc: eventsTbl.settledAmountUsdc,
+      inputTokens: eventsTbl.inputTokens,
+      outputTokens: eventsTbl.outputTokens,
+      requestCount: eventsTbl.requestCount,
+      timestamp: eventsTbl.timestamp,
+    })
+    .from(eventsTbl)
+    .where(eq(eventsTbl.channelId, channelId))
+    .orderBy(asc(eventsTbl.blockNumber), asc(eventsTbl.logIndex))
+    .limit(limit);
+  return rows.map((e) => ({
+    tx_hash: e.txHash,
+    log_index: e.logIndex,
+    block_number: e.blockNumber,
+    event_type: e.eventType,
+    buyer_address: e.buyerAddress,
+    seller_address: e.sellerAddress,
+    channel_id: e.channelId,
+    delta_usdc: e.deltaUsdc,
+    settled_amount_usdc: e.settledAmountUsdc,
+    input_tokens: e.inputTokens,
+    output_tokens: e.outputTokens,
+    request_count: e.requestCount,
+    timestamp: e.timestamp,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// ServiceRow + service queries
+// ---------------------------------------------------------------------------
+
+export interface ServiceRow {
+  name: string;
+  provider_count: number;
+  providers: string[];
+  min_price_in: number | null;
+  max_price_in: number | null;
+  min_price_out: number | null;
+  max_price_out: number | null;
+}
+
+export interface ServiceProviderRow extends ServiceRow {
+  provider_details: Array<{
+    address: string;
+    display_name: string | null;
+    pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
+  }>;
+}
+
+type PricingMap = Record<string, { inputUsdPerMillion?: number; outputUsdPerMillion?: number }>;
+
+export async function listServices(): Promise<ServiceRow[]> {
+  const allProviders = await db.select().from(providerDirectory);
+
+  // Build Map<serviceName, { providers: string[], prices: { in: number[], out: number[] } }>
+  const serviceMap = new Map<string, {
+    providers: string[];
+    pricesIn: number[];
+    pricesOut: number[];
+  }>();
+
+  for (const provider of allProviders) {
+    const services = parseJson<string[]>(provider.services) ?? [];
+    const pricing = parseJson<PricingMap>(provider.pricing) ?? {};
+    for (const svc of services) {
+      if (!serviceMap.has(svc)) {
+        serviceMap.set(svc, { providers: [], pricesIn: [], pricesOut: [] });
+      }
+      const entry = serviceMap.get(svc)!;
+      entry.providers.push(provider.address);
+      const svcPricing = pricing[svc];
+      if (svcPricing?.inputUsdPerMillion != null) entry.pricesIn.push(svcPricing.inputUsdPerMillion);
+      if (svcPricing?.outputUsdPerMillion != null) entry.pricesOut.push(svcPricing.outputUsdPerMillion);
+    }
+  }
+
+  const result: ServiceRow[] = [];
+  for (const [name, { providers, pricesIn, pricesOut }] of serviceMap) {
+    result.push({
+      name,
+      provider_count: providers.length,
+      providers,
+      min_price_in: pricesIn.length > 0 ? Math.min(...pricesIn) : null,
+      max_price_in: pricesIn.length > 0 ? Math.max(...pricesIn) : null,
+      min_price_out: pricesOut.length > 0 ? Math.min(...pricesOut) : null,
+      max_price_out: pricesOut.length > 0 ? Math.max(...pricesOut) : null,
+    });
+  }
+
+  // Sort by provider_count desc, then name asc
+  result.sort((a, b) =>
+    b.provider_count !== a.provider_count
+      ? b.provider_count - a.provider_count
+      : a.name.localeCompare(b.name),
+  );
+  return result;
+}
+
+export async function getService(name: string): Promise<ServiceProviderRow | null> {
+  const allProviders = await db.select().from(providerDirectory);
+
+  const providers: string[] = [];
+  const pricesIn: number[] = [];
+  const pricesOut: number[] = [];
+  const providerDetails: ServiceProviderRow["provider_details"] = [];
+
+  for (const provider of allProviders) {
+    const services = parseJson<string[]>(provider.services) ?? [];
+    if (!services.includes(name)) continue;
+    const pricing = parseJson<PricingMap>(provider.pricing) ?? {};
+    const svcPricing = pricing[name] ?? null;
+    providers.push(provider.address);
+    if (svcPricing?.inputUsdPerMillion != null) pricesIn.push(svcPricing.inputUsdPerMillion);
+    if (svcPricing?.outputUsdPerMillion != null) pricesOut.push(svcPricing.outputUsdPerMillion);
+    providerDetails.push({
+      address: provider.address,
+      display_name: provider.displayName ?? null,
+      pricing: svcPricing,
+    });
+  }
+
+  if (providers.length === 0) return null;
+
+  return {
+    name,
+    provider_count: providers.length,
+    providers,
+    min_price_in: pricesIn.length > 0 ? Math.min(...pricesIn) : null,
+    max_price_in: pricesIn.length > 0 ? Math.max(...pricesIn) : null,
+    min_price_out: pricesOut.length > 0 ? Math.min(...pricesOut) : null,
+    max_price_out: pricesOut.length > 0 ? Math.max(...pricesOut) : null,
+    provider_details: providerDetails,
+  };
 }
