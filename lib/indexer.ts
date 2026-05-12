@@ -389,7 +389,7 @@ export async function reconcileDrift() {
     .selectDistinct({ a: eventsTbl.buyerAddress })
     .from(eventsTbl)
     .where(sql`${eventsTbl.buyerAddress} IS NOT NULL`);
-  for (const b of buyers) if (b.a) await recomputeBuyer(b.a);
+  await Promise.all(buyers.filter(b => b.a).map(b => recomputeBuyer(b.a!)));
 }
 
 // ============================================================================
