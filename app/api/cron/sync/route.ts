@@ -9,17 +9,18 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 function authorized(req: NextRequest): boolean {
-  // Vercel Cron sets `Authorization: Bearer <CRON_SECRET>` automatically when
-  // CRON_SECRET is set in env. External pingers (cron-job.org) use the same.
   const expected = process.env.CRON_SECRET;
   if (!expected) {
-    // Fail closed in production — a missing secret means a misconfigured deploy,
-    // not an invitation to drain RPC + Neon credits.
     if (process.env.NODE_ENV === "production") return false;
-    return true; // dev convenience only
+    return true;
   }
-  const got = req.headers.get("authorization");
-  return got === `Bearer ${expected}`;
+  // Accept secret via Authorization header (Vercel Cron / GitHub Actions)
+  // OR as ?secret= query param (cron-job.org and other services that can't
+  // reliably set custom headers).
+  const header = req.headers.get("authorization");
+  if (header === `Bearer ${expected}`) return true;
+  const param = req.nextUrl.searchParams.get("secret");
+  return param === expected;
 }
 
 export async function GET(req: NextRequest) {
