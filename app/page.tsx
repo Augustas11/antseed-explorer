@@ -11,6 +11,7 @@ import { ScoreBadge, QualifiedBadge } from "./components/Badges";
 import { ActiveBuyersChart, VolumeChart } from "./components/Charts";
 import TimeRangePills from "./components/TimeRangePills";
 import ActivityFeed from "./components/ActivityFeed";
+import AutoRefresh from "./components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -158,6 +159,8 @@ export default async function HomePage({
           </table>
         )}
       </section>
+
+      <AutoRefresh intervalMs={60_000} />
 
       <section className="text-xs text-muted flex flex-wrap items-center gap-2">
         {(() => {
