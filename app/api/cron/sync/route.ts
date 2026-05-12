@@ -33,12 +33,16 @@ export async function GET(req: NextRequest) {
     await refreshProviderDirectory();
     return NextResponse.json(result);
   } catch (e: any) {
+    // DrizzleQueryError stores the real Postgres/Neon error in e.cause
+    const cause = e?.cause;
+    const causeMsg = cause?.message || "";
     const extras: Record<string, unknown> = {};
-    for (const k of ["code", "detail", "hint", "constraint", "table", "column", "routine"]) {
-      if (e?.[k]) extras[k] = e[k];
+    for (const k of ["code", "detail", "hint", "constraint", "table", "column"]) {
+      const v = cause?.[k] ?? e?.[k];
+      if (v) extras[k] = v;
     }
     return NextResponse.json(
-      { ok: false, error: e?.message || String(e), ...extras },
+      { ok: false, error: causeMsg || e?.message || String(e), drizzle: causeMsg ? e?.message?.slice(0, 120) : undefined, ...extras },
       { status: 500 },
     );
   }
