@@ -21,11 +21,13 @@ export default async function BuyersPage({
   const limit = 25;
   const offset = (page - 1) * limit;
   const qualifiedOnly = searchParams.qualified === "1";
-  const minScore = Number(searchParams.minScore || 0);
+  const minScore = Number(searchParams.minScore) || 0;
   const sort = (searchParams.sort || "score") as any;
 
-  const rows = await listBuyers({ limit, offset, qualifiedOnly, minScore, sort });
-  const total = await countBuyers({ qualifiedOnly, minScore });
+  const [rows, total] = await Promise.all([
+    listBuyers({ limit, offset, qualifiedOnly, minScore, sort }),
+    countBuyers({ qualifiedOnly, minScore }),
+  ]);
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   function pageHref(p: number) {

@@ -1,8 +1,9 @@
 // One-shot importer: reads ./data/explorer.db (the old SQLite file) and
 // pushes every row to the configured Postgres DATABASE_URL.
 //
-// Idempotent: safe to re-run, dedupes on (tx_hash, log_index) for events
-// and primary keys for the other tables.
+// NOT safe to re-run on a non-empty database: buyer_profiles and indexer_state
+// use onConflictDoUpdate and would overwrite live indexed data with stale SQLite values.
+// Events are safe (onConflictDoNothing), but buyer scores would be rolled back.
 //
 // Usage:
 //   DATABASE_URL=postgres://… npx tsx scripts/import-sqlite.ts
@@ -24,6 +25,16 @@ import { sql } from "drizzle-orm";
 async function main() {
   if (!process.env.DATABASE_URL) {
     console.error("DATABASE_URL is not set. Aborting.");
+    process.exit(1);
+  }
+
+  const evCheck = await db.execute<{ n: number }>(sql`SELECT COUNT(*)::int AS n FROM events`);
+  if ((evCheck.rows[0]?.n ?? 0) > 0) {
+    console.error(
+      `Postgres already has ${evCheck.rows[0]?.n} events. ` +
+      `import-sqlite is a one-time backfill and must not be re-run on a non-empty database — ` +
+      `it would overwrite live buyer_profiles with stale SQLite data.`
+    );
     process.exit(1);
   }
 

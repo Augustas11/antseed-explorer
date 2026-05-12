@@ -13,6 +13,24 @@ export default async function BuyerOG({
 }: {
   params: { address: string };
 }) {
+  if (!/^0x[0-9a-f]{40}$/i.test(params.address)) {
+    return new ImageResponse(
+      (
+        <div
+          style={{
+            width: "100%", height: "100%", display: "flex",
+            justifyContent: "center", alignItems: "center",
+            background: "#0a0b10", color: "#8a8f9c",
+            fontSize: 36, fontFamily: "system-ui, sans-serif",
+          }}
+        >
+          <div style={{ color: "#7cf2c8", fontSize: 32 }}>AntSeed Demand Explorer</div>
+        </div>
+      ),
+      { ...size },
+    );
+  }
+
   const buyer = await getBuyer(params.address).catch(() => null);
 
   if (!buyer) {

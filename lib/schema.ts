@@ -31,6 +31,10 @@ export const events = pgTable(
     deltaUsdc: doublePrecision("delta_usdc"),
     refundUsdc: doublePrecision("refund_usdc"),
     settledAmountUsdc: doublePrecision("settled_amount_usdc"),
+    cumulativeAmountUsdc: doublePrecision("cumulative_amount_usdc"),
+    platformFeeUsdc: doublePrecision("platform_fee_usdc"),
+    newDepositUsdc: doublePrecision("new_deposit_usdc"),
+    gracePeriodEnd: bigint("grace_period_end", { mode: "number" }),
     inputTokens: bigint("input_tokens", { mode: "number" }),
     outputTokens: bigint("output_tokens", { mode: "number" }),
     requestCount: integer("request_count"),
@@ -44,6 +48,8 @@ export const events = pgTable(
     ixBlock: index("events_block_idx").on(t.blockNumber),
     ixType: index("events_type_idx").on(t.eventType),
     ixChannel: index("events_channel_idx").on(t.channelId),
+    ixTimestamp: index("events_timestamp_idx").on(t.timestamp),
+    ixTypeTs: index("events_type_ts_idx").on(t.eventType, t.timestamp),
   }),
 );
 
