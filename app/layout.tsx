@@ -1,7 +1,6 @@
 import "./globals.css";
 import Link from "next/link";
 import type { Metadata } from "next";
-import SyncButton from "./components/SyncButton";
 import SearchBar from "./components/SearchBar";
 import { Analytics } from "@vercel/analytics/next";
 
@@ -22,13 +21,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 AntSeed <span className="text-accent">Demand</span> Explorer
               </Link>
               <nav className="flex items-center gap-4 text-sm text-muted">
-                <Link href="/" className="hover:text-ink">Network</Link>
                 <Link href="/buyers" className="hover:text-ink">Buyers</Link>
                 <Link href="/sellers" className="hover:text-ink">Sellers</Link>
                 <Link href="/channels" className="hover:text-ink">Channels</Link>
                 <Link href="/services" className="hover:text-ink">Services</Link>
                 <a
-                  href="https://antseed.com/docs/payments"
+                  href="https://antseed.com/docs/overview"
                   target="_blank"
                   rel="noreferrer"
                   className="hover:text-ink"
@@ -61,7 +59,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.259 5.63L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77z" />
                 </svg>
               </a>
-              <SyncButton />
             </div>
           </div>
         </header>
