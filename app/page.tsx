@@ -116,8 +116,7 @@ export default async function HomePage({
         </div>
         {top.length === 0 ? (
           <div className="p-8 text-center text-muted text-sm">
-            No buyers indexed yet. Hit <span className="text-ink">Sync now</span>{" "}
-            (top right) to trigger an indexing pass, or wait for the next cron tick.
+            No buyers indexed yet — data syncs automatically every 5 minutes.
           </div>
         ) : (
           <table className="tbl">
@@ -160,31 +159,29 @@ export default async function HomePage({
         )}
       </section>
 
-      <section className="text-xs text-muted flex flex-wrap items-center gap-3">
-        <span>
-          Last sync:{" "}
-          <span className="text-ink">{fmtRelative(stats.lastSyncTs ? Math.floor(stats.lastSyncTs / 1000) : null)}</span>
-        </span>
-        <span>·</span>
-        <span>
-          Last indexed block:{" "}
-          <span className="text-ink font-mono">
-            {stats.lastIndexedBlock ?? "—"}
-          </span>
-        </span>
-        {stats.lastIndexedBlock != null && stats.lastHeadBlock != null && (() => {
-          const gap = stats.lastHeadBlock - stats.lastIndexedBlock;
-          if (gap <= 50) return null;
-          const hours = Math.round((gap * 2) / 3600);
-          const cls = gap > 5000 ? "text-bad" : "text-warn";
+      <section className="text-xs text-muted flex flex-wrap items-center gap-2">
+        {(() => {
+          const ageMs = stats.lastSyncTs ? Date.now() - stats.lastSyncTs : null;
+          const dotCls =
+            ageMs == null
+              ? "bg-muted"
+              : ageMs < 10 * 60 * 1000
+              ? "bg-accent"
+              : ageMs < 60 * 60 * 1000
+              ? "bg-warn"
+              : "bg-bad";
           return (
             <>
-              <span>·</span>
-              <span className={cls}>
-                ⚠ Behind chain head by{" "}
-                <span className="font-mono">{gap.toLocaleString()}</span>{" "}
-                blocks ({hours > 0 ? `~${hours}h` : "<1h"}). Next cron tick will catch up.
+              <span className={`inline-block w-1.5 h-1.5 rounded-full ${dotCls}`} />
+              <span>
+                Updated{" "}
+                <span className="text-ink">
+                  {stats.lastSyncTs
+                    ? fmtRelative(Math.floor(stats.lastSyncTs / 1000))
+                    : "—"}
+                </span>
               </span>
+              <span>· Auto-syncs every 5 minutes</span>
             </>
           );
         })()}
