@@ -37,7 +37,7 @@ export function calculateTrustScore(p: BuyerProfile): ScoreBreakdown {
   // Reliability (0–20): penalise ghost sessions
   const totalAttempts = p.totalSessions + p.ghostSessions;
   const reliabilityRate =
-    totalAttempts > 0 ? p.totalSessions / totalAttempts : 1;
+    totalAttempts > 0 ? p.totalSessions / totalAttempts : 0;
   const reliability = reliabilityRate * 20;
 
   const total = Math.round(volume + consistency + diversity + reliability);

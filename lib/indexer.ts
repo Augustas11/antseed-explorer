@@ -113,6 +113,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
   let eventsAdded = 0;
   const persisted = await getState("log_batch_size");
   let batchSize = persisted ? BigInt(persisted) : ENV_BATCH_SIZE;
+  let consecutiveSuccesses = 0;
   // Default deadline; cron callers may override (Vercel Pro = 60s).
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 25_000;
   const startedAt = Date.now();
@@ -149,6 +150,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         batchSize = batchSize > 20n ? 10n : batchSize / 2n;
         if (batchSize < 1n) batchSize = 1n;
         await setState("log_batch_size", batchSize.toString());
+        consecutiveSuccesses = 0;
         continue;
       }
       return {
@@ -169,12 +171,25 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     const blockTs = new Map<bigint, number>();
     for (let i = 0; i < uniqueBlocks.length; i += 50) {
       const chunk = uniqueBlocks.slice(i, i + 50);
-      const entries = await Promise.all(
-        chunk.map(async (bn) => {
-          const blk = await publicClient.getBlock({ blockNumber: bn });
-          return [bn, Number(blk.timestamp)] as const;
-        }),
-      );
+      let entries: ReadonlyArray<readonly [bigint, number]>;
+      try {
+        entries = await Promise.all(
+          chunk.map(async (bn) => {
+            const blk = await publicClient.getBlock({ blockNumber: bn });
+            return [bn, Number(blk.timestamp)] as const;
+          }),
+        );
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        return {
+          ok: false,
+          fromBlock: cursor.from.toString(),
+          toBlock: to.toString(),
+          eventsAdded,
+          buyersTouched: buyersTouched.size,
+          error: msg,
+        };
+      }
       for (const [bn, ts] of entries) blockTs.set(bn, ts);
     }
 
@@ -196,11 +211,13 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         buyerAddress: buyer,
         sellerAddress: seller,
         channelId,
-        maxAmountUsdc: args.maxAmount ? Number(args.maxAmount) / USDC_DECIMALS : null,
+        maxAmountUsdc: (args.maxAmount ?? args.additionalAmount)
+          ? Number(args.maxAmount ?? args.additionalAmount) / USDC_DECIMALS
+          : null,
         deltaUsdc: args.delta ? Number(args.delta) / USDC_DECIMALS : null,
         refundUsdc: args.refund ? Number(args.refund) / USDC_DECIMALS : null,
-        settledAmountUsdc: args.settledAmount
-          ? Number(args.settledAmount) / USDC_DECIMALS
+        settledAmountUsdc: (args.settledAmount ?? args.totalSettled)
+          ? Number(args.settledAmount ?? args.totalSettled) / USDC_DECIMALS
           : null,
         inputTokens: meta?.inputTokens ?? null,
         outputTokens: meta?.outputTokens ?? null,
@@ -221,6 +238,12 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     }
 
     await setState("last_indexed_block", to.toString());
+    consecutiveSuccesses += 1;
+    if (consecutiveSuccesses >= 5 && batchSize < ENV_BATCH_SIZE) {
+      batchSize = batchSize * 2n > ENV_BATCH_SIZE ? ENV_BATCH_SIZE : batchSize * 2n;
+      await setState("log_batch_size", batchSize.toString());
+      consecutiveSuccesses = 0;
+    }
     cursor.from = to + 1n;
   }
 
@@ -453,10 +476,10 @@ export async function refreshProviderDirectory() {
           updatedAt: sql`excluded.updated_at`,
         },
       });
+    await setState("provider_dir_refreshed_at", Date.now().toString());
   } catch {
     // Non-fatal — network unreachable, timed out, or upstream returned junk.
   } finally {
     clearTimeout(timer);
-    await setState("provider_dir_refreshed_at", Date.now().toString());
   }
 }
