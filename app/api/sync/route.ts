@@ -23,7 +23,14 @@ export async function POST(req: NextRequest) {
     }
   }
   // No `force=1`: the public route always honors the 60s debounce.
-  const result = await sync();
-  await refreshProviderDirectory();
-  return NextResponse.json(result);
+  try {
+    const result = await sync();
+    await refreshProviderDirectory();
+    return NextResponse.json(result);
+  } catch (e: any) {
+    return NextResponse.json(
+      { ok: false, error: e?.message || String(e) },
+      { status: 500 },
+    );
+  }
 }

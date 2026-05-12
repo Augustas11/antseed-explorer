@@ -11,6 +11,10 @@ export default function SyncButton() {
     setStatus("Syncing…");
     try {
       const res = await fetch("/api/sync?force=1", { method: "POST" });
+      if (!res.ok && res.headers.get("content-type")?.includes("application/json") === false) {
+        setStatus(`error: HTTP ${res.status}`);
+        return;
+      }
       const json = await res.json();
       if (!json.ok) {
         setStatus(`error: ${json.error?.slice(0, 60) || "failed"}`);
