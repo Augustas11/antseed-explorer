@@ -73,6 +73,10 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
     return await runSync(opts);
   } finally {
     await releaseSyncLock();
+    // Stamp last_sync_ts even on partial/error runs so the dashboard "Updated X ago"
+    // dot reflects when the indexer last ran, not just when it last fully succeeded.
+    // runSync already writes this on success paths; this catches early-return errors.
+    await setState("last_sync_ts", Date.now().toString());
   }
 }
 
