@@ -40,7 +40,9 @@ export function calculateTrustScore(p: BuyerProfile): ScoreBreakdown {
     totalAttempts > 0 ? p.totalSessions / totalAttempts : 0;
   const reliability = reliabilityRate * 20;
 
-  const total = Math.round(volume + consistency + diversity + reliability);
+  const total = Math.round(
+    round1(volume) + round1(consistency) + round1(diversity) + round1(reliability)
+  );
 
   return {
     total,

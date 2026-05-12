@@ -59,7 +59,7 @@ export async function listBuyers(opts: {
 } = {}): Promise<BuyerRow[]> {
   const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
-  const minScore = Math.max(0, Math.min(100, opts.minScore ?? 0));
+  const minScore = Math.max(0, Math.min(100, Number.isFinite(opts.minScore ?? 0) ? (opts.minScore ?? 0) : 0));
   const orderCol =
     opts.sort === "volume" ? "total_settled_usdc DESC"
     : opts.sort === "sessions" ? "total_sessions DESC"
@@ -78,19 +78,22 @@ export async function listBuyers(opts: {
     LIMIT ${sql.raw(String(limit))}
     OFFSET ${sql.raw(String(offset))}
   `);
-  return r.rows.map((row: any) => ({
-    address: row.address,
-    total_sessions: Number(row.total_sessions ?? 0),
-    total_settled_usdc: Number(row.total_settled_usdc ?? 0),
-    unique_sellers: Number(row.unique_sellers ?? 0),
-    ghost_sessions: Number(row.ghost_sessions ?? 0),
-    first_seen_block: row.first_seen_block != null ? Number(row.first_seen_block) : null,
-    last_seen_block: row.last_seen_block != null ? Number(row.last_seen_block) : null,
-    first_seen_ts: row.first_seen_ts != null ? Number(row.first_seen_ts) : null,
-    last_seen_ts: row.last_seen_ts != null ? Number(row.last_seen_ts) : null,
-    trust_score: Number(row.trust_score ?? 0),
-    qualified: row.qualified ? 1 : 0,
-  }));
+  return r.rows.map((row: any) =>
+    shapeBuyer({
+      address: row.address,
+      totalSessions: Number(row.total_sessions ?? 0),
+      totalSettledUsdc: Number(row.total_settled_usdc ?? 0),
+      uniqueSellers: Number(row.unique_sellers ?? 0),
+      ghostSessions: Number(row.ghost_sessions ?? 0),
+      firstSeenBlock: row.first_seen_block != null ? Number(row.first_seen_block) : null,
+      lastSeenBlock: row.last_seen_block != null ? Number(row.last_seen_block) : null,
+      firstSeenTs: row.first_seen_ts != null ? Number(row.first_seen_ts) : null,
+      lastSeenTs: row.last_seen_ts != null ? Number(row.last_seen_ts) : null,
+      trustScore: Number(row.trust_score ?? 0),
+      qualified: !!row.qualified,
+      updatedAt: row.updated_at != null ? Number(row.updated_at) : null,
+    })
+  );
 }
 
 export async function countBuyers(opts: {

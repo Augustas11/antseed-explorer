@@ -110,6 +110,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
   }
 
   const buyersTouched = new Set<string>();
+  const unknownEventNames = new Set<string>();
   let eventsAdded = 0;
   const persisted = await getState("log_batch_size");
   let batchSize = persisted ? BigInt(persisted) : ENV_BATCH_SIZE;
@@ -196,7 +197,10 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     const rows: any[] = [];
     for (const log of logs as any[]) {
       const eventType = mapEventType(log.eventName);
-      if (!eventType) continue;
+      if (!eventType) {
+        unknownEventNames.add(log.eventName ?? "(undefined)");
+        continue;
+      }
       const args = log.args || {};
       const buyer = (args.buyer as string | undefined)?.toLowerCase() ?? null;
       const seller = (args.seller as string | undefined)?.toLowerCase() ?? null;
@@ -218,6 +222,18 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         refundUsdc: args.refund ? Number(args.refund) / USDC_DECIMALS : null,
         settledAmountUsdc: (args.settledAmount ?? args.totalSettled)
           ? Number(args.settledAmount ?? args.totalSettled) / USDC_DECIMALS
+          : null,
+        cumulativeAmountUsdc: args.cumulativeAmount
+          ? Number(args.cumulativeAmount) / USDC_DECIMALS
+          : null,
+        platformFeeUsdc: args.platformFee
+          ? Number(args.platformFee) / USDC_DECIMALS
+          : null,
+        newDepositUsdc: args.newDeposit
+          ? Number(args.newDeposit) / USDC_DECIMALS
+          : null,
+        gracePeriodEnd: args.gracePeriodEnd
+          ? Number(args.gracePeriodEnd)
           : null,
         inputTokens: meta?.inputTokens ?? null,
         outputTokens: meta?.outputTokens ?? null,
@@ -247,6 +263,9 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     cursor.from = to + 1n;
   }
 
+  if (unknownEventNames.size > 0) {
+    console.warn("[indexer] unknown event types skipped:", [...unknownEventNames].join(", "));
+  }
   await recomputeBuyers([...buyersTouched]);
   await reconcileDrift();
   await setState("last_sync_ts", Date.now().toString());
@@ -440,7 +459,9 @@ export async function refreshProviderDirectory() {
     for (const peer of data.peers || []) {
       const peerId = peer.peerId?.toString().toLowerCase();
       if (!peerId || peerId.length < 40) continue;
-      const addr = "0x" + peerId.slice(0, 40);
+      const hex40 = peerId.slice(0, 40);
+      if (!/^[0-9a-f]{40}$/.test(hex40)) continue;
+      const addr = "0x" + hex40;
       const services: string[] = [];
       const pricing: Record<string, any> = {};
       for (const p of peer.providers || []) {
