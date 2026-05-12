@@ -26,11 +26,18 @@ export async function GET(req: NextRequest) {
   if (!authorized(req)) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
-  // Force=true so cron runs every tick regardless of debounce.
-  // 50s deadline leaves 10s headroom under Vercel Pro's 60s cap.
-  const result = await sync({ force: true, deadlineMs: 50_000 });
-  await refreshProviderDirectory();
-  return NextResponse.json(result);
+  try {
+    // Force=true so cron runs every tick regardless of debounce.
+    // 50s deadline leaves 10s headroom under Vercel Pro's 60s cap.
+    const result = await sync({ force: true, deadlineMs: 50_000 });
+    await refreshProviderDirectory();
+    return NextResponse.json(result);
+  } catch (e: any) {
+    return NextResponse.json(
+      { ok: false, error: e?.message || String(e) },
+      { status: 500 },
+    );
+  }
 }
 
 // Some cron services prefer POST.
