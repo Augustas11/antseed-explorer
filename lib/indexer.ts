@@ -162,16 +162,21 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     }
 
     // Batch block-timestamp lookups in parallel — meaningful win on Neon's HTTP.
+    // Capped at 50 per chunk to avoid overwhelming the RPC on large log batches.
     const uniqueBlocks = [
       ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
     ];
-    const blockEntries = await Promise.all(
-      uniqueBlocks.map(async (bn) => {
-        const blk = await publicClient.getBlock({ blockNumber: bn });
-        return [bn, Number(blk.timestamp)] as const;
-      }),
-    );
-    const blockTs = new Map<bigint, number>(blockEntries);
+    const blockTs = new Map<bigint, number>();
+    for (let i = 0; i < uniqueBlocks.length; i += 50) {
+      const chunk = uniqueBlocks.slice(i, i + 50);
+      const entries = await Promise.all(
+        chunk.map(async (bn) => {
+          const blk = await publicClient.getBlock({ blockNumber: bn });
+          return [bn, Number(blk.timestamp)] as const;
+        }),
+      );
+      for (const [bn, ts] of entries) blockTs.set(bn, ts);
+    }
 
     const rows: any[] = [];
     for (const log of logs as any[]) {
