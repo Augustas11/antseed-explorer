@@ -33,8 +33,12 @@ export async function GET(req: NextRequest) {
     await refreshProviderDirectory();
     return NextResponse.json(result);
   } catch (e: any) {
+    const extras: Record<string, unknown> = {};
+    for (const k of ["code", "detail", "hint", "constraint", "table", "column", "routine"]) {
+      if (e?.[k]) extras[k] = e[k];
+    }
     return NextResponse.json(
-      { ok: false, error: e?.message || String(e) },
+      { ok: false, error: e?.message || String(e), ...extras },
       { status: 500 },
     );
   }
