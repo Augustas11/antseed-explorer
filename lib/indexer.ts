@@ -142,50 +142,30 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
       cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
 
     let logs: Log[];
-    try {
-      logs = await publicClient.getLogs({
-        address: channelsAddress,
-        events: channelsAbi as any,
-        fromBlock: cursor.from,
-        toBlock: to,
-      });
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      if (isRangeError(msg) && batchSize > 1n) {
-        batchSize = batchSize > 20n ? 10n : batchSize / 2n;
-        if (batchSize < 1n) batchSize = 1n;
-        await setState("log_batch_size", batchSize.toString());
-        consecutiveSuccesses = 0;
-        continue;
-      }
-      return {
-        ok: false,
-        fromBlock: cursor.from.toString(),
-        toBlock: to.toString(),
-        eventsAdded,
-        buyersTouched: buyersTouched.size,
-        error: msg,
-      };
-    }
-
-    // Batch block-timestamp lookups in parallel — meaningful win on Neon's HTTP.
-    // Capped at 50 per chunk to avoid overwhelming the RPC on large log batches.
-    const uniqueBlocks = [
-      ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
-    ];
-    const blockTs = new Map<bigint, number>();
-    for (let i = 0; i < uniqueBlocks.length; i += 50) {
-      const chunk = uniqueBlocks.slice(i, i + 50);
-      let entries: ReadonlyArray<readonly [bigint, number]>;
+    let rateLimitRetries = 0;
+    while (true) {
       try {
-        entries = await Promise.all(
-          chunk.map(async (bn) => {
-            const blk = await publicClient.getBlock({ blockNumber: bn });
-            return [bn, Number(blk.timestamp)] as const;
-          }),
-        );
+        logs = await publicClient.getLogs({
+          address: channelsAddress,
+          events: channelsAbi as any,
+          fromBlock: cursor.from,
+          toBlock: to,
+        });
+        break;
       } catch (e: any) {
         const msg = e?.message || String(e);
+        if (isRangeError(msg) && batchSize > 1n) {
+          batchSize = batchSize > 20n ? 10n : batchSize / 2n;
+          if (batchSize < 1n) batchSize = 1n;
+          await setState("log_batch_size", batchSize.toString());
+          consecutiveSuccesses = 0;
+          break; // re-enter outer loop with smaller batchSize, logs stays undefined
+        }
+        if (isRateLimitError(msg) && rateLimitRetries < 3) {
+          rateLimitRetries++;
+          await sleep(1500 * rateLimitRetries);
+          continue;
+        }
         return {
           ok: false,
           fromBlock: cursor.from.toString(),
@@ -195,7 +175,36 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
           error: msg,
         };
       }
-      for (const [bn, ts] of entries) blockTs.set(bn, ts);
+    }
+    if (!logs!) {
+      // Range error shrunk batchSize — retry outer loop with new size.
+      continue;
+    }
+
+    // Fetch one anchor block timestamp and interpolate the rest.
+    // Base has a ~2 s block time so interpolation is accurate within a few
+    // seconds — fine for "X ago" display. One RPC call per batch instead of
+    // N parallel calls keeps us well under Alchemy's CU/sec limit.
+    const uniqueBlocks = [
+      ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
+    ];
+    const blockTs = new Map<bigint, number>();
+    if (uniqueBlocks.length > 0) {
+      const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
+      let anchorTs = 0;
+      try {
+        const blk = await publicClient.getBlock({ blockNumber: anchorBn });
+        anchorTs = Number(blk.timestamp);
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (isRateLimitError(msg)) await sleep(2000);
+        // Non-fatal: fall back to 0 timestamps for this batch.
+      }
+      const BASE_BLOCK_SECS = 2;
+      for (const bn of uniqueBlocks) {
+        const diff = Number(anchorBn - bn);
+        blockTs.set(bn, anchorTs > 0 ? anchorTs - diff * BASE_BLOCK_SECS : 0);
+      }
     }
 
     const rows: any[] = [];
@@ -265,6 +274,8 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
       consecutiveSuccesses = 0;
     }
     cursor.from = to + 1n;
+    // Pace requests to stay under Alchemy's 300 CU/sec limit.
+    await sleep(300);
   }
 
   if (unknownEventNames.size > 0) {
@@ -316,6 +327,18 @@ function isRangeError(msg: string): boolean {
     (m.includes("eth_getlogs") && m.includes("range"))
   );
 }
+
+function isRateLimitError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return (
+    m.includes("compute units per second") ||
+    m.includes("rate limit") ||
+    m.includes("too many requests") ||
+    m.includes("429")
+  );
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function mapEventType(name: string | undefined): EventType | null {
   switch (name) {
