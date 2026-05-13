@@ -870,63 +870,6 @@ export async function getService(name: string): Promise<ServiceProviderRow | nul
 }
 
 // ---------------------------------------------------------------------------
-// Flat (service, provider) listing for the marketplace UX
-// ---------------------------------------------------------------------------
-
-export interface ServiceFlatRow {
-  service_name: string;
-  provider_address: string;
-  display_name: string | null;
-  input_price: number | null;
-  output_price: number | null;
-  region: string | null;
-  trust_score: number | null;
-  updated_at: number | null;
-}
-
-export async function listServicesFlat(): Promise<ServiceFlatRow[]> {
-  const allProviders = (await db.execute<any>(sql`
-    SELECT address, display_name, services, pricing, region, trust_score, updated_at
-    FROM provider_directory
-  `)).rows;
-
-  const result: ServiceFlatRow[] = [];
-  for (const provider of allProviders) {
-    const services = parseJson<string[]>(provider.services) ?? [];
-    const pricing = parseJson<PricingMap>(provider.pricing) ?? {};
-    for (const svc of services) {
-      const svcPricing = pricing[svc];
-      result.push({
-        service_name: svc,
-        provider_address: provider.address,
-        display_name: provider.display_name ?? null,
-        input_price: svcPricing?.inputUsdPerMillion ?? null,
-        output_price: svcPricing?.outputUsdPerMillion ?? null,
-        region: provider.region ?? null,
-        trust_score:
-          provider.trust_score != null ? Number(provider.trust_score) : null,
-        updated_at:
-          provider.updated_at != null ? Number(provider.updated_at) : null,
-      });
-    }
-  }
-
-  // Sort: service_name ASC, then input_price ASC nulls last
-  result.sort((a, b) => {
-    const byName = a.service_name.localeCompare(b.service_name);
-    if (byName !== 0) return byName;
-    const ai = a.input_price;
-    const bi = b.input_price;
-    if (ai == null && bi == null) return 0;
-    if (ai == null) return 1;
-    if (bi == null) return -1;
-    return ai - bi;
-  });
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
 // Search helpers — service name and provider display_name lookups
 // ---------------------------------------------------------------------------
 
