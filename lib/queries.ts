@@ -167,13 +167,13 @@ export async function getBuyerMonthlyVolume(address: string) {
     sessions: number;
     volume: number;
   }>(sql`
-    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM') AS month,
+    SELECT to_char(to_timestamp(timestamp::float8), 'YYYY-MM') AS month,
            COUNT(*)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS volume
     FROM events
     WHERE buyer_address = ${address.toLowerCase()}
       AND event_type = 'settled'
-      AND timestamp IS NOT NULL AND timestamp > 0
+      AND timestamp IS NOT NULL AND timestamp > 0 AND timestamp < 32503680000
     GROUP BY month
     ORDER BY month ASC
   `);
@@ -508,13 +508,13 @@ export async function getSellerMonthlyVolume(address: string) {
     sessions: number;
     volume: number;
   }>(sql`
-    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM') AS month,
+    SELECT to_char(to_timestamp(timestamp::float8), 'YYYY-MM') AS month,
            COUNT(*)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS volume
     FROM events
     WHERE seller_address = ${address.toLowerCase()}
       AND event_type = 'settled'
-      AND timestamp IS NOT NULL AND timestamp > 0
+      AND timestamp IS NOT NULL AND timestamp > 0 AND timestamp < 32503680000
     GROUP BY month
     ORDER BY month ASC
   `);
