@@ -17,7 +17,7 @@ export default function ThemeToggle() {
         <button
           key={opt.value}
           onClick={() => setTheme(opt.value)}
-          className={`px-2 py-1 transition-colors ${
+          className={`px-2 py-1 whitespace-nowrap transition-colors ${
             theme === opt.value
               ? "bg-edge text-ink"
               : "bg-panel text-muted hover:text-ink"
