@@ -29,13 +29,16 @@ function fmtPrice(
   pricing: DirectoryProviderRow["pricing"],
   services: string[],
 ): string {
+  const prices: number[] = [];
   for (const svc of services) {
-    const p = pricing[svc];
-    if (p?.inputUsdPerMillion != null) {
-      return `$${p.inputUsdPerMillion.toFixed(2)}/M in`;
-    }
+    const p = pricing[svc]?.inputUsdPerMillion;
+    if (p != null) prices.push(p);
   }
-  return "—";
+  if (prices.length === 0) return "—";
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  if (min === max) return `$${min.toFixed(2)}/M in`;
+  return `$${min.toFixed(2)} – $${max.toFixed(2)}/M in`;
 }
 
 function SortLink({
@@ -92,7 +95,7 @@ export default async function ProvidersPage({
                 <th>Provider</th>
                 <th>Region</th>
                 <th>Services</th>
-                <th>Est. price</th>
+                <th>Price (input)</th>
                 <th className="text-right">
                   <SortLink col="sessions" current={sort}>
                     Sessions

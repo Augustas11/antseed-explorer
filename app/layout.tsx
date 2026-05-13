@@ -31,7 +31,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </Link>
                 <nav className="flex items-center gap-4 text-sm text-muted">
                   <Link href="/buyers" className="hover:text-ink">Buyers</Link>
-                  <Link href="/sellers" className="hover:text-ink">Sellers</Link>
                   <Link href="/channels" className="hover:text-ink">Channels</Link>
                   <Link href="/services" className="hover:text-ink">Services</Link>
                   <Link href="/providers" className="hover:text-ink">Providers</Link>
