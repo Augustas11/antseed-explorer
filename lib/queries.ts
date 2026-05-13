@@ -292,19 +292,23 @@ export async function lookupProvider(
   address: string | null,
 ): Promise<ProviderRow | null> {
   if (!address) return null;
-  const rows = await db
-    .select()
-    .from(providerDirectory)
-    .where(eq(providerDirectory.address, address.toLowerCase()))
-    .limit(1);
+  const lc = address.toLowerCase();
+  // Raw SQL — Drizzle's ORM-style select+where on providerDirectory fails
+  // under Neon HTTP on Vercel (same parameterized-binding issue as other
+  // tables; see listBuyers and lookupProviders for the same workaround).
+  const rows = (
+    await db.execute<any>(
+      sql`SELECT * FROM provider_directory WHERE address = ${lc} LIMIT 1`,
+    )
+  ).rows;
   const r = rows[0];
   if (!r) return null;
   return {
     address: r.address,
-    display_name: r.displayName,
-    peer_id: r.peerId,
+    display_name: r.display_name,
+    peer_id: r.peer_id,
     region: r.region,
-    trust_score: r.trustScore,
+    trust_score: r.trust_score,
     services: parseJson<string[]>(r.services) ?? [],
     pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
   };
