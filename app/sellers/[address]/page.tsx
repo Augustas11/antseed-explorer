@@ -43,11 +43,11 @@ export default async function SellerProfilePage({
   if (!seller) notFound();
 
   const [monthly, topBuyers, provider] = await Promise.all([
-    getSellerMonthlyVolume(seller.address),
-    getSellerBuyerSummary(seller.address, 10),
-    lookupProviderFn(seller.address),
+    getSellerMonthlyVolume(seller.address).catch((e) => { console.error("getSellerMonthlyVolume failed:", e); return []; }),
+    getSellerBuyerSummary(seller.address, 10).catch((e) => { console.error("getSellerBuyerSummary failed:", e); return []; }),
+    lookupProviderFn(seller.address).catch((e) => { console.error("lookupProvider failed:", e); return null; }),
   ]);
-  const buyerMap = await lookupProviders(topBuyers.map((b) => b.buyer_address));
+  const buyerMap = await lookupProviders(topBuyers.map((b) => b.buyer_address)).catch(() => new Map());
 
   return (
     <div className="space-y-6">
