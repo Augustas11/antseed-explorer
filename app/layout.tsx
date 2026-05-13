@@ -3,7 +3,6 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import SearchBar from "./components/SearchBar";
 import ThemeToggle from "./components/ThemeToggle";
-import GasDisplay from "./components/GasDisplay";
 import Providers from "./components/Providers";
 import { Analytics } from "@vercel/analytics/next";
 
@@ -49,7 +48,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </nav>
               </div>
               <div className="flex items-center gap-3">
-                <GasDisplay />
                 <SearchBar />
                 <ThemeToggle />
                 <a
