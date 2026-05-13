@@ -40,7 +40,7 @@ export default async function SellerProfilePage({
 }: {
   params: { address: string };
 }) {
-  const seller = await getSeller(params.address);
+  const seller = await getSeller(params.address).catch(() => null);
   if (!seller) notFound();
 
   const [monthly, topBuyers, provider] = await Promise.all([
