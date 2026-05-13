@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { listBuyers, countBuyers, lookupProviders } from "@/lib/queries";
-import { fmtNum, fmtUsd, fmtDate, shortAddr } from "@/lib/format";
+import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
+import TimestampDisplay from "../components/TimestampDisplay";
 import { ScoreBadge, QualifiedBadge } from "../components/Badges";
 import SortableHeader from "../components/SortableHeader";
 import VerifiedLabel from "../components/VerifiedLabel";
@@ -212,7 +213,7 @@ export default async function BuyersPage({
                   <td className={b.ghost_sessions > 0 ? "text-bad" : "text-muted"}>
                     {fmtNum(b.ghost_sessions)}
                   </td>
-                  <td className="text-muted">{fmtDate(b.first_seen_ts)}</td>
+                  <td className="text-muted"><TimestampDisplay ts={b.first_seen_ts} dateOnly /></td>
                   <td>
                     <ScoreBadge score={b.trust_score} />
                   </td>

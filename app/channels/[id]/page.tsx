@@ -3,8 +3,9 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getChannel, getChannelEvents, lookupProviders } from "@/lib/queries";
 import { explorerBaseUrl } from "@/lib/chain";
-import { fmtDate, fmtNum, fmtUsd, fmtRelative, shortAddr } from "@/lib/format";
+import { fmtNum, fmtUsd, fmtRelative, shortAddr } from "@/lib/format";
 import CopyButton from "../../components/CopyButton";
+import TimestampDisplay from "../../components/TimestampDisplay";
 import VerifiedLabel from "../../components/VerifiedLabel";
 
 export const dynamic = "force-dynamic";
@@ -152,7 +153,7 @@ export default async function ChannelDetailPage({
         <div className="stat">
           <div className="stat-label">Opened</div>
           <div className="stat-value text-base">
-            {fmtDate(channel.opened_ts)}
+            <TimestampDisplay ts={channel.opened_ts} dateOnly />
           </div>
           <div className="text-xs text-muted">
             block {channel.opened_block ?? "—"}
@@ -160,7 +161,7 @@ export default async function ChannelDetailPage({
         </div>
         <div className="stat">
           <div className="stat-label">Last activity</div>
-          <div className="stat-value text-base">{fmtDate(channel.last_ts)}</div>
+          <div className="stat-value text-base"><TimestampDisplay ts={channel.last_ts} dateOnly /></div>
           <div className="text-xs text-muted">
             block {channel.last_block ?? "—"}
           </div>
@@ -205,7 +206,7 @@ export default async function ChannelDetailPage({
                     <td className="font-mono text-xs text-muted">
                       {e.block_number}
                     </td>
-                    <td className="text-muted text-xs">{fmtDate(e.timestamp)}</td>
+                    <td className="text-muted text-xs"><TimestampDisplay ts={e.timestamp} dateOnly /></td>
                     <td>
                       {usdcVal != null ? (
                         fmtUsd(usdcVal)

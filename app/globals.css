@@ -2,13 +2,45 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Dark theme (default) ───────────────────────────────────── */
 :root {
-  color-scheme: dark;
+  --color-bg:    #0a0b0f;
+  --color-panel: #12141a;
+  --color-edge:  #1f2230;
+  --color-ink:   #e7e9ee;
+  --color-muted: #8a8f9c;
+  --color-accent:#7cf2c8;
+  --color-warn:  #f5b656;
+  --color-bad:   #f47174;
+}
+
+/* ── Dim theme ──────────────────────────────────────────────── */
+html.dim {
+  --color-bg:    #1a1d27;
+  --color-panel: #222535;
+  --color-edge:  #2e3245;
+  --color-ink:   #d4d7e0;
+  --color-muted: #848994;
+  --color-accent:#7cf2c8;
+  --color-warn:  #f5b656;
+  --color-bad:   #f47174;
+}
+
+/* ── Light theme ────────────────────────────────────────────── */
+html.light {
+  --color-bg:    #f8f9fc;
+  --color-panel: #ffffff;
+  --color-edge:  #e4e7f0;
+  --color-ink:   #0f1117;
+  --color-muted: #6b7280;
+  --color-accent:#059669;
+  --color-warn:  #d97706;
+  --color-bad:   #dc2626;
 }
 
 html, body {
-  background: #0a0b0f;
-  color: #e7e9ee;
+  background: var(--color-bg);
+  color: var(--color-ink);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
