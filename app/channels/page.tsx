@@ -74,7 +74,8 @@ export default async function ChannelsPage({
         </a>
       </div>
 
-      <div className="panel overflow-x-auto">
+      {/* Desktop table */}
+      <div className="panel overflow-x-auto hidden sm:block">
         {rows.length === 0 ? (
           <div className="p-8 text-center text-muted text-sm">
             No channels indexed yet.
@@ -211,6 +212,73 @@ export default async function ChannelsPage({
               ))}
             </tbody>
           </table>
+        )}
+      </div>
+
+      {/* Mobile cards */}
+      <div className="sm:hidden space-y-2">
+        {rows.length === 0 ? (
+          <div className="panel p-8 text-center text-muted text-sm">
+            No channels indexed yet.
+          </div>
+        ) : (
+          rows.map((c) => (
+            <div key={c.channel_id} className="panel p-4 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <Link
+                  href={`/channels/${c.channel_id}`}
+                  className="font-mono text-accent hover:underline text-xs"
+                >
+                  {c.channel_id.slice(0, 10)}…{c.channel_id.slice(-6)}
+                </Link>
+                <span className={`pill text-xs shrink-0 ${statePillClass(c.state)}`}>
+                  {c.state}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <div>
+                  <span className="text-muted text-xs">Buyer </span>
+                  {c.buyer_address ? (
+                    <Link
+                      href={`/buyers/${c.buyer_address}`}
+                      className="font-mono text-xs text-accent hover:underline"
+                    >
+                      {shortAddr(c.buyer_address)}
+                    </Link>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
+                </div>
+                <div>
+                  <span className="text-muted text-xs">Seller </span>
+                  {c.seller_address ? (
+                    <Link
+                      href={`/sellers/${c.seller_address}`}
+                      className="font-mono text-xs text-accent hover:underline"
+                    >
+                      {shortAddr(c.seller_address)}
+                    </Link>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
+                </div>
+                <div>
+                  <span className="text-muted text-xs">Max </span>
+                  <span>{c.max_amount_usdc != null ? fmtUsd(c.max_amount_usdc) : "—"}</span>
+                </div>
+                <div>
+                  <span className="text-muted text-xs">Settled </span>
+                  <span>{c.settled_amount_usdc != null ? fmtUsd(c.settled_amount_usdc) : "—"}</span>
+                </div>
+              </div>
+              <div className="text-xs text-muted">
+                Opened: <TimestampDisplay ts={c.opened_ts} dateOnly />
+                {c.last_ts !== c.opened_ts && (
+                  <span> · Last: <TimestampDisplay ts={c.last_ts} dateOnly /></span>
+                )}
+              </div>
+            </div>
+          ))
         )}
       </div>
 

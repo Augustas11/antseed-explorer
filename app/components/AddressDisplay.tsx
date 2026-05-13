@@ -3,6 +3,7 @@ import { getLabel, KIND_COLORS } from "@/lib/labels";
 import { shortAddr } from "@/lib/format";
 import CopyButton from "./CopyButton";
 import QRModal from "./QRModal";
+import PrivateLabel from "./PrivateLabel";
 
 interface Props {
   address: string | null | undefined;
@@ -41,6 +42,7 @@ export default async function AddressDisplay({
           {label.name}
         </span>
       )}
+      <PrivateLabel address={address} />
     </span>
   );
 }

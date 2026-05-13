@@ -35,7 +35,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <Link href="/sellers" className="hover:text-ink">Sellers</Link>
                   <Link href="/channels" className="hover:text-ink">Channels</Link>
                   <Link href="/services" className="hover:text-ink">Services</Link>
+                  <Link href="/providers" className="hover:text-ink">Providers</Link>
                   <Link href="/contracts" className="hover:text-ink">Contracts</Link>
+                  <Link href="/docs" className="hover:text-ink">API Docs</Link>
                   <a
                     href="https://antseed.com/docs/overview"
                     target="_blank"

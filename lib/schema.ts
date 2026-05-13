@@ -90,3 +90,9 @@ export const providerDirectory = pgTable("provider_directory", {
   pricing: text("pricing"),   // JSON object
   updatedAt: bigint("updated_at", { mode: "number" }),
 });
+
+export const apiKeys = pgTable("api_keys", {
+  key: text("key").primaryKey(),
+  label: text("label"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});

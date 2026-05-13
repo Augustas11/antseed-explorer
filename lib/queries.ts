@@ -870,6 +870,63 @@ export async function getService(name: string): Promise<ServiceProviderRow | nul
 }
 
 // ---------------------------------------------------------------------------
+// Flat (service, provider) listing for the marketplace UX
+// ---------------------------------------------------------------------------
+
+export interface ServiceFlatRow {
+  service_name: string;
+  provider_address: string;
+  display_name: string | null;
+  input_price: number | null;
+  output_price: number | null;
+  region: string | null;
+  trust_score: number | null;
+  updated_at: number | null;
+}
+
+export async function listServicesFlat(): Promise<ServiceFlatRow[]> {
+  const allProviders = (await db.execute<any>(sql`
+    SELECT address, display_name, services, pricing, region, trust_score, updated_at
+    FROM provider_directory
+  `)).rows;
+
+  const result: ServiceFlatRow[] = [];
+  for (const provider of allProviders) {
+    const services = parseJson<string[]>(provider.services) ?? [];
+    const pricing = parseJson<PricingMap>(provider.pricing) ?? {};
+    for (const svc of services) {
+      const svcPricing = pricing[svc];
+      result.push({
+        service_name: svc,
+        provider_address: provider.address,
+        display_name: provider.display_name ?? null,
+        input_price: svcPricing?.inputUsdPerMillion ?? null,
+        output_price: svcPricing?.outputUsdPerMillion ?? null,
+        region: provider.region ?? null,
+        trust_score:
+          provider.trust_score != null ? Number(provider.trust_score) : null,
+        updated_at:
+          provider.updated_at != null ? Number(provider.updated_at) : null,
+      });
+    }
+  }
+
+  // Sort: service_name ASC, then input_price ASC nulls last
+  result.sort((a, b) => {
+    const byName = a.service_name.localeCompare(b.service_name);
+    if (byName !== 0) return byName;
+    const ai = a.input_price;
+    const bi = b.input_price;
+    if (ai == null && bi == null) return 0;
+    if (ai == null) return 1;
+    if (bi == null) return -1;
+    return ai - bi;
+  });
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Search helpers — service name and provider display_name lookups
 // ---------------------------------------------------------------------------
 
@@ -900,4 +957,72 @@ export async function lookupByProviderName(
     LIMIT 1
   `);
   return rows.rows[0]?.address ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Provider directory — full listing with on-chain aggregates
+// ---------------------------------------------------------------------------
+
+export interface DirectoryProviderRow {
+  address: string;
+  displayName: string | null;
+  region: string | null;
+  services: string[];
+  pricing: Record<string, { inputUsdPerMillion?: number; outputUsdPerMillion?: number }>;
+  sessionCount: number;
+  totalVolumeUsdc: number;
+  ghostCount: number;
+  closedCount: number;
+  updatedAt: number | null;
+}
+
+export async function listProviders(opts: {
+  sort?: "volume" | "sessions" | "ghost";
+} = {}): Promise<DirectoryProviderRow[]> {
+  const sortColMap: Record<string, string> = {
+    volume: "COALESCE(agg.total_volume, 0) DESC",
+    sessions: "COALESCE(agg.session_count, 0) DESC",
+    ghost: "CASE WHEN COALESCE(agg.closed_count,0)>0 THEN COALESCE(agg.ghost_count,0)::float/agg.closed_count ELSE 0 END DESC",
+  };
+  const orderExpr = sortColMap[opts.sort ?? ""] ?? "COALESCE(agg.total_volume, 0) DESC";
+
+  const rows = (await db.execute<any>(sql`
+    SELECT
+      pd.address,
+      pd.display_name,
+      pd.region,
+      pd.services,
+      pd.pricing,
+      pd.updated_at,
+      COALESCE(agg.session_count, 0)::int   AS session_count,
+      COALESCE(agg.total_volume, 0)::float  AS total_volume,
+      COALESCE(agg.ghost_count, 0)::int     AS ghost_count,
+      COALESCE(agg.closed_count, 0)::int    AS closed_count
+    FROM provider_directory pd
+    LEFT JOIN (
+      SELECT
+        seller_address,
+        COUNT(DISTINCT CASE WHEN event_type='settled' THEN channel_id END)::int      AS session_count,
+        COALESCE(SUM(CASE WHEN event_type='settled' THEN delta_usdc ELSE 0 END),0)::float AS total_volume,
+        COUNT(DISTINCT CASE WHEN event_type='closed' AND COALESCE(settled_amount_usdc,0)=0 THEN channel_id END)::int AS ghost_count,
+        COUNT(DISTINCT CASE WHEN event_type='closed' THEN channel_id END)::int       AS closed_count
+      FROM events
+      WHERE seller_address IS NOT NULL
+      GROUP BY seller_address
+    ) agg ON agg.seller_address = pd.address
+    ORDER BY ${sql.raw(orderExpr)}
+  `)).rows;
+
+  return rows.map((r: any) => ({
+    address: r.address,
+    displayName: r.display_name ?? null,
+    region: r.region ?? null,
+    services: parseJson<string[]>(r.services) ?? [],
+    pricing: parseJson<DirectoryProviderRow["pricing"]>(r.pricing) ?? {},
+    sessionCount: Number(r.session_count ?? 0),
+    totalVolumeUsdc: Number(r.total_volume ?? 0),
+    ghostCount: Number(r.ghost_count ?? 0),
+    closedCount: Number(r.closed_count ?? 0),
+    updatedAt: r.updated_at != null ? Number(r.updated_at) : null,
+  }));
 }

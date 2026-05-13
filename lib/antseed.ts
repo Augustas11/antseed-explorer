@@ -86,6 +86,31 @@ export const channelsAbi = [
   },
 ] as const;
 
+// View functions for the Read Contract UI (not used by the indexer).
+export const channelsViewAbi = [
+  {
+    type: "function",
+    name: "getChannel",
+    stateMutability: "view",
+    inputs: [{ name: "channelId", type: "bytes32" }],
+    outputs: [
+      { name: "buyer", type: "address" },
+      { name: "seller", type: "address" },
+      { name: "maxAmount", type: "uint128" },
+      { name: "deposit", type: "uint128" },
+      { name: "settled", type: "uint128" },
+      { name: "state", type: "uint8" },
+    ],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
 export type EventType =
   | "reserved"
   | "settled"
