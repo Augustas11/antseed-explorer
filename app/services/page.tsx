@@ -17,8 +17,7 @@ export default async function ServicesPage() {
             Available Services
           </h1>
           <p className="text-muted text-sm mt-1">
-            AI services on the AntSeed network. Press{" "}
-            <kbd className="pill">/</kbd> to search.
+            AI services on the AntSeed network.
           </p>
         </div>
         <MarketplaceTable rows={rows} />
