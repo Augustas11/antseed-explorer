@@ -102,46 +102,61 @@ export async function countBuyers(opts: {
   qualifiedOnly?: boolean;
   minScore?: number;
 } = {}): Promise<number> {
-  const minScore = opts.minScore ?? 0;
-  const conditions = [gte(buyerProfiles.trustScore, minScore)];
-  if (opts.qualifiedOnly) conditions.push(eq(buyerProfiles.qualified, true));
-  const r = await db
-    .select({ n: count() })
-    .from(buyerProfiles)
-    .where(and(...conditions));
-  return r[0]?.n ?? 0;
+  const minScore = Math.max(0, Math.min(100, Number.isFinite(opts.minScore ?? 0) ? (opts.minScore ?? 0) : 0));
+  const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
+  const r = await db.execute<{ n: number }>(sql`
+    SELECT COUNT(*)::int AS n FROM buyer_profiles
+    WHERE trust_score >= ${sql.raw(String(minScore))}
+    ${sql.raw(qualClause)}
+  `);
+  return Number(r.rows[0]?.n ?? 0);
 }
 
 export async function getBuyer(address: string): Promise<BuyerRow | null> {
-  const rows = await db
-    .select()
-    .from(buyerProfiles)
-    .where(eq(buyerProfiles.address, address.toLowerCase()))
-    .limit(1);
-  return rows[0] ? shapeBuyer(rows[0]) : null;
+  const r = await db.execute<any>(sql`
+    SELECT * FROM buyer_profiles WHERE address = ${address.toLowerCase()} LIMIT 1
+  `);
+  const row = r.rows[0];
+  if (!row) return null;
+  return shapeBuyer({
+    address: row.address,
+    totalSessions: Number(row.total_sessions ?? 0),
+    totalSettledUsdc: Number(row.total_settled_usdc ?? 0),
+    uniqueSellers: Number(row.unique_sellers ?? 0),
+    ghostSessions: Number(row.ghost_sessions ?? 0),
+    firstSeenBlock: row.first_seen_block != null ? Number(row.first_seen_block) : null,
+    lastSeenBlock: row.last_seen_block != null ? Number(row.last_seen_block) : null,
+    firstSeenTs: row.first_seen_ts != null ? Number(row.first_seen_ts) : null,
+    lastSeenTs: row.last_seen_ts != null ? Number(row.last_seen_ts) : null,
+    trustScore: Number(row.trust_score ?? 0),
+    qualified: !!row.qualified,
+    updatedAt: row.updated_at != null ? Number(row.updated_at) : null,
+  });
 }
 
 export async function getBuyerSessions(address: string, limit = 25) {
-  const rows = await db
-    .select()
-    .from(eventsTbl)
-    .where(eq(eventsTbl.buyerAddress, address.toLowerCase()))
-    .orderBy(desc(eventsTbl.blockNumber), desc(eventsTbl.logIndex))
-    .limit(limit);
-  // Re-shape to snake_case keys for the existing UI.
-  return rows.map((e) => ({
-    tx_hash: e.txHash,
-    log_index: e.logIndex,
-    block_number: e.blockNumber,
-    event_type: e.eventType,
-    buyer_address: e.buyerAddress,
-    seller_address: e.sellerAddress,
-    channel_id: e.channelId,
-    delta_usdc: e.deltaUsdc,
-    settled_amount_usdc: e.settledAmountUsdc,
-    input_tokens: e.inputTokens,
-    output_tokens: e.outputTokens,
-    request_count: e.requestCount,
+  const r = await db.execute<any>(sql`
+    SELECT tx_hash, log_index, block_number, event_type, buyer_address, seller_address,
+           channel_id, delta_usdc, settled_amount_usdc, input_tokens, output_tokens,
+           request_count, timestamp
+    FROM events
+    WHERE buyer_address = ${address.toLowerCase()}
+    ORDER BY block_number DESC, log_index DESC
+    LIMIT ${sql.raw(String(limit))}
+  `);
+  return r.rows.map((e: any) => ({
+    tx_hash: e.tx_hash,
+    log_index: e.log_index,
+    block_number: e.block_number,
+    event_type: e.event_type,
+    buyer_address: e.buyer_address,
+    seller_address: e.seller_address,
+    channel_id: e.channel_id,
+    delta_usdc: e.delta_usdc,
+    settled_amount_usdc: e.settled_amount_usdc,
+    input_tokens: e.input_tokens,
+    output_tokens: e.output_tokens,
+    request_count: e.request_count,
     timestamp: e.timestamp,
   }));
 }
@@ -370,23 +385,17 @@ export async function lookupAddress(
 ): Promise<{ type: "buyer" | "seller"; address: string } | null> {
   const normalized = addr.toLowerCase();
 
-  // Check buyer_profiles first
-  const buyerRows = await db
-    .select({ address: buyerProfiles.address })
-    .from(buyerProfiles)
-    .where(eq(buyerProfiles.address, normalized))
-    .limit(1);
-  if (buyerRows.length > 0) {
+  const buyerR = await db.execute<{ address: string }>(sql`
+    SELECT address FROM buyer_profiles WHERE address = ${normalized} LIMIT 1
+  `);
+  if (buyerR.rows.length > 0) {
     return { type: "buyer", address: normalized };
   }
 
-  // Check events for seller_address
-  const sellerRows = await db
-    .select({ sellerAddress: eventsTbl.sellerAddress })
-    .from(eventsTbl)
-    .where(eq(eventsTbl.sellerAddress, normalized))
-    .limit(1);
-  if (sellerRows.length > 0) {
+  const sellerR = await db.execute<{ seller_address: string }>(sql`
+    SELECT seller_address FROM events WHERE seller_address = ${normalized} LIMIT 1
+  `);
+  if (sellerR.rows.length > 0) {
     return { type: "seller", address: normalized };
   }
 
@@ -580,33 +589,24 @@ export interface RecentEventRow {
 }
 
 export async function getRecentEvents(limit = 20): Promise<RecentEventRow[]> {
-  const rows = await db
-    .select({
-      txHash: eventsTbl.txHash,
-      logIndex: eventsTbl.logIndex,
-      blockNumber: eventsTbl.blockNumber,
-      eventType: eventsTbl.eventType,
-      buyerAddress: eventsTbl.buyerAddress,
-      sellerAddress: eventsTbl.sellerAddress,
-      channelId: eventsTbl.channelId,
-      deltaUsdc: eventsTbl.deltaUsdc,
-      settledAmountUsdc: eventsTbl.settledAmountUsdc,
-      timestamp: eventsTbl.timestamp,
-    })
-    .from(eventsTbl)
-    .orderBy(desc(eventsTbl.blockNumber), desc(eventsTbl.logIndex))
-    .limit(limit);
-  return rows.map((e) => ({
-    tx_hash: e.txHash,
-    log_index: e.logIndex,
-    block_number: e.blockNumber,
-    event_type: e.eventType,
-    buyer_address: e.buyerAddress,
-    seller_address: e.sellerAddress,
-    channel_id: e.channelId,
-    delta_usdc: e.deltaUsdc,
-    settled_amount_usdc: e.settledAmountUsdc,
-    timestamp: e.timestamp,
+  const r = await db.execute<any>(sql`
+    SELECT tx_hash, log_index, block_number, event_type, buyer_address, seller_address,
+           channel_id, delta_usdc, settled_amount_usdc, timestamp
+    FROM events
+    ORDER BY block_number DESC, log_index DESC
+    LIMIT ${sql.raw(String(limit))}
+  `);
+  return r.rows.map((e: any) => ({
+    tx_hash: e.tx_hash,
+    log_index: Number(e.log_index),
+    block_number: Number(e.block_number),
+    event_type: e.event_type,
+    buyer_address: e.buyer_address,
+    seller_address: e.seller_address,
+    channel_id: e.channel_id,
+    delta_usdc: e.delta_usdc != null ? Number(e.delta_usdc) : null,
+    settled_amount_usdc: e.settled_amount_usdc != null ? Number(e.settled_amount_usdc) : null,
+    timestamp: e.timestamp != null ? Number(e.timestamp) : null,
   }));
 }
 
@@ -730,39 +730,28 @@ export async function getChannelEvents(
   channelId: string,
   limit = 100,
 ) {
-  const rows = await db
-    .select({
-      txHash: eventsTbl.txHash,
-      logIndex: eventsTbl.logIndex,
-      blockNumber: eventsTbl.blockNumber,
-      eventType: eventsTbl.eventType,
-      buyerAddress: eventsTbl.buyerAddress,
-      sellerAddress: eventsTbl.sellerAddress,
-      channelId: eventsTbl.channelId,
-      deltaUsdc: eventsTbl.deltaUsdc,
-      settledAmountUsdc: eventsTbl.settledAmountUsdc,
-      inputTokens: eventsTbl.inputTokens,
-      outputTokens: eventsTbl.outputTokens,
-      requestCount: eventsTbl.requestCount,
-      timestamp: eventsTbl.timestamp,
-    })
-    .from(eventsTbl)
-    .where(eq(eventsTbl.channelId, channelId))
-    .orderBy(asc(eventsTbl.blockNumber), asc(eventsTbl.logIndex))
-    .limit(limit);
-  return rows.map((e) => ({
-    tx_hash: e.txHash,
-    log_index: e.logIndex,
-    block_number: e.blockNumber,
-    event_type: e.eventType,
-    buyer_address: e.buyerAddress,
-    seller_address: e.sellerAddress,
-    channel_id: e.channelId,
-    delta_usdc: e.deltaUsdc,
-    settled_amount_usdc: e.settledAmountUsdc,
-    input_tokens: e.inputTokens,
-    output_tokens: e.outputTokens,
-    request_count: e.requestCount,
+  const r = await db.execute<any>(sql`
+    SELECT tx_hash, log_index, block_number, event_type, buyer_address, seller_address,
+           channel_id, delta_usdc, settled_amount_usdc, input_tokens, output_tokens,
+           request_count, timestamp
+    FROM events
+    WHERE channel_id = ${channelId}
+    ORDER BY block_number ASC, log_index ASC
+    LIMIT ${sql.raw(String(limit))}
+  `);
+  return r.rows.map((e: any) => ({
+    tx_hash: e.tx_hash,
+    log_index: e.log_index,
+    block_number: e.block_number,
+    event_type: e.event_type,
+    buyer_address: e.buyer_address,
+    seller_address: e.seller_address,
+    channel_id: e.channel_id,
+    delta_usdc: e.delta_usdc,
+    settled_amount_usdc: e.settled_amount_usdc,
+    input_tokens: e.input_tokens,
+    output_tokens: e.output_tokens,
+    request_count: e.request_count,
     timestamp: e.timestamp,
   }));
 }
@@ -792,7 +781,9 @@ export interface ServiceProviderRow extends ServiceRow {
 type PricingMap = Record<string, { inputUsdPerMillion?: number; outputUsdPerMillion?: number }>;
 
 export async function listServices(): Promise<ServiceRow[]> {
-  const allProviders = await db.select().from(providerDirectory);
+  const allProviders = (await db.execute<any>(sql`
+    SELECT address, display_name, services, pricing FROM provider_directory
+  `)).rows;
 
   // Build Map<serviceName, { providers: string[], prices: { in: number[], out: number[] } }>
   const serviceMap = new Map<string, {
@@ -839,7 +830,9 @@ export async function listServices(): Promise<ServiceRow[]> {
 }
 
 export async function getService(name: string): Promise<ServiceProviderRow | null> {
-  const allProviders = await db.select().from(providerDirectory);
+  const allProviders = (await db.execute<any>(sql`
+    SELECT address, display_name, services, pricing FROM provider_directory
+  `)).rows;
 
   const providers: string[] = [];
   const pricesIn: number[] = [];
@@ -856,7 +849,7 @@ export async function getService(name: string): Promise<ServiceProviderRow | nul
     if (svcPricing?.outputUsdPerMillion != null) pricesOut.push(svcPricing.outputUsdPerMillion);
     providerDetails.push({
       address: provider.address,
-      display_name: provider.displayName ?? null,
+      display_name: provider.display_name ?? null,
       pricing: svcPricing,
     });
   }
