@@ -125,7 +125,7 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
     const tagsArr = Array.from(activeTags);
     let out = enriched.filter((r) => {
       if (q && !r.service_name.toLowerCase().includes(q)) return false;
-      if (tagsArr.length > 0 && !tagsArr.every((t) => r.tags.includes(t))) return false;
+      if (tagsArr.length > 0 && !tagsArr.some((t) => r.tags.includes(t))) return false;
       return true;
     });
     return out.sort((a, b) => compareRows(a, b, sortField, sortDir));
@@ -252,7 +252,7 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
           )}
         </div>
         {availableTags.length > 0 && (
-          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by capability">
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by capability (select multiple to broaden results)">
             {availableTags.map((t) => {
               const on = activeTags.has(t);
               return (
@@ -280,7 +280,7 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
             <thead>
               <tr>
                 <th>Service</th><th>Seller</th><th>Status</th>
-                <th>Input $/M</th><th>Output $/M</th><th>Region</th>
+                <th>Input $/M</th><th>Output $/M</th>
               </tr>
             </thead>
             <tbody>
@@ -291,7 +291,6 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
                   <td><div className="h-2 w-2 rounded-full bg-edge animate-pulse" /></td>
                   <td><div className="h-4 w-16 rounded bg-edge animate-pulse" /></td>
                   <td><div className="h-4 w-16 rounded bg-edge animate-pulse" /></td>
-                  <td><div className="h-4 w-20 rounded bg-edge animate-pulse" /></td>
                 </tr>
               ))}
             </tbody>
@@ -333,7 +332,6 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
                     Output $/M <span className="text-[10px]">{sortGlyph("output_price")}</span>
                   </button>
                 </th>
-                <th>Region</th>
               </tr>
             </thead>
             <tbody>
@@ -384,9 +382,6 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
                     </td>
                     <td className={`${borderClass} text-right tabular-nums ${priceCellClass(row.output_price, { min: g.minOut, max: g.maxOut, count: g.count })}`}>
                       {fmtPrice(row.output_price)}
-                    </td>
-                    <td className={`${borderClass} text-xs text-muted`}>
-                      {row.region ?? "—"}
                     </td>
                   </tr>
                 );
