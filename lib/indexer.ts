@@ -10,6 +10,7 @@ import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./d
 import { events as eventsTbl, buyerProfiles, providerDirectory } from "./schema";
 import { sql } from "drizzle-orm";
 import { calculateTrustScore } from "./score";
+import { emit } from "./emitter";
 
 const ENV_BATCH_SIZE = BigInt(process.env.LOG_BATCH_SIZE || 2000);
 const SYNC_DEBOUNCE_MS = 60_000;
@@ -264,6 +265,20 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         .onConflictDoNothing()
         .returning({ id: eventsTbl.id });
       eventsAdded += result.length;
+      if (result.length > 0) {
+        for (const row of rows) {
+          emit({
+            type: row.eventType,
+            txHash: row.txHash,
+            blockNumber: row.blockNumber,
+            buyerAddress: row.buyerAddress,
+            sellerAddress: row.sellerAddress,
+            channelId: row.channelId,
+            deltaUsdc: row.deltaUsdc,
+            timestamp: row.timestamp,
+          });
+        }
+      }
     }
 
     await setState("last_indexed_block", to.toString());
@@ -297,7 +312,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
 
 // ChannelSettled.metadata is abi-encoded as 4 uint256s:
 //   [version, totalInputTokens, totalOutputTokens, totalRequests]
-function decodeMetadata(metadata: string | undefined):
+export function decodeMetadata(metadata: string | undefined):
   | { version: number; inputTokens: number; outputTokens: number; requestCount: number }
   | null {
   if (!metadata || typeof metadata !== "string") return null;
@@ -340,7 +355,7 @@ function isRateLimitError(msg: string): boolean {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function mapEventType(name: string | undefined): EventType | null {
+export function mapEventType(name: string | undefined): EventType | null {
   switch (name) {
     case "Reserved": return "reserved";
     case "ChannelSettled": return "settled";

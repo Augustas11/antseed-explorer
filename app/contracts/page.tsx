@@ -4,6 +4,7 @@ import { CONTRACTS } from "@/lib/antseed";
 import { getLabel, KIND_COLORS } from "@/lib/labels";
 import { explorerBaseUrl } from "@/lib/chain";
 import CopyButton from "../components/CopyButton";
+import ReadContractPanel from "../components/ReadContractPanel";
 
 export const metadata: Metadata = {
   title: "Contracts | AntSeed Demand Explorer",
@@ -74,6 +75,18 @@ export default function ContractsPage() {
             View on Basescan ↗
           </a>
         </div>
+      </section>
+
+      <section className="panel p-5 space-y-4">
+        <div>
+          <h2 className="font-medium">Read Contract</h2>
+          <p className="text-muted text-sm mt-0.5">
+            Query live on-chain state for the{" "}
+            <code className="font-mono text-xs">AntseedChannels</code> contract.
+            No wallet required — these are view functions.
+          </p>
+        </div>
+        <ReadContractPanel />
       </section>
 
       <div className="text-xs">

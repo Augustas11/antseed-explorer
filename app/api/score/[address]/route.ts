@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBuyer } from "@/lib/queries";
 import { calculateTrustScore } from "@/lib/score";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,9 +19,17 @@ export async function OPTIONS() {
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { address: string } },
 ) {
+  const rl = checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+
   const profile = await getBuyer(params.address);
   if (!profile) {
     return NextResponse.json(
