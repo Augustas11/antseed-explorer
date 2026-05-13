@@ -3,11 +3,20 @@ import { db } from "@/lib/db";
 import { apiKeys } from "@/lib/schema";
 import { desc } from "drizzle-orm";
 import { randomBytes } from "crypto";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const rl = await checkRateLimit(getClientIp(req), null);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+
   const rows = await db
     .select({ key: apiKeys.key, label: apiKeys.label, createdAt: apiKeys.createdAt })
     .from(apiKeys)
@@ -23,11 +32,21 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  // Use IP bucket only — never grant key-tier rate limit on key minting itself.
+  const rl = await checkRateLimit(getClientIp(req), null);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+
   const body = await req.json().catch(() => ({}));
   const label = typeof body.label === "string" ? body.label.slice(0, 80) : null;
 
   const key = randomBytes(32).toString("hex");
-  await db.insert(apiKeys).values({ key, label, createdAt: Date.now() });
+  const createdAt = Date.now();
+  await db.insert(apiKeys).values({ key, label, createdAt });
 
-  return NextResponse.json({ key, label, createdAt: Date.now() }, { status: 201 });
+  return NextResponse.json({ key, label, createdAt }, { status: 201 });
 }
