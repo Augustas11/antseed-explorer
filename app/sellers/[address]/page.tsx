@@ -9,9 +9,10 @@ import {
   lookupProviders,
 } from "@/lib/queries";
 import { explorerBaseUrl } from "@/lib/chain";
-import { fmtDate, fmtNum, fmtUsd, shortAddr } from "@/lib/format";
+import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import { MonthlyVolumeChart } from "../../components/Charts";
-import CopyButton from "../../components/CopyButton";
+import AddressDisplay from "../../components/AddressDisplay";
+import TimestampDisplay from "../../components/TimestampDisplay";
 import VerifiedLabel from "../../components/VerifiedLabel";
 
 export const dynamic = "force-dynamic";
@@ -56,9 +57,10 @@ export default async function SellerProfilePage({
           <div className="text-xs uppercase tracking-wider text-muted">
             Seller profile
           </div>
-          <div className="flex items-center gap-3 mt-1">
-            <code className="font-mono text-xl text-ink">{seller.address}</code>
-            <CopyButton text={seller.address} />
+          <div className="mt-1">
+            <AddressDisplay address={seller.address} full />
+          </div>
+          <div className="mt-1">
             <a
               className="text-xs text-accent hover:underline"
               href={`${explorerBaseUrl}/address/${seller.address}`}
@@ -103,7 +105,7 @@ export default async function SellerProfilePage({
         <div className="stat">
           <div className="stat-label">First active</div>
           <div className="stat-value text-base">
-            {fmtDate(seller.first_seen_ts)}
+            <TimestampDisplay ts={seller.first_seen_ts} dateOnly />
           </div>
           <div className="text-xs text-muted">
             block {seller.first_seen_block ?? "—"}
@@ -112,7 +114,7 @@ export default async function SellerProfilePage({
         <div className="stat">
           <div className="stat-label">Last active</div>
           <div className="stat-value text-base">
-            {fmtDate(seller.last_seen_ts)}
+            <TimestampDisplay ts={seller.last_seen_ts} dateOnly />
           </div>
           <div className="text-xs text-muted">
             block {seller.last_seen_block ?? "—"}

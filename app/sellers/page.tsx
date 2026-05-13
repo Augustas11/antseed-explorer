@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { listSellers, countSellers, lookupProviders } from "@/lib/queries";
-import { fmtNum, fmtUsd, fmtDate, shortAddr } from "@/lib/format";
+import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
+import TimestampDisplay from "../components/TimestampDisplay";
 import SortableHeader from "../components/SortableHeader";
 import VerifiedLabel from "../components/VerifiedLabel";
 
@@ -155,7 +156,7 @@ export default async function SellersPage({
                   >
                     {fmtNum(s.ghost_sessions)}
                   </td>
-                  <td className="text-muted">{fmtDate(s.first_seen_ts)}</td>
+                  <td className="text-muted"><TimestampDisplay ts={s.first_seen_ts} dateOnly /></td>
                 </tr>
               ))}
             </tbody>

@@ -11,10 +11,11 @@ import {
 } from "@/lib/queries";
 import { calculateTrustScore } from "@/lib/score";
 import { explorerBaseUrl } from "@/lib/chain";
-import { fmtDate, fmtNum, fmtUsd, shortAddr } from "@/lib/format";
+import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "../../components/Badges";
 import { MonthlyVolumeChart } from "../../components/Charts";
-import CopyButton from "../../components/CopyButton";
+import AddressDisplay from "../../components/AddressDisplay";
+import TimestampDisplay from "../../components/TimestampDisplay";
 
 export const dynamic = "force-dynamic";
 
@@ -75,9 +76,10 @@ export default async function BuyerProfilePage({
           <div className="text-xs uppercase tracking-wider text-muted">
             Buyer profile
           </div>
-          <div className="flex items-center gap-3 mt-1">
-            <code className="font-mono text-xl text-ink">{buyer.address}</code>
-            <CopyButton text={buyer.address} />
+          <div className="mt-1">
+            <AddressDisplay address={buyer.address} full />
+          </div>
+          <div className="mt-1">
             <a
               className="text-xs text-accent hover:underline"
               href={`${explorerBaseUrl}/address/${buyer.address}`}
@@ -127,12 +129,16 @@ export default async function BuyerProfilePage({
         </div>
         <div className="stat">
           <div className="stat-label">First active</div>
-          <div className="stat-value text-base">{fmtDate(buyer.first_seen_ts)}</div>
+          <div className="stat-value text-base">
+            <TimestampDisplay ts={buyer.first_seen_ts} dateOnly />
+          </div>
           <div className="text-xs text-muted">block {buyer.first_seen_block ?? "—"}</div>
         </div>
         <div className="stat">
           <div className="stat-label">Last active</div>
-          <div className="stat-value text-base">{fmtDate(buyer.last_seen_ts)}</div>
+          <div className="stat-value text-base">
+            <TimestampDisplay ts={buyer.last_seen_ts} dateOnly />
+          </div>
           <div className="text-xs text-muted">block {buyer.last_seen_block ?? "—"}</div>
         </div>
         <div className="stat col-span-2">
@@ -262,7 +268,7 @@ export default async function BuyerProfilePage({
                   const status = mapStatus(s.event_type, s.settled_amount_usdc);
                   return (
                     <tr key={`${s.tx_hash}-${s.log_index}`}>
-                      <td className="text-muted">{fmtDate(s.timestamp)}</td>
+                      <td className="text-muted"><TimestampDisplay ts={s.timestamp} dateOnly /></td>
                       <td>
                         <span className="font-mono text-xs">
                           {provider?.display_name || shortAddr(s.seller_address)}
