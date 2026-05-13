@@ -1,10 +1,31 @@
 import Link from "next/link";
-import { listServices } from "@/lib/queries";
+import { listServices, listServicesFlat } from "@/lib/queries";
 import { fmtNum } from "@/lib/format";
+import MarketplaceTable from "../components/MarketplaceTable";
 
 export const dynamic = "force-dynamic";
 
+const MARKETPLACE_UX = process.env.NEXT_PUBLIC_MARKETPLACE_UX === "true";
+
 export default async function ServicesPage() {
+  if (MARKETPLACE_UX) {
+    const rows = await listServicesFlat();
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Available Services
+          </h1>
+          <p className="text-muted text-sm mt-1">
+            AI services on the AntSeed network. Press{" "}
+            <kbd className="pill">/</kbd> to search.
+          </p>
+        </div>
+        <MarketplaceTable rows={rows} />
+      </div>
+    );
+  }
+
   const services = await listServices();
 
   return (

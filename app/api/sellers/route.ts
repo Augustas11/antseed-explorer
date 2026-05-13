@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listSellers, countSellers } from "@/lib/queries";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +17,14 @@ function csvLine(fields: (string | number | null | undefined)[]): string {
 }
 
 export async function GET(req: NextRequest) {
+  const rl = checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+
   const u = new URL(req.url);
   const limit = Math.min(1000, Number(u.searchParams.get("limit") || 100));
   const offset = Number(u.searchParams.get("offset") || 0);
@@ -52,6 +61,16 @@ export async function GET(req: NextRequest) {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": `attachment; filename="antseed-sellers-${dateStr}.csv"`,
+      },
+    });
+  }
+
+  if (format === "json") {
+    const dateStr = new Date().toISOString().slice(0, 10);
+    return new Response(JSON.stringify(rows, null, 2), {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="antseed-sellers-${dateStr}.json"`,
       },
     });
   }

@@ -111,7 +111,8 @@ export default async function BuyersPage({
         </div>
       </div>
 
-      <div className="panel">
+      {/* Desktop table */}
+      <div className="panel hidden sm:block">
         {rows.length === 0 ? (
           <div className="p-8 text-center text-muted text-sm">
             No buyers match. Try a lower min score or unqualified.
@@ -224,6 +225,64 @@ export default async function BuyersPage({
               ))}
             </tbody>
           </table>
+        )}
+      </div>
+
+      {/* Mobile cards */}
+      <div className="sm:hidden space-y-2">
+        {rows.length === 0 ? (
+          <div className="panel p-8 text-center text-muted text-sm">
+            No buyers match. Try a lower min score or unqualified.
+          </div>
+        ) : (
+          rows.map((b, i) => {
+            const provider = providerMap.get(b.address);
+            return (
+              <div key={b.address} className="panel p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="text-xs text-muted mr-2">#{offset + i + 1}</span>
+                    <Link
+                      href={`/buyers/${b.address}`}
+                      className="font-mono text-accent hover:underline text-sm"
+                    >
+                      {shortAddr(b.address)}
+                    </Link>
+                    {provider?.display_name && (
+                      <VerifiedLabel displayName={provider.display_name} />
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <ScoreBadge score={b.trust_score} />
+                    <QualifiedBadge qualified={!!b.qualified} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                  <div>
+                    <span className="text-muted text-xs">USDC </span>
+                    <span className="font-medium">{fmtUsd(b.total_settled_usdc)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted text-xs">Sessions </span>
+                    <span>{fmtNum(b.total_sessions)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted text-xs">Sellers </span>
+                    <span>{fmtNum(b.unique_sellers)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted text-xs">Ghosts </span>
+                    <span className={b.ghost_sessions > 0 ? "text-bad" : "text-muted"}>
+                      {fmtNum(b.ghost_sessions)}
+                    </span>
+                  </div>
+                </div>
+                <div className="text-xs text-muted">
+                  First seen: <TimestampDisplay ts={b.first_seen_ts} dateOnly />
+                </div>
+              </div>
+            );
+          })
         )}
       </div>
 

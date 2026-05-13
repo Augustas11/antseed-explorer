@@ -62,7 +62,8 @@ export default async function SellersPage({
         </a>
       </div>
 
-      <div className="panel">
+      {/* Desktop table */}
+      <div className="panel hidden sm:block">
         {rows.length === 0 ? (
           <div className="p-8 text-center text-muted text-sm">
             No sellers indexed yet.
@@ -161,6 +162,60 @@ export default async function SellersPage({
               ))}
             </tbody>
           </table>
+        )}
+      </div>
+
+      {/* Mobile cards */}
+      <div className="sm:hidden space-y-2">
+        {rows.length === 0 ? (
+          <div className="panel p-8 text-center text-muted text-sm">
+            No sellers indexed yet.
+          </div>
+        ) : (
+          rows.map((s, i) => {
+            const provider = providerMap.get(s.address);
+            return (
+              <div key={s.address} className="panel p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="text-xs text-muted mr-2">#{offset + i + 1}</span>
+                    <Link
+                      href={`/sellers/${s.address}`}
+                      className="font-mono text-accent hover:underline text-sm"
+                    >
+                      {provider?.display_name ?? shortAddr(s.address)}
+                    </Link>
+                    {provider?.display_name && (
+                      <div className="font-mono text-xs text-muted">{shortAddr(s.address)}</div>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                  <div>
+                    <span className="text-muted text-xs">Earned </span>
+                    <span className="font-medium">{fmtUsd(s.total_earned_usdc)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted text-xs">Sessions </span>
+                    <span>{fmtNum(s.total_sessions)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted text-xs">Buyers </span>
+                    <span>{fmtNum(s.unique_buyers)}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted text-xs">Ghosts </span>
+                    <span className={s.ghost_sessions > 0 ? "text-bad" : "text-muted"}>
+                      {fmtNum(s.ghost_sessions)}
+                    </span>
+                  </div>
+                </div>
+                <div className="text-xs text-muted">
+                  First seen: <TimestampDisplay ts={s.first_seen_ts} dateOnly />
+                </div>
+              </div>
+            );
+          })
         )}
       </div>
 
