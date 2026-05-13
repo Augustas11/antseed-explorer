@@ -155,6 +155,14 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
       if (e.key === "/" && !inField && !(e.metaKey || e.ctrlKey || e.altKey)) {
         e.preventDefault();
         searchRef.current?.focus();
+        // Browser may still insert "/" into the now-focused input via keypress.
+        // Clear it on the next tick if it slipped through.
+        setTimeout(() => {
+          if (searchRef.current?.value === "/") {
+            searchRef.current.value = "";
+            setQuery("");
+          }
+        }, 0);
         return;
       }
 
@@ -243,7 +251,7 @@ export default function MarketplaceTable({ rows, loading = false }: Props) {
             type="text"
             value={query}
             onChange={(e) => { setQuery(e.target.value); setSelectedIdx(-1); }}
-            placeholder="Search services… (press / to focus)"
+            placeholder="Search services…"
             className="flex-1 bg-panel border border-edge rounded-md px-3 py-2 text-sm focus:outline-none focus:border-[var(--color-accent)]"
             aria-label="Search services"
           />
