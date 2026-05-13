@@ -870,3 +870,36 @@ export async function getService(name: string): Promise<ServiceProviderRow | nul
     provider_details: providerDetails,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Search helpers — service name and provider display_name lookups
+// ---------------------------------------------------------------------------
+
+export async function lookupByServiceName(q: string): Promise<string | null> {
+  const rows = await db.execute<{ services: string | null }>(sql`
+    SELECT services FROM provider_directory
+    WHERE services IS NOT NULL
+    LIMIT 200
+  `);
+  const needle = q.toLowerCase();
+  for (const row of rows.rows) {
+    if (!row.services) continue;
+    try {
+      const list: string[] = JSON.parse(row.services);
+      const match = list.find((s) => s.toLowerCase() === needle);
+      if (match) return match;
+    } catch {}
+  }
+  return null;
+}
+
+export async function lookupByProviderName(
+  q: string,
+): Promise<string | null> {
+  const rows = await db.execute<{ address: string }>(sql`
+    SELECT address FROM provider_directory
+    WHERE lower(display_name) = ${q.toLowerCase()}
+    LIMIT 1
+  `);
+  return rows.rows[0]?.address ?? null;
+}

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { listChannels, countChannels, lookupProviders } from "@/lib/queries";
-import { fmtNum, fmtUsd, fmtDate, shortAddr } from "@/lib/format";
+import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import SortableHeader from "../components/SortableHeader";
+import TimestampDisplay from "../components/TimestampDisplay";
 import VerifiedLabel from "../components/VerifiedLabel";
 
 export const dynamic = "force-dynamic";
@@ -190,8 +191,8 @@ export default async function ChannelsPage({
                       <span className="text-muted">—</span>
                     )}
                   </td>
-                  <td className="text-muted text-xs">{fmtDate(c.opened_ts)}</td>
-                  <td className="text-muted text-xs">{fmtDate(c.last_ts)}</td>
+                  <td className="text-muted text-xs"><TimestampDisplay ts={c.opened_ts} dateOnly /></td>
+                  <td className="text-muted text-xs"><TimestampDisplay ts={c.last_ts} dateOnly /></td>
                   <td>
                     {c.max_amount_usdc != null ? (
                       fmtUsd(c.max_amount_usdc)

@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
   if (format === "csv") {
     const dateStr = new Date().toISOString().slice(0, 10);
     const header =
-      "rank,address,usdc_earned,sessions,unique_buyers,ghost_sessions,first_seen";
+      "rank,address,usdc_earned,sessions,unique_buyers,ghost_sessions,first_seen,first_seen_ts_utc,last_seen_ts_utc";
     const lines = rows.map((s, i) =>
       csvLine([
         offset + i + 1,
@@ -43,6 +43,8 @@ export async function GET(req: NextRequest) {
         s.first_seen_ts
           ? new Date(s.first_seen_ts * 1000).toISOString().slice(0, 10)
           : "",
+        s.first_seen_ts ? new Date(s.first_seen_ts * 1000).toISOString() : "",
+        s.last_seen_ts ? new Date(s.last_seen_ts * 1000).toISOString() : "",
       ]),
     );
     const csv = [header, ...lines].join("\r\n");
