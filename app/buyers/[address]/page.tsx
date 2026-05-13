@@ -3,7 +3,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
   getBuyer,
-  getBuyerMonthlyVolume,
+  getBuyerDailyVolume,
+  getBuyerHourlyVolume,
   getBuyerSessions,
   getBuyerSellerSummary,
   lookupProviders,
@@ -13,7 +14,8 @@ import { calculateTrustScore } from "@/lib/score";
 import { explorerBaseUrl } from "@/lib/chain";
 import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "../../components/Badges";
-import { MonthlyVolumeChart } from "../../components/Charts";
+import { ActivityChart } from "../../components/Charts";
+import TimeRangePills from "../../components/TimeRangePills";
 import AddressDisplay from "../../components/AddressDisplay";
 import TimestampDisplay from "../../components/TimestampDisplay";
 
@@ -45,8 +47,10 @@ export async function generateMetadata({
 
 export default async function BuyerProfilePage({
   params,
+  searchParams,
 }: {
   params: { address: string };
+  searchParams: { range?: string };
 }) {
   const buyer = await getBuyer(params.address);
   if (!buyer) notFound();
@@ -59,9 +63,26 @@ export default async function BuyerProfilePage({
     ghostSessions: buyer.ghost_sessions,
   });
 
+  const range = searchParams.range || "30d";
+  const rangeLabel =
+    range === "24h"
+      ? "last 24h"
+      : range === "7d"
+      ? "last 7d"
+      : range === "all"
+      ? "all time"
+      : "last 30d";
+
   const sessions = await getBuyerSessions(buyer.address, 50);
   const topSellers = await getBuyerSellerSummary(buyer.address, 10);
-  const monthly = await getBuyerMonthlyVolume(buyer.address);
+  const activity =
+    range === "24h"
+      ? await getBuyerHourlyVolume(buyer.address, 24)
+      : range === "7d"
+      ? await getBuyerDailyVolume(buyer.address, 7)
+      : range === "all"
+      ? await getBuyerDailyVolume(buyer.address, 9999)
+      : await getBuyerDailyVolume(buyer.address, 30);
   const providerMap = await lookupProviders([
     ...sessions.map((s) => s.seller_address),
     ...topSellers.map((s) => s.seller_address),
@@ -152,12 +173,19 @@ export default async function BuyerProfilePage({
         </div>
       </section>
 
-      {monthly.length > 0 && (
-        <section className="panel p-4">
-          <h2 className="font-medium mb-3">Activity over time</h2>
-          <MonthlyVolumeChart data={monthly} />
-        </section>
-      )}
+      <section className="panel p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-medium">Activity over time — {rangeLabel}</h2>
+          <TimeRangePills current={range} basePath={`/buyers/${buyer.address}`} />
+        </div>
+        {activity.length > 0 ? (
+          <ActivityChart data={activity} />
+        ) : (
+          <div className="py-10 text-center text-sm text-muted">
+            No activity in this range.
+          </div>
+        )}
+      </section>
 
       <section className="grid md:grid-cols-2 gap-4">
         <div className="panel">

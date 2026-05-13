@@ -74,16 +74,16 @@ export function ActiveBuyersChart({
   );
 }
 
-export function MonthlyVolumeChart({
+export function ActivityChart({
   data,
 }: {
-  data: { month: string; volume: number; sessions: number }[];
+  data: { bucket: string; volume: number; sessions: number }[];
 }) {
   return (
     <ResponsiveContainer width="100%" height={220}>
       <BarChart data={data}>
         <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} />
-        <XAxis dataKey="month" stroke={chartTheme.axis} fontSize={11} />
+        <XAxis dataKey="bucket" stroke={chartTheme.axis} fontSize={11} />
         <YAxis yAxisId="left" stroke={chartTheme.axis} fontSize={11} />
         <YAxis
           yAxisId="right"

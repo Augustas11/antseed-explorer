@@ -180,6 +180,48 @@ export async function getBuyerMonthlyVolume(address: string) {
   return rows.rows;
 }
 
+export async function getBuyerDailyVolume(address: string, days = 30) {
+  const d = Math.max(1, Math.floor(days));
+  const rows = await db.execute<{
+    bucket: string;
+    sessions: number;
+    volume: number;
+  }>(sql`
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS bucket,
+           COUNT(*)::int AS sessions,
+           COALESCE(SUM(delta_usdc),0)::float AS volume
+    FROM events
+    WHERE buyer_address = ${address.toLowerCase()}
+      AND event_type = 'settled'
+      AND timestamp IS NOT NULL AND timestamp > 0 AND timestamp < 32503680000
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `);
+  return rows.rows;
+}
+
+export async function getBuyerHourlyVolume(address: string, hours = 24) {
+  const h = Math.max(1, Math.floor(hours));
+  const rows = await db.execute<{
+    bucket: string;
+    sessions: number;
+    volume: number;
+  }>(sql`
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD HH24:00') AS bucket,
+           COUNT(*)::int AS sessions,
+           COALESCE(SUM(delta_usdc),0)::float AS volume
+    FROM events
+    WHERE buyer_address = ${address.toLowerCase()}
+      AND event_type = 'settled'
+      AND timestamp IS NOT NULL
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `);
+  return rows.rows;
+}
+
 export interface BuyerSellerSummary extends Record<string, unknown> {
   seller_address: string;
   sessions: number;
@@ -503,21 +545,44 @@ export async function getSeller(address: string): Promise<SellerRow | null> {
   return shapeSellerRow(row);
 }
 
-export async function getSellerMonthlyVolume(address: string) {
+export async function getSellerDailyVolume(address: string, days = 30) {
+  const d = Math.max(1, Math.floor(days));
   const rows = await db.execute<{
-    month: string;
+    bucket: string;
     sessions: number;
     volume: number;
   }>(sql`
-    SELECT to_char(to_timestamp(timestamp::float8), 'YYYY-MM') AS month,
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS bucket,
            COUNT(*)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS volume
     FROM events
     WHERE seller_address = ${address.toLowerCase()}
       AND event_type = 'settled'
       AND timestamp IS NOT NULL AND timestamp > 0 AND timestamp < 32503680000
-    GROUP BY month
-    ORDER BY month ASC
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+    GROUP BY bucket
+    ORDER BY bucket ASC
+  `);
+  return rows.rows;
+}
+
+export async function getSellerHourlyVolume(address: string, hours = 24) {
+  const h = Math.max(1, Math.floor(hours));
+  const rows = await db.execute<{
+    bucket: string;
+    sessions: number;
+    volume: number;
+  }>(sql`
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD HH24:00') AS bucket,
+           COUNT(*)::int AS sessions,
+           COALESCE(SUM(delta_usdc),0)::float AS volume
+    FROM events
+    WHERE seller_address = ${address.toLowerCase()}
+      AND event_type = 'settled'
+      AND timestamp IS NOT NULL
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+    GROUP BY bucket
+    ORDER BY bucket ASC
   `);
   return rows.rows;
 }

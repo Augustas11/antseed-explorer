@@ -3,14 +3,16 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import {
   getSeller,
-  getSellerMonthlyVolume,
+  getSellerDailyVolume,
+  getSellerHourlyVolume,
   getSellerBuyerSummary,
   lookupProvider as lookupProviderFn,
   lookupProviders,
 } from "@/lib/queries";
 import { explorerBaseUrl } from "@/lib/chain";
 import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
-import { MonthlyVolumeChart } from "../../components/Charts";
+import { ActivityChart } from "../../components/Charts";
+import TimeRangePills from "../../components/TimeRangePills";
 import AddressDisplay from "../../components/AddressDisplay";
 import TimestampDisplay from "../../components/TimestampDisplay";
 import VerifiedLabel from "../../components/VerifiedLabel";
@@ -37,14 +39,33 @@ export async function generateMetadata({
 
 export default async function SellerProfilePage({
   params,
+  searchParams,
 }: {
   params: { address: string };
+  searchParams: { range?: string };
 }) {
   const seller = await getSeller(params.address).catch(() => null);
   if (!seller) notFound();
 
-  const [monthly, topBuyers, provider] = await Promise.all([
-    getSellerMonthlyVolume(seller.address).catch((e) => { console.error("getSellerMonthlyVolume failed:", e); return []; }),
+  const range = searchParams.range || "30d";
+  const rangeLabel =
+    range === "24h"
+      ? "last 24h"
+      : range === "7d"
+      ? "last 7d"
+      : range === "all"
+      ? "all time"
+      : "last 30d";
+  const activity =
+    range === "24h"
+      ? await getSellerHourlyVolume(seller.address, 24).catch((e) => { console.error("getSellerHourlyVolume failed:", e); return []; })
+      : range === "7d"
+      ? await getSellerDailyVolume(seller.address, 7).catch((e) => { console.error("getSellerDailyVolume failed:", e); return []; })
+      : range === "all"
+      ? await getSellerDailyVolume(seller.address, 9999).catch((e) => { console.error("getSellerDailyVolume failed:", e); return []; })
+      : await getSellerDailyVolume(seller.address, 30).catch((e) => { console.error("getSellerDailyVolume failed:", e); return []; });
+
+  const [topBuyers, provider] = await Promise.all([
     getSellerBuyerSummary(seller.address, 10).catch((e) => { console.error("getSellerBuyerSummary failed:", e); return []; }),
     lookupProviderFn(seller.address).catch((e) => { console.error("lookupProvider failed:", e); return null; }),
   ]);
@@ -122,12 +143,19 @@ export default async function SellerProfilePage({
         </div>
       </section>
 
-      {monthly.length > 0 && (
-        <section className="panel p-4">
-          <h2 className="font-medium mb-3">Activity over time</h2>
-          <MonthlyVolumeChart data={monthly as any} />
-        </section>
-      )}
+      <section className="panel p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-medium">Activity over time — {rangeLabel}</h2>
+          <TimeRangePills current={range} basePath={`/sellers/${seller.address}`} />
+        </div>
+        {activity.length > 0 ? (
+          <ActivityChart data={activity} />
+        ) : (
+          <div className="py-10 text-center text-sm text-muted">
+            No activity in this range.
+          </div>
+        )}
+      </section>
 
       <section className="panel">
         <div className="px-4 py-3 border-b border-edge">
