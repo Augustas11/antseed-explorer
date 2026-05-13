@@ -137,11 +137,12 @@ export default function ReadContractPanel() {
         buildArgs={(v) => [v.channelId as `0x${string}`]}
         formatResult={(result) => {
           if (!result || typeof result !== "object") return String(result);
+          // viem returns named outputs as an object when the ABI has named fields.
           const r = result as Record<string, string>;
-          const settled = r[4] ? (Number(r[4]) / USDC_DECIMALS).toFixed(2) : "?";
-          const max = r[2] ? (Number(r[2]) / USDC_DECIMALS).toFixed(2) : "?";
-          const state = STATE_LABELS[r[5]] ?? r[5];
-          return `Buyer: ${r[0]} · Seller: ${r[1]} · Max: $${max} · Settled: $${settled} · State: ${state}`;
+          const settled = r.settled ? (Number(r.settled) / USDC_DECIMALS).toFixed(2) : "?";
+          const max = r.maxAmount ? (Number(r.maxAmount) / USDC_DECIMALS).toFixed(2) : "?";
+          const state = STATE_LABELS[String(r.state)] ?? String(r.state);
+          return `Buyer: ${r.buyer} · Seller: ${r.seller} · Max: $${max} · Settled: $${settled} · State: ${state}`;
         }}
       />
 

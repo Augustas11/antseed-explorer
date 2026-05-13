@@ -17,7 +17,7 @@ function csvLine(fields: (string | number | null | undefined)[]): string {
 }
 
 export async function GET(req: NextRequest) {
-  const rl = checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
+  const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
   if (!rl.allowed) {
     return NextResponse.json(
       { error: "rate_limit_exceeded" },
