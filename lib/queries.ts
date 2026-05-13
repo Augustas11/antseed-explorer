@@ -496,6 +496,7 @@ export async function getSeller(address: string): Promise<SellerRow | null> {
       MAX(block_number)                                                      AS last_seen_block
     FROM events
     WHERE seller_address = ${address.toLowerCase()}
+    GROUP BY seller_address
   `);
   const row = r.rows[0];
   if (!row || row.address == null) return null;
