@@ -610,6 +610,7 @@ export interface ProviderRow {
   trust_score: number | null;
   services: string[];
   pricing: Record<string, any>;
+  description: string | null;
 }
 
 export async function lookupProvider(
@@ -635,6 +636,7 @@ export async function lookupProvider(
     trust_score: r.trust_score,
     services: parseJson<string[]>(r.services) ?? [],
     pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
+    description: r.description ?? null,
   };
 }
 
@@ -671,6 +673,7 @@ export async function lookupProviders(
       trust_score: r.trust_score,
       services: parseJson<string[]>(r.services) ?? [],
       pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
+      description: r.description ?? null,
     });
   }
   return m;

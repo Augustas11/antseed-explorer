@@ -89,6 +89,7 @@ export const providerDirectory = pgTable("provider_directory", {
   trustScore: doublePrecision("trust_score"),
   services: text("services"), // JSON array
   pricing: text("pricing"),   // JSON object
+  description: text("description"), // Markdown long-form "About this provider"
   updatedAt: bigint("updated_at", { mode: "number" }),
 });
 

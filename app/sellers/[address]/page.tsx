@@ -200,6 +200,15 @@ export default async function SellerProfilePage({
         )}
       </section>
 
+      {provider?.description && (
+        <section className="panel p-4">
+          <h2 className="font-medium mb-3">About</h2>
+          <div className="text-sm space-y-3 leading-relaxed">
+            {renderProviderMarkdown(provider.description)}
+          </div>
+        </section>
+      )}
+
       {provider?.services && provider.services.length > 0 && (
         <section className="panel p-4">
           <h2 className="font-medium mb-3">Advertised services</h2>
@@ -231,4 +240,74 @@ export default async function SellerProfilePage({
       </div>
     </div>
   );
+}
+
+// Minimal Markdown renderer for the provider About copy. Handles paragraphs,
+// bullet lists ("- "), bold ("**foo**"), and links ("[text](url)"). Skips a
+// leading "### " heading since the section already renders an <h2>About</h2>.
+function renderProviderMarkdown(md: string): React.ReactNode[] {
+  const blocks: React.ReactNode[] = [];
+  const paragraphs = md.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i];
+    if (p.startsWith("### ")) continue;
+    const lines = p.split("\n");
+    const firstDash = lines.findIndex((l) => l.trimStart().startsWith("- "));
+    const allListAfterFirstDash =
+      firstDash >= 0 && lines.slice(firstDash).every((l) => l.trimStart().startsWith("- "));
+    if (firstDash === 0 && allListAfterFirstDash) {
+      blocks.push(
+        <ul key={i} className="list-disc pl-5 space-y-1">
+          {lines.map((l, j) => (
+            <li key={j}>{renderInlineMd(l.replace(/^\s*-\s+/, ""))}</li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+    if (firstDash > 0 && allListAfterFirstDash) {
+      blocks.push(
+        <p key={`${i}-p`}>{renderInlineMd(lines.slice(0, firstDash).join(" "))}</p>,
+      );
+      blocks.push(
+        <ul key={`${i}-ul`} className="list-disc pl-5 space-y-1">
+          {lines.slice(firstDash).map((l, j) => (
+            <li key={j}>{renderInlineMd(l.replace(/^\s*-\s+/, ""))}</li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+    blocks.push(<p key={i}>{renderInlineMd(p.replace(/\n/g, " "))}</p>);
+  }
+  return blocks;
+}
+
+function renderInlineMd(s: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  const re = /\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)]+)\)/g;
+  let last = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) out.push(s.slice(last, m.index));
+    if (m[1] !== undefined) {
+      out.push(<strong key={k++}>{m[1]}</strong>);
+    } else {
+      out.push(
+        <a
+          key={k++}
+          href={m[3]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-accent hover:underline"
+        >
+          {m[2]}
+        </a>,
+      );
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) out.push(s.slice(last));
+  return out;
 }
