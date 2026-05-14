@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   getDailyTokens,
   getDailyVolume,
+  getHeroSparklines,
   getHeroStats,
   getHourlyTokens,
   getHourlyVolume,
@@ -20,6 +21,7 @@ import {
 import { ScoreBadge, QualifiedBadge } from "./components/Badges";
 import { TokensChart, VolumeChart } from "./components/Charts";
 import HeroCard from "./components/HeroCard";
+import Sparkline from "./components/Sparkline";
 import TimeRangePills from "./components/TimeRangePills";
 import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
@@ -46,6 +48,10 @@ export default async function HomePage({
 
   const stats = await getNetworkStats();
   const hero = await getHeroStats();
+  const sparks = await getHeroSparklines();
+  const revenueSpark = sparks.map((p) => ({ x: p.day, y: p.revenue }));
+  const tokensSpark = sparks.map((p) => ({ x: p.day, y: p.tokens }));
+  const usersSpark = sparks.map((p) => ({ x: p.day, y: p.paying_users }));
   const daily =
     range === "24h"
       ? await getHourlyVolume(24)
@@ -93,6 +99,7 @@ export default async function HomePage({
           sublabel="Settled USDC, all-time"
           delta={pctDelta(hero.recentRevenueUsdc, hero.priorRevenueUsdc)}
           tooltip="Sum of delta from every ChannelSettled event."
+          sparkline={<Sparkline data={revenueSpark} />}
         />
         <HeroCard
           label="Tokens Consumed"
@@ -102,6 +109,7 @@ export default async function HomePage({
           )} out`}
           delta={pctDelta(hero.recentTokens, hero.priorTokens)}
           tooltip="Input + output tokens recorded by AntseedStats — the canonical per-inference accounting."
+          sparkline={<Sparkline data={tokensSpark} color="#5fb4d8" />}
         />
         <HeroCard
           label="Paying Users"
@@ -119,6 +127,7 @@ export default async function HomePage({
           }
           delta={pctDelta(hero.recentPayingUsers, hero.priorPayingUsers)}
           tooltip="Distinct addresses that either paid USDC into a channel or currently hold $ANT (excluding protocol contracts)."
+          sparkline={<Sparkline data={usersSpark} color="#f5b656" />}
         />
       </section>
 
