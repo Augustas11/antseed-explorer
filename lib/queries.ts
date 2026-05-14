@@ -318,19 +318,38 @@ export async function getHeroStats(): Promise<HeroStats> {
   const day30 = String(now - 30 * 86400);
   const day60 = String(now - 60 * 86400);
 
+  // All-time totals aggregate channel-by-channel because the on-chain
+  // ChannelSettled event reports CUMULATIVE values per channel (totalSettled
+  // for USDC; metadata token counts follow the same convention). SUM-over-
+  // events double-counts; MAX-per-channel gives the canonical "what does the
+  // chain say this channel finally moved" figure, matching the Dune board.
+  //
+  // Windowed (recent / prior 30d) comparisons stay SUM-of-deltas — those are
+  // an activity signal, not a balance, and SUM-in-window is the right shape.
   const r = await db.execute<any>(sql`
     WITH s AS (
       SELECT
+        channel_id,
         timestamp,
         delta_usdc,
+        settled_amount_usdc,
         COALESCE(input_tokens, 0)  AS in_tok,
-        COALESCE(output_tokens, 0) AS out_tok,
-        COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) AS tok
+        COALESCE(output_tokens, 0) AS out_tok
       FROM events
       WHERE event_type = 'settled'
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp < 32503680000
+    ),
+    channel_totals AS (
+      SELECT
+        channel_id,
+        MAX(settled_amount_usdc) AS total_revenue,
+        MAX(in_tok)              AS total_in_tok,
+        MAX(out_tok)             AS total_out_tok
+      FROM s
+      WHERE channel_id IS NOT NULL
+      GROUP BY channel_id
     ),
     p AS (
       SELECT buyer_address, timestamp
@@ -341,19 +360,19 @@ export async function getHeroStats(): Promise<HeroStats> {
         AND timestamp > 0
     )
     SELECT
-      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s) AS total_tokens,
-      (SELECT COALESCE(SUM(in_tok),0)::bigint     FROM s) AS total_tokens_input,
-      (SELECT COALESCE(SUM(out_tok),0)::bigint    FROM s) AS total_tokens_output,
-      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_tokens,
-      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_tokens,
+      (SELECT COALESCE(SUM(total_in_tok + total_out_tok),0)::bigint FROM channel_totals) AS total_tokens,
+      (SELECT COALESCE(SUM(total_in_tok),0)::bigint                 FROM channel_totals) AS total_tokens_input,
+      (SELECT COALESCE(SUM(total_out_tok),0)::bigint                FROM channel_totals) AS total_tokens_output,
+      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint             FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_tokens,
+      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint             FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_tokens,
 
-      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s) AS total_revenue,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_revenue,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_revenue,
+      (SELECT COALESCE(SUM(total_revenue),0)::float                 FROM channel_totals) AS total_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float                    FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float                    FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_revenue,
 
-      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p) AS total_paying_users,
-      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p WHERE timestamp > ${sql.raw(day30)}) AS recent_paying_users,
-      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_paying_users
+      (SELECT COUNT(DISTINCT buyer_address)::int                    FROM p) AS total_paying_users,
+      (SELECT COUNT(DISTINCT buyer_address)::int                    FROM p WHERE timestamp > ${sql.raw(day30)}) AS recent_paying_users,
+      (SELECT COUNT(DISTINCT buyer_address)::int                    FROM p WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_paying_users
   `);
 
   const x = r.rows[0] ?? {};
