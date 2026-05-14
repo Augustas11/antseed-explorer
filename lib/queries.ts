@@ -1245,3 +1245,83 @@ export async function listProviders(opts: {
     updatedAt: r.updated_at != null ? Number(r.updated_at) : null,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// $ANT holders — ranked listing for the /holders page.
+// Excludes protocol contracts (ANTS_NON_USER_ADDRESSES) so the totals match
+// what the Paying Users hero card surfaces. %supply is computed against the
+// indexed circulating total (sum of positive non-protocol balances), not
+// against max supply — gives a useful share-of-active-supply signal as the
+// network grows.
+// ---------------------------------------------------------------------------
+
+export interface HolderRow {
+  address: string;
+  balance_wei: string;
+  balance_ants: number;
+  pct_supply: number;
+  first_seen_block: number | null;
+  last_seen_block: number | null;
+  updated_at: number | null;
+}
+
+export async function listHolders(opts: {
+  limit?: number;
+  offset?: number;
+} = {}): Promise<HolderRow[]> {
+  const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const { ANTS_NON_USER_ADDRESSES } = await import("./antseed");
+  const excludeSql = ANTS_NON_USER_ADDRESSES.map((a) => `'${a}'`).join(",");
+
+  const r = await db.execute<any>(sql`
+    WITH circulating AS (
+      SELECT COALESCE(SUM(balance), 0) AS total
+      FROM ants_holders
+      WHERE balance > 0
+        AND address NOT IN (${sql.raw(excludeSql)})
+    )
+    SELECT
+      address,
+      balance::text                       AS balance_wei,
+      (balance / 1e18)::float             AS balance_ants,
+      CASE
+        WHEN (SELECT total FROM circulating) > 0
+        THEN (balance * 100.0 / (SELECT total FROM circulating))::float
+        ELSE 0
+      END                                  AS pct_supply,
+      first_seen_block,
+      last_seen_block,
+      updated_at
+    FROM ants_holders
+    WHERE balance > 0
+      AND address NOT IN (${sql.raw(excludeSql)})
+    ORDER BY balance DESC
+    LIMIT ${sql.raw(String(limit))}
+    OFFSET ${sql.raw(String(offset))}
+  `);
+
+  return r.rows.map((x: any) => ({
+    address: x.address,
+    balance_wei: String(x.balance_wei ?? "0"),
+    balance_ants: Number(x.balance_ants ?? 0),
+    pct_supply: Number(x.pct_supply ?? 0),
+    first_seen_block:
+      x.first_seen_block != null ? Number(x.first_seen_block) : null,
+    last_seen_block:
+      x.last_seen_block != null ? Number(x.last_seen_block) : null,
+    updated_at: x.updated_at != null ? Number(x.updated_at) : null,
+  }));
+}
+
+export async function countHolders(): Promise<number> {
+  const { ANTS_NON_USER_ADDRESSES } = await import("./antseed");
+  const excludeSql = ANTS_NON_USER_ADDRESSES.map((a) => `'${a}'`).join(",");
+  const r = await db.execute<{ n: number }>(sql`
+    SELECT COUNT(*)::int AS n
+    FROM ants_holders
+    WHERE balance > 0
+      AND address NOT IN (${sql.raw(excludeSql)})
+  `);
+  return Number(r.rows[0]?.n ?? 0);
+}
