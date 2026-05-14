@@ -318,16 +318,31 @@ export async function getHeroStats(): Promise<HeroStats> {
   const day30 = String(now - 30 * 86400);
   const day60 = String(now - 60 * 86400);
 
+  // Revenue: SUM(delta_usdc) per ChannelSettled event — delta is the
+  // per-batch amount actually moved.
+  //
+  // Tokens: SUM over AntseedStats.MetadataRecorded events. That contract's
+  // recordMetadata is called by authorized writers per inference call, and
+  // the event fires the per-call (input, output, requestCount) tuple — so
+  // SUM is exact and matches the Dune board. ChannelSettled.metadata is
+  // seller-provided opaque bytes (cumulative or null depending on seller
+  // convention) and is not used here.
   const r = await db.execute<any>(sql`
-    WITH s AS (
-      SELECT
-        timestamp,
-        delta_usdc,
-        COALESCE(input_tokens, 0)  AS in_tok,
-        COALESCE(output_tokens, 0) AS out_tok,
-        COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) AS tok
+    WITH settled AS (
+      SELECT timestamp, delta_usdc
       FROM events
       WHERE event_type = 'settled'
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp < 32503680000
+    ),
+    tok AS (
+      SELECT
+        timestamp,
+        COALESCE(input_tokens, 0)  AS in_tok,
+        COALESCE(output_tokens, 0) AS out_tok
+      FROM events
+      WHERE event_type = 'metadata_recorded'
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp < 32503680000
@@ -341,19 +356,19 @@ export async function getHeroStats(): Promise<HeroStats> {
         AND timestamp > 0
     )
     SELECT
-      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s) AS total_tokens,
-      (SELECT COALESCE(SUM(in_tok),0)::bigint     FROM s) AS total_tokens_input,
-      (SELECT COALESCE(SUM(out_tok),0)::bigint    FROM s) AS total_tokens_output,
-      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_tokens,
-      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_tokens,
+      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok) AS total_tokens,
+      (SELECT COALESCE(SUM(in_tok),0)::bigint           FROM tok) AS total_tokens_input,
+      (SELECT COALESCE(SUM(out_tok),0)::bigint          FROM tok) AS total_tokens_output,
+      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok WHERE timestamp > ${sql.raw(day30)}) AS recent_tokens,
+      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_tokens,
 
-      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s) AS total_revenue,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_revenue,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled) AS total_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${sql.raw(day30)}) AS recent_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_revenue,
 
-      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p) AS total_paying_users,
-      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p WHERE timestamp > ${sql.raw(day30)}) AS recent_paying_users,
-      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_paying_users
+      (SELECT COUNT(DISTINCT buyer_address)::int        FROM p) AS total_paying_users,
+      (SELECT COUNT(DISTINCT buyer_address)::int        FROM p WHERE timestamp > ${sql.raw(day30)}) AS recent_paying_users,
+      (SELECT COUNT(DISTINCT buyer_address)::int        FROM p WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_paying_users
   `);
 
   const x = r.rows[0] ?? {};

@@ -15,6 +15,7 @@ export const CONTRACTS = {
 } as const;
 
 export const CHANNELS_DEPLOYMENT_BLOCK = 45_667_842n;
+export const ANTSEED_STATS_DEPLOYMENT_BLOCK = 44_469_557n;
 
 // Real ABI fragment, pulled from the verified contract on Basescan.
 export const channelsAbi = [
@@ -117,4 +118,25 @@ export type EventType =
   | "closed"
   | "topup"
   | "withdrawn"
-  | "close_requested";
+  | "close_requested"
+  | "metadata_recorded";
+
+// AntseedStats — canonical token-usage event filled by authorized writers
+// (whitelisted addresses calling recordMetadata). This is the source Dune
+// uses for tokens-consumed; ChannelSettled.metadata is opaque seller bytes
+// and unreliable for aggregation.
+export const antseedStatsAbi = [
+  {
+    type: "event",
+    name: "MetadataRecorded",
+    inputs: [
+      { indexed: true, name: "agentId", type: "uint256" },
+      { indexed: true, name: "buyer", type: "address" },
+      { indexed: true, name: "channelId", type: "bytes32" },
+      { indexed: false, name: "metadataHash", type: "bytes32" },
+      { indexed: false, name: "inputTokens", type: "uint256" },
+      { indexed: false, name: "outputTokens", type: "uint256" },
+      { indexed: false, name: "requestCount", type: "uint256" },
+    ],
+  },
+] as const;
