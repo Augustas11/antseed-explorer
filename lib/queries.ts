@@ -266,9 +266,11 @@ export async function getNetworkStats() {
     total_volume: number;
     total_sessions: number;
     total_ghosts: number;
+    metadata_records: number;
     last_indexed_block: string | null;
     last_head_block: string | null;
     last_sync_ts: string | null;
+    last_indexed_block_stats: string | null;
   }>(sql`
     SELECT
       (SELECT COUNT(*)::int FROM buyer_profiles) AS total_buyers,
@@ -276,9 +278,11 @@ export async function getNetworkStats() {
       (SELECT COALESCE(SUM(total_settled_usdc),0)::float FROM buyer_profiles) AS total_volume,
       (SELECT COALESCE(SUM(total_sessions),0)::int FROM buyer_profiles) AS total_sessions,
       (SELECT COALESCE(SUM(ghost_sessions),0)::int FROM buyer_profiles) AS total_ghosts,
+      (SELECT COUNT(*)::int FROM events WHERE event_type = 'metadata_recorded') AS metadata_records,
       (SELECT value FROM indexer_state WHERE key = 'last_indexed_block') AS last_indexed_block,
       (SELECT value FROM indexer_state WHERE key = 'last_head_block') AS last_head_block,
-      (SELECT value FROM indexer_state WHERE key = 'last_sync_ts') AS last_sync_ts
+      (SELECT value FROM indexer_state WHERE key = 'last_sync_ts') AS last_sync_ts,
+      (SELECT value FROM indexer_state WHERE key = 'last_indexed_block_antseed_stats') AS last_indexed_block_stats
   `);
   const x = r.rows[0];
   return {
@@ -287,9 +291,11 @@ export async function getNetworkStats() {
     totalVolumeUsdc: Number(x?.total_volume ?? 0),
     totalSessions: Number(x?.total_sessions ?? 0),
     totalGhosts: Number(x?.total_ghosts ?? 0),
+    metadataRecords: Number(x?.metadata_records ?? 0),
     lastIndexedBlock: x?.last_indexed_block ? Number(x.last_indexed_block) : null,
     lastHeadBlock: x?.last_head_block ? Number(x.last_head_block) : null,
     lastSyncTs: x?.last_sync_ts ? Number(x.last_sync_ts) : null,
+    lastIndexedBlockStats: x?.last_indexed_block_stats ? Number(x.last_indexed_block_stats) : null,
   };
 }
 
