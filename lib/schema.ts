@@ -9,6 +9,7 @@ import {
   doublePrecision,
   index,
   integer,
+  numeric,
   pgTable,
   primaryKey,
   serial,
@@ -96,3 +97,21 @@ export const apiKeys = pgTable("api_keys", {
   label: text("label"),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
+
+// Live $ANT balance per address. Maintained incrementally by the indexer
+// from Transfer events on the ANTS token. Balance is stored as raw
+// uint256-scale wei (numeric arbitrary-precision); an address counts as a
+// holder when balance > 0.
+export const antsHolders = pgTable(
+  "ants_holders",
+  {
+    address: text("address").primaryKey(),
+    balance: numeric("balance", { precision: 78, scale: 0 }).notNull().default("0"),
+    firstSeenBlock: bigint("first_seen_block", { mode: "number" }),
+    lastSeenBlock: bigint("last_seen_block", { mode: "number" }),
+    updatedAt: bigint("updated_at", { mode: "number" }),
+  },
+  (t) => ({
+    ixBalance: index("ants_holders_balance_idx").on(t.balance),
+  }),
+);

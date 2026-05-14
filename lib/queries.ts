@@ -267,10 +267,14 @@ export async function getNetworkStats() {
     total_sessions: number;
     total_ghosts: number;
     metadata_records: number;
+    ants_claims: number;
+    ants_holders_nonzero: number;
     last_indexed_block: string | null;
     last_head_block: string | null;
     last_sync_ts: string | null;
     last_indexed_block_stats: string | null;
+    last_indexed_block_ants: string | null;
+    last_indexed_block_emissions: string | null;
   }>(sql`
     SELECT
       (SELECT COUNT(*)::int FROM buyer_profiles) AS total_buyers,
@@ -279,10 +283,14 @@ export async function getNetworkStats() {
       (SELECT COALESCE(SUM(total_sessions),0)::int FROM buyer_profiles) AS total_sessions,
       (SELECT COALESCE(SUM(ghost_sessions),0)::int FROM buyer_profiles) AS total_ghosts,
       (SELECT COUNT(*)::int FROM events WHERE event_type = 'metadata_recorded') AS metadata_records,
+      (SELECT COUNT(*)::int FROM events WHERE event_type = 'ants_claim') AS ants_claims,
+      (SELECT COUNT(*)::int FROM ants_holders WHERE balance > 0) AS ants_holders_nonzero,
       (SELECT value FROM indexer_state WHERE key = 'last_indexed_block') AS last_indexed_block,
       (SELECT value FROM indexer_state WHERE key = 'last_head_block') AS last_head_block,
       (SELECT value FROM indexer_state WHERE key = 'last_sync_ts') AS last_sync_ts,
-      (SELECT value FROM indexer_state WHERE key = 'last_indexed_block_antseed_stats') AS last_indexed_block_stats
+      (SELECT value FROM indexer_state WHERE key = 'last_indexed_block_antseed_stats') AS last_indexed_block_stats,
+      (SELECT value FROM indexer_state WHERE key = 'last_indexed_block_ants_token') AS last_indexed_block_ants,
+      (SELECT value FROM indexer_state WHERE key = 'last_indexed_block_emissions') AS last_indexed_block_emissions
   `);
   const x = r.rows[0];
   return {
@@ -292,10 +300,14 @@ export async function getNetworkStats() {
     totalSessions: Number(x?.total_sessions ?? 0),
     totalGhosts: Number(x?.total_ghosts ?? 0),
     metadataRecords: Number(x?.metadata_records ?? 0),
+    antsClaims: Number(x?.ants_claims ?? 0),
+    antsHoldersNonZero: Number(x?.ants_holders_nonzero ?? 0),
     lastIndexedBlock: x?.last_indexed_block ? Number(x.last_indexed_block) : null,
     lastHeadBlock: x?.last_head_block ? Number(x.last_head_block) : null,
     lastSyncTs: x?.last_sync_ts ? Number(x.last_sync_ts) : null,
     lastIndexedBlockStats: x?.last_indexed_block_stats ? Number(x.last_indexed_block_stats) : null,
+    lastIndexedBlockAnts: x?.last_indexed_block_ants ? Number(x.last_indexed_block_ants) : null,
+    lastIndexedBlockEmissions: x?.last_indexed_block_emissions ? Number(x.last_indexed_block_emissions) : null,
   };
 }
 
@@ -310,11 +322,14 @@ export interface HeroStats {
   totalTokensOutput: number;
   recentTokens: number;
   priorTokens: number;
-  // Paying Users — distinct on-chain addresses that paid USDC. The next phase
-  // will expand this denominator to include $ANT holders (live balance > 0).
+  // Paying Users — distinct addresses that either paid USDC into a channel
+  // or hold $ANT (live balance > 0, excluding protocol contracts).
   totalPayingUsers: number;
   recentPayingUsers: number;
   priorPayingUsers: number;
+  // Sub-counts so the UI can attribute the headline to its two sources.
+  usdcPayers: number;
+  antHolders: number;
 }
 
 export async function getHeroStats(): Promise<HeroStats> {
@@ -323,6 +338,12 @@ export async function getHeroStats(): Promise<HeroStats> {
   const now = Math.floor(Date.now() / 1000);
   const day30 = String(now - 30 * 86400);
   const day60 = String(now - 60 * 86400);
+
+  // Inline non-user exclusion list as a SQL value-list so the whole hero
+  // payload — including the holders union — stays a single round-trip.
+  // ANTS_NON_USER_ADDRESSES is a fixed const, not user input.
+  const { ANTS_NON_USER_ADDRESSES } = await import("./antseed");
+  const excludeSql = ANTS_NON_USER_ADDRESSES.map((a) => `'${a}'`).join(",");
 
   // Revenue: SUM(delta_usdc) per ChannelSettled event — delta is the
   // per-batch amount actually moved.
@@ -333,6 +354,12 @@ export async function getHeroStats(): Promise<HeroStats> {
   // SUM is exact and matches the Dune board. ChannelSettled.metadata is
   // seller-provided opaque bytes (cumulative or null depending on seller
   // convention) and is not used here.
+  //
+  // Paying Users: distinct over the union of (a) addresses that paid USDC
+  // into a channel and (b) addresses currently holding $ANT (balance > 0),
+  // excluding protocol contracts. Recent/prior windows reflect transaction
+  // activity for USDC payers; $ANT holders are treated as active-by-balance
+  // (no per-transfer timestamp without indexing more state).
   const r = await db.execute<any>(sql`
     WITH settled AS (
       SELECT timestamp, delta_usdc
@@ -353,13 +380,33 @@ export async function getHeroStats(): Promise<HeroStats> {
         AND timestamp > 0
         AND timestamp < 32503680000
     ),
-    p AS (
-      SELECT buyer_address, timestamp
+    usdc_payers AS (
+      SELECT buyer_address AS addr,
+             bool_or(timestamp > ${sql.raw(day30)}) AS active_recent,
+             bool_or(timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS active_prior
       FROM events
-      WHERE event_type IN ('settled', 'topup')
+      WHERE event_type IN ('settled','topup')
         AND buyer_address IS NOT NULL
         AND timestamp IS NOT NULL
         AND timestamp > 0
+      GROUP BY buyer_address
+    ),
+    ant_holders_clean AS (
+      SELECT address AS addr
+      FROM ants_holders
+      WHERE balance > 0
+        AND address NOT IN (${sql.raw(excludeSql)})
+    ),
+    paying AS (
+      SELECT addr,
+             bool_or(active_recent) AS active_recent,
+             bool_or(active_prior)  AS active_prior
+      FROM (
+        SELECT addr, active_recent, active_prior FROM usdc_payers
+        UNION ALL
+        SELECT addr, TRUE AS active_recent, FALSE AS active_prior FROM ant_holders_clean
+      ) u
+      GROUP BY addr
     )
     SELECT
       (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok) AS total_tokens,
@@ -372,9 +419,11 @@ export async function getHeroStats(): Promise<HeroStats> {
       (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${sql.raw(day30)}) AS recent_revenue,
       (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_revenue,
 
-      (SELECT COUNT(DISTINCT buyer_address)::int        FROM p) AS total_paying_users,
-      (SELECT COUNT(DISTINCT buyer_address)::int        FROM p WHERE timestamp > ${sql.raw(day30)}) AS recent_paying_users,
-      (SELECT COUNT(DISTINCT buyer_address)::int        FROM p WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_paying_users
+      (SELECT COUNT(*)::int                             FROM paying) AS total_paying_users,
+      (SELECT COUNT(*)::int                             FROM paying WHERE active_recent) AS recent_paying_users,
+      (SELECT COUNT(*)::int                             FROM paying WHERE active_prior)  AS prior_paying_users,
+      (SELECT COUNT(*)::int                             FROM usdc_payers) AS usdc_payers,
+      (SELECT COUNT(*)::int                             FROM ant_holders_clean) AS ant_holders
   `);
 
   const x = r.rows[0] ?? {};
@@ -390,6 +439,8 @@ export async function getHeroStats(): Promise<HeroStats> {
     totalPayingUsers: Number(x.total_paying_users ?? 0),
     recentPayingUsers: Number(x.recent_paying_users ?? 0),
     priorPayingUsers: Number(x.prior_paying_users ?? 0),
+    usdcPayers: Number(x.usdc_payers ?? 0),
+    antHolders: Number(x.ant_holders ?? 0),
   };
 }
 

@@ -4,8 +4,12 @@ import {
   CONTRACTS,
   CHANNELS_DEPLOYMENT_BLOCK,
   ANTSEED_STATS_DEPLOYMENT_BLOCK,
+  ANTS_TOKEN_DEPLOYMENT_BLOCK,
+  EMISSIONS_DEPLOYMENT_BLOCK,
   channelsAbi,
   antseedStatsAbi,
+  antsTokenAbi,
+  emissionsAbi,
   type EventType,
 } from "./antseed";
 import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./db";
@@ -13,6 +17,8 @@ import { events as eventsTbl, buyerProfiles, providerDirectory } from "./schema"
 import { sql } from "drizzle-orm";
 import { calculateTrustScore } from "./score";
 import { emit } from "./emitter";
+
+const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 
 const ENV_BATCH_SIZE = BigInt(process.env.LOG_BATCH_SIZE || 2000);
 const SYNC_DEBOUNCE_MS = 60_000;
@@ -75,18 +81,44 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
   const syncStart = Date.now();
   try {
     const channels = await runSync(opts);
-    // AntseedStats is the canonical source for tokens-consumed (Dune reads
-    // from here too). Failures must not poison the channels result, so we
-    // wrap and only log. Give it the rest of the cron budget — channels is
-    // usually caught up and returns in <1s, leaving ~45s for the stats
-    // backfill. Hardcoded 20s previously was leaving 30s of budget unused.
+    // Auxiliary syncs share the rest of the cron budget. Stats is heaviest
+    // (full backfill in progress), so it gets the largest slice; ANTS and
+    // Emissions are smaller and fast — give them a guaranteed minimum even
+    // when stats is still chewing through history. Each wrapped so any one
+    // failing cannot block the others or poison the channels result.
     const cronBudgetMs = opts.deadlineMs ?? 50_000;
+    const reserveForAntsAndEmissions = 12_000; // 6s each, headroom for slow ticks
     const elapsedMs = Date.now() - syncStart;
-    const statsDeadline = Math.max(5_000, cronBudgetMs - elapsedMs - 3_000);
+    const statsDeadline = Math.max(
+      5_000,
+      cronBudgetMs - elapsedMs - reserveForAntsAndEmissions - 3_000,
+    );
     try {
       await syncAntseedStats({ deadlineMs: statsDeadline });
     } catch (e) {
       console.warn("[indexer] antseed_stats sync failed:", (e as Error)?.message || e);
+    }
+
+    const elapsedAfterStats = Date.now() - syncStart;
+    const antsDeadline = Math.max(
+      3_000,
+      Math.floor((cronBudgetMs - elapsedAfterStats - 3_000) / 2),
+    );
+    try {
+      await syncAntsToken({ deadlineMs: antsDeadline });
+    } catch (e) {
+      console.warn("[indexer] ants_token sync failed:", (e as Error)?.message || e);
+    }
+
+    const elapsedAfterAnts = Date.now() - syncStart;
+    const emissionsDeadline = Math.max(
+      2_000,
+      cronBudgetMs - elapsedAfterAnts - 3_000,
+    );
+    try {
+      await syncEmissions({ deadlineMs: emissionsDeadline });
+    } catch (e) {
+      console.warn("[indexer] emissions sync failed:", (e as Error)?.message || e);
     }
     return channels;
   } finally {
@@ -764,5 +796,385 @@ export async function syncAntseedStats(
     fromBlock: fromBlockStart.toString(),
     toBlock: head.toString(),
     recordsAdded,
+  };
+}
+
+// ============================================================================
+// ANTS token Transfer indexing — maintains live per-address balances.
+// We deliberately do not persist individual Transfer events; the only
+// downstream consumer is the holder headcount in the Paying Users hero,
+// and replaying all transfers would require the same getLogs work each
+// time anyway. Balances are stored raw (uint256-scale wei) in numeric so
+// dust transfers don't round to zero.
+// ============================================================================
+
+const ANTS_CURSOR_KEY = "last_indexed_block_ants_token";
+const ANTS_BATCH_KEY = "log_batch_size_ants_token";
+const ANTS_BATCH_INITIAL = 2_000n;
+const ANTS_BATCH_MAX = 10_000n;
+
+interface AntsSyncResult {
+  ok: boolean;
+  fromBlock: string;
+  toBlock: string;
+  transfersProcessed: number;
+  holdersTouched: number;
+  error?: string;
+}
+
+export async function syncAntsToken(
+  opts: { deadlineMs?: number } = {},
+): Promise<AntsSyncResult> {
+  const last = await getState(ANTS_CURSOR_KEY);
+  const lastIndexed = BigInt(
+    last || (ANTS_TOKEN_DEPLOYMENT_BLOCK - 1n).toString(),
+  );
+
+  let head: bigint;
+  try {
+    head = await publicClient.getBlockNumber();
+  } catch (e: any) {
+    return {
+      ok: false,
+      fromBlock: "?",
+      toBlock: "?",
+      transfersProcessed: 0,
+      holdersTouched: 0,
+      error: e?.message || String(e),
+    };
+  }
+
+  const fromBlockStart = lastIndexed + 1n;
+  if (fromBlockStart > head) {
+    return {
+      ok: true,
+      fromBlock: fromBlockStart.toString(),
+      toBlock: head.toString(),
+      transfersProcessed: 0,
+      holdersTouched: 0,
+    };
+  }
+
+  const persistedBatch = await getState(ANTS_BATCH_KEY);
+  let batchSize = persistedBatch ? BigInt(persistedBatch) : ANTS_BATCH_INITIAL;
+  if (batchSize > ANTS_BATCH_MAX) batchSize = ANTS_BATCH_MAX;
+  let consecutiveSuccesses = 0;
+  let transfersProcessed = 0;
+  const holdersTouched = new Set<string>();
+  const startedAt = Date.now();
+  const SOFT_DEADLINE_MS = opts.deadlineMs ?? 10_000;
+  const cursor = { from: fromBlockStart };
+
+  while (cursor.from <= head) {
+    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
+      return {
+        ok: true,
+        fromBlock: fromBlockStart.toString(),
+        toBlock: cursor.from.toString(),
+        transfersProcessed,
+        holdersTouched: holdersTouched.size,
+        error: "deadline_partial",
+      };
+    }
+
+    const to =
+      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
+
+    let logs: Log[];
+    let rateLimitRetries = 0;
+    while (true) {
+      try {
+        logs = await publicClient.getLogs({
+          address: CONTRACTS.ANTSToken as `0x${string}`,
+          events: antsTokenAbi as any,
+          fromBlock: cursor.from,
+          toBlock: to,
+        });
+        break;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (isRangeError(msg) && batchSize > 1n) {
+          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
+          if (batchSize < 1n) batchSize = 1n;
+          await setState(ANTS_BATCH_KEY, batchSize.toString());
+          consecutiveSuccesses = 0;
+          break;
+        }
+        if (isRateLimitError(msg) && rateLimitRetries < 3) {
+          rateLimitRetries++;
+          await sleep(1500 * rateLimitRetries);
+          continue;
+        }
+        return {
+          ok: false,
+          fromBlock: cursor.from.toString(),
+          toBlock: to.toString(),
+          transfersProcessed,
+          holdersTouched: holdersTouched.size,
+          error: msg,
+        };
+      }
+    }
+    if (!logs!) continue;
+
+    // Coalesce deltas inside the batch — many transfers can touch the
+    // same address (DEX routers, hot wallets); one UPDATE per net change
+    // is much cheaper than one per log.
+    const deltas = new Map<string, bigint>();
+    const blockMap = new Map<string, { first: number; last: number }>();
+    for (const log of logs as any[]) {
+      const args = log.args || {};
+      const from = (args.from as string | undefined)?.toLowerCase();
+      const toAddr = (args.to as string | undefined)?.toLowerCase();
+      const value = args.value as bigint | undefined;
+      if (!from || !toAddr || value == null) continue;
+      const bn = Number(log.blockNumber);
+
+      if (from !== ZERO_ADDR) {
+        deltas.set(from, (deltas.get(from) ?? 0n) - value);
+        const e = blockMap.get(from);
+        if (e) {
+          e.last = Math.max(e.last, bn);
+          e.first = Math.min(e.first, bn);
+        } else {
+          blockMap.set(from, { first: bn, last: bn });
+        }
+        holdersTouched.add(from);
+      }
+      if (toAddr !== ZERO_ADDR) {
+        deltas.set(toAddr, (deltas.get(toAddr) ?? 0n) + value);
+        const e = blockMap.get(toAddr);
+        if (e) {
+          e.last = Math.max(e.last, bn);
+          e.first = Math.min(e.first, bn);
+        } else {
+          blockMap.set(toAddr, { first: bn, last: bn });
+        }
+        holdersTouched.add(toAddr);
+      }
+      transfersProcessed++;
+    }
+
+    const now = Date.now();
+    for (const [addr, delta] of deltas) {
+      if (delta === 0n) continue;
+      const meta = blockMap.get(addr)!;
+      const deltaStr = delta.toString();
+      await db.execute(sql`
+        INSERT INTO ants_holders (address, balance, first_seen_block, last_seen_block, updated_at)
+        VALUES (${addr}, ${sql.raw(`'${deltaStr}'::numeric`)}, ${meta.first}, ${meta.last}, ${now})
+        ON CONFLICT (address) DO UPDATE SET
+          balance = ants_holders.balance + ${sql.raw(`'${deltaStr}'::numeric`)},
+          first_seen_block = LEAST(COALESCE(ants_holders.first_seen_block, ${meta.first}), ${meta.first}),
+          last_seen_block = GREATEST(COALESCE(ants_holders.last_seen_block, ${meta.last}), ${meta.last}),
+          updated_at = ${now}
+      `);
+    }
+
+    await setState(ANTS_CURSOR_KEY, to.toString());
+    consecutiveSuccesses += 1;
+    if (consecutiveSuccesses >= 5 && batchSize < ANTS_BATCH_MAX) {
+      batchSize =
+        batchSize * 2n > ANTS_BATCH_MAX ? ANTS_BATCH_MAX : batchSize * 2n;
+      await setState(ANTS_BATCH_KEY, batchSize.toString());
+      consecutiveSuccesses = 0;
+    }
+    cursor.from = to + 1n;
+    await sleep(150);
+  }
+
+  return {
+    ok: true,
+    fromBlock: fromBlockStart.toString(),
+    toBlock: head.toString(),
+    transfersProcessed,
+    holdersTouched: holdersTouched.size,
+  };
+}
+
+// ============================================================================
+// AntseedEmissionsV2.EmissionsClaimed — both buyer and seller claim flows
+// fire this. Stored as event_type='ants_claim' rows in the existing events
+// table so the activity feed and per-address profiles surface them without
+// any schema churn.
+// ============================================================================
+
+const EMISSIONS_CURSOR_KEY = "last_indexed_block_emissions";
+const EMISSIONS_BATCH_KEY = "log_batch_size_emissions";
+const EMISSIONS_BATCH_INITIAL = 10_000n;
+const EMISSIONS_BATCH_MAX = 20_000n;
+
+interface EmissionsSyncResult {
+  ok: boolean;
+  fromBlock: string;
+  toBlock: string;
+  claimsProcessed: number;
+  error?: string;
+}
+
+export async function syncEmissions(
+  opts: { deadlineMs?: number } = {},
+): Promise<EmissionsSyncResult> {
+  const last = await getState(EMISSIONS_CURSOR_KEY);
+  const lastIndexed = BigInt(
+    last || (EMISSIONS_DEPLOYMENT_BLOCK - 1n).toString(),
+  );
+
+  let head: bigint;
+  try {
+    head = await publicClient.getBlockNumber();
+  } catch (e: any) {
+    return {
+      ok: false,
+      fromBlock: "?",
+      toBlock: "?",
+      claimsProcessed: 0,
+      error: e?.message || String(e),
+    };
+  }
+
+  const fromBlockStart = lastIndexed + 1n;
+  if (fromBlockStart > head) {
+    return {
+      ok: true,
+      fromBlock: fromBlockStart.toString(),
+      toBlock: head.toString(),
+      claimsProcessed: 0,
+    };
+  }
+
+  const persistedBatch = await getState(EMISSIONS_BATCH_KEY);
+  let batchSize = persistedBatch ? BigInt(persistedBatch) : EMISSIONS_BATCH_INITIAL;
+  if (batchSize > EMISSIONS_BATCH_MAX) batchSize = EMISSIONS_BATCH_MAX;
+  let consecutiveSuccesses = 0;
+  let claimsProcessed = 0;
+  const startedAt = Date.now();
+  const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
+  const cursor = { from: fromBlockStart };
+
+  while (cursor.from <= head) {
+    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
+      return {
+        ok: true,
+        fromBlock: fromBlockStart.toString(),
+        toBlock: cursor.from.toString(),
+        claimsProcessed,
+        error: "deadline_partial",
+      };
+    }
+
+    const to =
+      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
+
+    let logs: Log[];
+    let rateLimitRetries = 0;
+    while (true) {
+      try {
+        logs = await publicClient.getLogs({
+          address: CONTRACTS.AntseedEmissions as `0x${string}`,
+          events: emissionsAbi as any,
+          fromBlock: cursor.from,
+          toBlock: to,
+        });
+        break;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (isRangeError(msg) && batchSize > 1n) {
+          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
+          if (batchSize < 1n) batchSize = 1n;
+          await setState(EMISSIONS_BATCH_KEY, batchSize.toString());
+          consecutiveSuccesses = 0;
+          break;
+        }
+        if (isRateLimitError(msg) && rateLimitRetries < 3) {
+          rateLimitRetries++;
+          await sleep(1500 * rateLimitRetries);
+          continue;
+        }
+        return {
+          ok: false,
+          fromBlock: cursor.from.toString(),
+          toBlock: to.toString(),
+          claimsProcessed,
+          error: msg,
+        };
+      }
+    }
+    if (!logs!) continue;
+
+    if (logs.length > 0) {
+      const uniqueBlocks = [
+        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
+      ];
+      const blockTs = new Map<bigint, number>();
+      if (uniqueBlocks.length > 0) {
+        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
+        try {
+          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
+          const anchorTs = Number(blk.timestamp);
+          for (const bn of uniqueBlocks) {
+            const diff = Number(anchorBn - bn);
+            blockTs.set(bn, anchorTs - diff * 2);
+          }
+        } catch {
+          // Timestamp fetch is non-fatal — fall back to 0.
+        }
+      }
+
+      const rows = (logs as any[]).map((log) => {
+        const args = log.args || {};
+        return {
+          txHash: log.transactionHash,
+          logIndex: log.logIndex,
+          blockNumber: Number(log.blockNumber),
+          eventType: "ants_claim" as EventType,
+          buyerAddress: (args.account as string | undefined)?.toLowerCase() ?? null,
+          sellerAddress: (args.recipient as string | undefined)?.toLowerCase() ?? null,
+          channelId: null,
+          maxAmountUsdc: null,
+          deltaUsdc: null,
+          refundUsdc: null,
+          settledAmountUsdc: null,
+          cumulativeAmountUsdc: null,
+          platformFeeUsdc: null,
+          newDepositUsdc: null,
+          gracePeriodEnd: null,
+          inputTokens: null,
+          outputTokens: null,
+          requestCount: null,
+          timestamp: blockTs.get(log.blockNumber!) ?? 0,
+          rawLog: JSON.stringify(serializableLog(log)),
+        };
+      });
+
+      if (rows.length > 0) {
+        const result = await db
+          .insert(eventsTbl)
+          .values(rows)
+          .onConflictDoNothing()
+          .returning({ id: eventsTbl.id });
+        claimsProcessed += result.length;
+      }
+    }
+
+    await setState(EMISSIONS_CURSOR_KEY, to.toString());
+    consecutiveSuccesses += 1;
+    if (consecutiveSuccesses >= 5 && batchSize < EMISSIONS_BATCH_MAX) {
+      batchSize =
+        batchSize * 2n > EMISSIONS_BATCH_MAX
+          ? EMISSIONS_BATCH_MAX
+          : batchSize * 2n;
+      await setState(EMISSIONS_BATCH_KEY, batchSize.toString());
+      consecutiveSuccesses = 0;
+    }
+    cursor.from = to + 1n;
+    await sleep(150);
+  }
+
+  return {
+    ok: true,
+    fromBlock: fromBlockStart.toString(),
+    toBlock: head.toString(),
+    claimsProcessed,
   };
 }

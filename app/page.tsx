@@ -96,9 +96,11 @@ export default async function HomePage({
         <HeroCard
           label="Paying Users"
           value={fmtNum(hero.totalPayingUsers)}
-          sublabel="Addresses that paid USDC"
+          sublabel={`${fmtNum(hero.usdcPayers)} paid USDC · ${fmtNum(
+            hero.antHolders,
+          )} hold $ANT`}
           delta={pctDelta(hero.recentPayingUsers, hero.priorPayingUsers)}
-          tooltip="Distinct addresses with at least one settled or topped-up channel. $ANT holders will be added in the next phase."
+          tooltip="Distinct addresses that either paid USDC into a channel or currently hold $ANT (excluding protocol contracts)."
         />
       </section>
 
