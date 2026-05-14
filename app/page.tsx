@@ -91,7 +91,7 @@ export default async function HomePage({
             hero.totalTokensOutput,
           )} out`}
           delta={pctDelta(hero.recentTokens, hero.priorTokens)}
-          tooltip="Input + output tokens, decoded from ChannelSettled.metadata."
+          tooltip="Input + output tokens recorded by AntseedStats — the canonical per-inference accounting."
         />
         <HeroCard
           label="Paying Users"

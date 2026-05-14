@@ -3,7 +3,9 @@ import { publicClient } from "./chain";
 import {
   CONTRACTS,
   CHANNELS_DEPLOYMENT_BLOCK,
+  ANTSEED_STATS_DEPLOYMENT_BLOCK,
   channelsAbi,
+  antseedStatsAbi,
   type EventType,
 } from "./antseed";
 import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./db";
@@ -71,7 +73,16 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
   }
 
   try {
-    return await runSync(opts);
+    const channels = await runSync(opts);
+    // AntseedStats is the canonical source for tokens-consumed (Dune reads
+    // from here too). Failures must not poison the channels result, so we
+    // wrap and only log; it gets the remaining time in the cron budget.
+    try {
+      await syncAntseedStats({ deadlineMs: 20_000 });
+    } catch (e) {
+      console.warn("[indexer] antseed_stats sync failed:", (e as Error)?.message || e);
+    }
+    return channels;
   } finally {
     await releaseSyncLock();
     // Stamp last_sync_ts even on partial/error runs so the dashboard "Updated X ago"
@@ -545,4 +556,194 @@ export async function refreshProviderDirectory() {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ============================================================================
+// AntseedStats.MetadataRecorded indexing.
+// This is the canonical source for tokens-consumed: the Stats contract is
+// only writable by authorized addresses, and each event records the
+// per-call (input, output, requestCount) tuple — so SUM across events
+// equals the true network-wide token throughput, matching the Dune board.
+// ChannelSettled.metadata is opaque seller-provided bytes and is unreliable.
+// ============================================================================
+
+const STATS_CURSOR_KEY = "last_indexed_block_antseed_stats";
+const STATS_BATCH_INITIAL = 20_000n;
+const STATS_BLOCK_SECS = 2;
+
+interface StatsSyncResult {
+  ok: boolean;
+  fromBlock: string;
+  toBlock: string;
+  recordsAdded: number;
+  error?: string;
+}
+
+export async function syncAntseedStats(
+  opts: { deadlineMs?: number } = {},
+): Promise<StatsSyncResult> {
+  const last = await getState(STATS_CURSOR_KEY);
+  const lastIndexed = BigInt(
+    last || (ANTSEED_STATS_DEPLOYMENT_BLOCK - 1n).toString(),
+  );
+
+  let head: bigint;
+  try {
+    head = await publicClient.getBlockNumber();
+  } catch (e: any) {
+    return {
+      ok: false,
+      fromBlock: "?",
+      toBlock: "?",
+      recordsAdded: 0,
+      error: e?.message || String(e),
+    };
+  }
+
+  const fromBlockStart = lastIndexed + 1n;
+  if (fromBlockStart > head) {
+    return {
+      ok: true,
+      fromBlock: fromBlockStart.toString(),
+      toBlock: head.toString(),
+      recordsAdded: 0,
+    };
+  }
+
+  let batchSize = STATS_BATCH_INITIAL;
+  let consecutiveSuccesses = 0;
+  let recordsAdded = 0;
+  const startedAt = Date.now();
+  const SOFT_DEADLINE_MS = opts.deadlineMs ?? 20_000;
+  const cursor = { from: fromBlockStart };
+
+  while (cursor.from <= head) {
+    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
+      return {
+        ok: true,
+        fromBlock: fromBlockStart.toString(),
+        toBlock: cursor.from.toString(),
+        recordsAdded,
+        error: "deadline_partial",
+      };
+    }
+
+    const to =
+      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
+
+    let logs: Log[];
+    let rateLimitRetries = 0;
+    while (true) {
+      try {
+        logs = await publicClient.getLogs({
+          address: CONTRACTS.AntseedStats as `0x${string}`,
+          events: antseedStatsAbi as any,
+          fromBlock: cursor.from,
+          toBlock: to,
+        });
+        break;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (isRangeError(msg) && batchSize > 1n) {
+          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
+          if (batchSize < 1n) batchSize = 1n;
+          consecutiveSuccesses = 0;
+          break;
+        }
+        if (isRateLimitError(msg) && rateLimitRetries < 3) {
+          rateLimitRetries++;
+          await sleep(1500 * rateLimitRetries);
+          continue;
+        }
+        return {
+          ok: false,
+          fromBlock: cursor.from.toString(),
+          toBlock: to.toString(),
+          recordsAdded,
+          error: msg,
+        };
+      }
+    }
+    if (!logs!) continue;
+
+    if (logs.length > 0) {
+      const uniqueBlocks = [
+        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
+      ];
+      const blockTs = new Map<bigint, number>();
+      if (uniqueBlocks.length > 0) {
+        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
+        try {
+          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
+          const anchorTs = Number(blk.timestamp);
+          for (const bn of uniqueBlocks) {
+            const diff = Number(anchorBn - bn);
+            blockTs.set(bn, anchorTs - diff * STATS_BLOCK_SECS);
+          }
+        } catch {
+          // Timestamp fetch is non-fatal — fall back to 0.
+        }
+      }
+
+      const rows = (logs as any[]).map((log) => {
+        const args = log.args || {};
+        // Numbers fit comfortably in JS Number for token counts on this
+        // network (per-event values are <1e10). If that ever changes we'll
+        // need a numeric column.
+        return {
+          txHash: log.transactionHash,
+          logIndex: log.logIndex,
+          blockNumber: Number(log.blockNumber),
+          eventType: "metadata_recorded" as EventType,
+          buyerAddress: (args.buyer as string | undefined)?.toLowerCase() ?? null,
+          sellerAddress: null,
+          channelId: (args.channelId as string | undefined) ?? null,
+          maxAmountUsdc: null,
+          deltaUsdc: null,
+          refundUsdc: null,
+          settledAmountUsdc: null,
+          cumulativeAmountUsdc: null,
+          platformFeeUsdc: null,
+          newDepositUsdc: null,
+          gracePeriodEnd: null,
+          inputTokens:
+            args.inputTokens != null ? Number(args.inputTokens) : null,
+          outputTokens:
+            args.outputTokens != null ? Number(args.outputTokens) : null,
+          requestCount:
+            args.requestCount != null ? Number(args.requestCount) : null,
+          timestamp: blockTs.get(log.blockNumber!) ?? 0,
+          rawLog: JSON.stringify(serializableLog(log)),
+        };
+      });
+
+      if (rows.length > 0) {
+        const result = await db
+          .insert(eventsTbl)
+          .values(rows)
+          .onConflictDoNothing()
+          .returning({ id: eventsTbl.id });
+        recordsAdded += result.length;
+      }
+    }
+
+    await setState(STATS_CURSOR_KEY, to.toString());
+    consecutiveSuccesses += 1;
+    if (consecutiveSuccesses >= 5 && batchSize < STATS_BATCH_INITIAL) {
+      batchSize =
+        batchSize * 2n > STATS_BATCH_INITIAL
+          ? STATS_BATCH_INITIAL
+          : batchSize * 2n;
+      consecutiveSuccesses = 0;
+    }
+    cursor.from = to + 1n;
+    await sleep(300);
+  }
+
+  return {
+    ok: true,
+    fromBlock: fromBlockStart.toString(),
+    toBlock: head.toString(),
+    recordsAdded,
+  };
 }
