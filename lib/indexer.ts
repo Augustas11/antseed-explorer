@@ -72,13 +72,19 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
     };
   }
 
+  const syncStart = Date.now();
   try {
     const channels = await runSync(opts);
     // AntseedStats is the canonical source for tokens-consumed (Dune reads
     // from here too). Failures must not poison the channels result, so we
-    // wrap and only log; it gets the remaining time in the cron budget.
+    // wrap and only log. Give it the rest of the cron budget — channels is
+    // usually caught up and returns in <1s, leaving ~45s for the stats
+    // backfill. Hardcoded 20s previously was leaving 30s of budget unused.
+    const cronBudgetMs = opts.deadlineMs ?? 50_000;
+    const elapsedMs = Date.now() - syncStart;
+    const statsDeadline = Math.max(5_000, cronBudgetMs - elapsedMs - 3_000);
     try {
-      await syncAntseedStats({ deadlineMs: 20_000 });
+      await syncAntseedStats({ deadlineMs: statsDeadline });
     } catch (e) {
       console.warn("[indexer] antseed_stats sync failed:", (e as Error)?.message || e);
     }
@@ -568,7 +574,13 @@ export async function refreshProviderDirectory() {
 // ============================================================================
 
 const STATS_CURSOR_KEY = "last_indexed_block_antseed_stats";
-const STATS_BATCH_INITIAL = 20_000n;
+const STATS_BATCH_KEY = "log_batch_size_antseed_stats";
+// AntseedStats fires MetadataRecorded once per inference call, so event
+// density per block is much higher than the channels contract. Starting too
+// big wastes the first half of each cron tick shrinking. 2_000 is the
+// observed ceiling under drpc free tier without range errors.
+const STATS_BATCH_INITIAL = 2_000n;
+const STATS_BATCH_MAX = 5_000n;
 const STATS_BLOCK_SECS = 2;
 
 interface StatsSyncResult {
@@ -610,7 +622,12 @@ export async function syncAntseedStats(
     };
   }
 
-  let batchSize = STATS_BATCH_INITIAL;
+  // Persist batch size across cron ticks — without this, each tick restarts
+  // at STATS_BATCH_INITIAL and burns several seconds shrinking before finding
+  // a working size, slowing backfill by an order of magnitude.
+  const persistedBatch = await getState(STATS_BATCH_KEY);
+  let batchSize = persistedBatch ? BigInt(persistedBatch) : STATS_BATCH_INITIAL;
+  if (batchSize > STATS_BATCH_MAX) batchSize = STATS_BATCH_MAX;
   let consecutiveSuccesses = 0;
   let recordsAdded = 0;
   const startedAt = Date.now();
@@ -647,6 +664,7 @@ export async function syncAntseedStats(
         if (isRangeError(msg) && batchSize > 1n) {
           batchSize = batchSize > 20n ? batchSize / 2n : 10n;
           if (batchSize < 1n) batchSize = 1n;
+          await setState(STATS_BATCH_KEY, batchSize.toString());
           consecutiveSuccesses = 0;
           break;
         }
@@ -729,15 +747,16 @@ export async function syncAntseedStats(
 
     await setState(STATS_CURSOR_KEY, to.toString());
     consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < STATS_BATCH_INITIAL) {
+    if (consecutiveSuccesses >= 5 && batchSize < STATS_BATCH_MAX) {
       batchSize =
-        batchSize * 2n > STATS_BATCH_INITIAL
-          ? STATS_BATCH_INITIAL
-          : batchSize * 2n;
+        batchSize * 2n > STATS_BATCH_MAX ? STATS_BATCH_MAX : batchSize * 2n;
+      await setState(STATS_BATCH_KEY, batchSize.toString());
       consecutiveSuccesses = 0;
     }
     cursor.from = to + 1n;
-    await sleep(300);
+    // 150ms — drpc free tier permits this; channels uses 300ms to share
+    // the rate budget with the heavier ChannelSettled decode pass.
+    await sleep(150);
   }
 
   return {
