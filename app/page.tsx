@@ -102,6 +102,24 @@ export default async function HomePage({
         />
       </section>
 
+      <section className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <div className="stat">
+          <div className="stat-label">Sessions settled</div>
+          <div className="stat-value">{fmtNum(stats.totalSessions)}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Ghost sessions</div>
+          <div className="stat-value">{fmtNum(stats.totalGhosts)}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Qualified buyers</div>
+          <div className="stat-value">{fmtNum(stats.qualifiedBuyers)}</div>
+          <div className="text-xs text-muted">
+            of {fmtNum(stats.totalBuyers)} indexed
+          </div>
+        </div>
+      </section>
+
       <section className="grid md:grid-cols-2 gap-4">
         <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">
