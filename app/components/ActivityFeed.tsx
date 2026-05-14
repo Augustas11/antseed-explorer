@@ -6,6 +6,7 @@ function eventPillClass(type: string) {
   if (type === "settled") return "text-accent";
   if (type === "Closed" || type === "closed") return "text-muted";
   if (type === "Reserved" || type === "reserved") return "text-ink";
+  if (type === "ants_claim") return "text-warn";
   return "text-bad"; // ghost / unknown
 }
 
