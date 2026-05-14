@@ -810,8 +810,10 @@ export async function syncAntseedStats(
 
 const ANTS_CURSOR_KEY = "last_indexed_block_ants_token";
 const ANTS_BATCH_KEY = "log_batch_size_ants_token";
-const ANTS_BATCH_INITIAL = 2_000n;
-const ANTS_BATCH_MAX = 10_000n;
+// ANTS token has ~41 holders → Transfer event density is very low. Big
+// batches are safe and let us backfill 35 days of history in 1–2 cron ticks.
+const ANTS_BATCH_INITIAL = 50_000n;
+const ANTS_BATCH_MAX = 100_000n;
 
 interface AntsSyncResult {
   ok: boolean;
@@ -1001,8 +1003,10 @@ export async function syncAntsToken(
 
 const EMISSIONS_CURSOR_KEY = "last_indexed_block_emissions";
 const EMISSIONS_BATCH_KEY = "log_batch_size_emissions";
-const EMISSIONS_BATCH_INITIAL = 10_000n;
-const EMISSIONS_BATCH_MAX = 20_000n;
+// V2 deployed 2026-05-13; only a few claims so far. Sparse event density,
+// big batches are safe and finish backfill in one tick.
+const EMISSIONS_BATCH_INITIAL = 50_000n;
+const EMISSIONS_BATCH_MAX = 100_000n;
 
 interface EmissionsSyncResult {
   ok: boolean;

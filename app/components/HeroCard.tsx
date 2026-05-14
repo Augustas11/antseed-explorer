@@ -1,9 +1,10 @@
+import type { ReactNode } from "react";
 import { fmtPct } from "@/lib/format";
 
 interface HeroCardProps {
   label: string;
   value: string;
-  sublabel?: string;
+  sublabel?: ReactNode;
   delta?: number | null;
   deltaLabel?: string;
   tooltip?: string;
