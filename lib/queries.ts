@@ -451,6 +451,67 @@ export interface TokenBucket {
   total_tokens: number;
 }
 
+export interface HeroSparklinePoint {
+  day: string;
+  revenue: number;
+  tokens: number;
+  paying_users: number;
+}
+
+// 30d daily series for the three hero KPIs in a single round-trip. Used to
+// draw the sparkline under each hero card; not enough resolution for real
+// charts, just shape signal. Tokens come from MetadataRecorded events
+// (canonical, matches the hero card source).
+export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
+  const rows = await db.execute<any>(sql`
+    WITH days AS (
+      SELECT generate_series(
+        date_trunc('day', to_timestamp(extract(epoch from now())::bigint - 29 * 86400)),
+        date_trunc('day', to_timestamp(extract(epoch from now())::bigint)),
+        interval '1 day'
+      )::date AS d
+    ),
+    rev AS (
+      SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
+             COALESCE(SUM(delta_usdc),0)::float AS revenue,
+             COUNT(DISTINCT buyer_address)::int AS paying_users
+      FROM events
+      WHERE event_type IN ('settled','topup')
+        AND buyer_address IS NOT NULL
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp > extract(epoch from now())::bigint - 30 * 86400
+      GROUP BY day
+    ),
+    tok AS (
+      SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
+             COALESCE(SUM(
+               COALESCE(input_tokens,0) + COALESCE(output_tokens,0)
+             ),0)::bigint AS tokens
+      FROM events
+      WHERE event_type='metadata_recorded'
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp > extract(epoch from now())::bigint - 30 * 86400
+      GROUP BY day
+    )
+    SELECT to_char(d, 'YYYY-MM-DD')           AS day,
+           COALESCE(rev.revenue, 0)::float    AS revenue,
+           COALESCE(tok.tokens, 0)::bigint    AS tokens,
+           COALESCE(rev.paying_users, 0)::int AS paying_users
+    FROM days
+    LEFT JOIN rev ON rev.day = to_char(d, 'YYYY-MM-DD')
+    LEFT JOIN tok ON tok.day = to_char(d, 'YYYY-MM-DD')
+    ORDER BY d ASC
+  `);
+  return rows.rows.map((r: any) => ({
+    day: r.day,
+    revenue: Number(r.revenue ?? 0),
+    tokens: Number(r.tokens ?? 0),
+    paying_users: Number(r.paying_users ?? 0),
+  }));
+}
+
 // Daily/hourly token throughput from the canonical AntseedStats events.
 // Per-call deltas, so SUM is the right shape; matches Dune's daily card.
 export async function getDailyTokens(days = 30): Promise<TokenBucket[]> {

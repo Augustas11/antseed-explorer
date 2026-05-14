@@ -8,6 +8,7 @@ interface HeroCardProps {
   delta?: number | null;
   deltaLabel?: string;
   tooltip?: string;
+  sparkline?: ReactNode;
 }
 
 export default function HeroCard({
@@ -17,6 +18,7 @@ export default function HeroCard({
   delta,
   deltaLabel = "vs prior 30d",
   tooltip,
+  sparkline,
 }: HeroCardProps) {
   const deltaCls =
     delta == null
@@ -35,6 +37,7 @@ export default function HeroCard({
       <div className="text-4xl font-semibold text-ink tabular-nums leading-tight">
         {value}
       </div>
+      {sparkline ? <div className="mt-1">{sparkline}</div> : null}
       <div className="flex items-baseline justify-between gap-2 mt-auto text-xs">
         <span className="text-muted truncate">{sublabel ?? ""}</span>
         <span className={`tabular-nums ${deltaCls}`}>
