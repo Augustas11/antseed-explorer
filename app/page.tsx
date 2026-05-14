@@ -1,14 +1,23 @@
 import Link from "next/link";
 import {
   getDailyVolume,
+  getHeroStats,
   getHourlyVolume,
   getNetworkStats,
   getRecentEvents,
   listBuyers,
 } from "@/lib/queries";
-import { fmtNum, fmtRelative, fmtUsd, shortAddr } from "@/lib/format";
+import {
+  fmtCompact,
+  fmtNum,
+  fmtRelative,
+  fmtUsd,
+  pctDelta,
+  shortAddr,
+} from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "./components/Badges";
 import { ActiveBuyersChart, VolumeChart } from "./components/Charts";
+import HeroCard from "./components/HeroCard";
 import TimeRangePills from "./components/TimeRangePills";
 import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
@@ -34,6 +43,7 @@ export default async function HomePage({
       : "last 30d";
 
   const stats = await getNetworkStats();
+  const hero = await getHeroStats();
   const daily =
     range === "24h"
       ? await getHourlyVolume(24)
@@ -58,27 +68,41 @@ export default async function HomePage({
 
       <section>
         <h1 className="text-3xl font-semibold tracking-tight">
-          On-chain buyer intelligence
+          AntSeed network economics
         </h1>
         <p className="text-muted mt-2 max-w-2xl">
-          Indexed buyer activity from the AntSeed P2P AI services network on
-          Base. Profiles, demand signals, and a Buyer Trust Score derived from
-          on-chain settlement data.
+          Settled USDC, tokens consumed, and paying users on the AntSeed P2P AI
+          services network. All metrics derived from on-chain events on Base.
         </p>
       </section>
 
-      <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="stat">
-          <div className="stat-label">Buyers indexed</div>
-          <div className="stat-value">{fmtNum(stats.totalBuyers)}</div>
-          <div className="text-xs text-muted">
-            {fmtNum(stats.qualifiedBuyers)} qualified
-          </div>
-        </div>
-        <div className="stat">
-          <div className="stat-label">USDC settled</div>
-          <div className="stat-value">{fmtUsd(stats.totalVolumeUsdc)}</div>
-        </div>
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <HeroCard
+          label="Network Revenue"
+          value={fmtUsd(hero.totalRevenueUsdc)}
+          sublabel="Settled USDC, all-time"
+          delta={pctDelta(hero.recentRevenueUsdc, hero.priorRevenueUsdc)}
+          tooltip="Sum of delta from every ChannelSettled event."
+        />
+        <HeroCard
+          label="Tokens Consumed"
+          value={fmtCompact(hero.totalTokens)}
+          sublabel={`${fmtCompact(hero.totalTokensInput)} in · ${fmtCompact(
+            hero.totalTokensOutput,
+          )} out`}
+          delta={pctDelta(hero.recentTokens, hero.priorTokens)}
+          tooltip="Input + output tokens, decoded from ChannelSettled.metadata."
+        />
+        <HeroCard
+          label="Paying Users"
+          value={fmtNum(hero.totalPayingUsers)}
+          sublabel="Addresses that paid USDC"
+          delta={pctDelta(hero.recentPayingUsers, hero.priorPayingUsers)}
+          tooltip="Distinct addresses with at least one settled or topped-up channel. $ANT holders will be added in the next phase."
+        />
+      </section>
+
+      <section className="grid grid-cols-2 md:grid-cols-3 gap-3">
         <div className="stat">
           <div className="stat-label">Sessions settled</div>
           <div className="stat-value">{fmtNum(stats.totalSessions)}</div>
@@ -86,6 +110,13 @@ export default async function HomePage({
         <div className="stat">
           <div className="stat-label">Ghost sessions</div>
           <div className="stat-value">{fmtNum(stats.totalGhosts)}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Qualified buyers</div>
+          <div className="stat-value">{fmtNum(stats.qualifiedBuyers)}</div>
+          <div className="text-xs text-muted">
+            of {fmtNum(stats.totalBuyers)} indexed
+          </div>
         </div>
       </section>
 
