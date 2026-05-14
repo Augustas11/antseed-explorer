@@ -1,7 +1,9 @@
 import Link from "next/link";
 import {
+  getDailyTokens,
   getDailyVolume,
   getHeroStats,
+  getHourlyTokens,
   getHourlyVolume,
   getNetworkStats,
   getRecentEvents,
@@ -16,7 +18,7 @@ import {
   shortAddr,
 } from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "./components/Badges";
-import { ActiveBuyersChart, VolumeChart } from "./components/Charts";
+import { TokensChart, VolumeChart } from "./components/Charts";
 import HeroCard from "./components/HeroCard";
 import TimeRangePills from "./components/TimeRangePills";
 import ActivityFeed from "./components/ActivityFeed";
@@ -52,6 +54,14 @@ export default async function HomePage({
       : range === "all"
       ? await getDailyVolume(9999)
       : await getDailyVolume(30);
+  const tokens =
+    range === "24h"
+      ? await getHourlyTokens(24)
+      : range === "7d"
+      ? await getDailyTokens(7)
+      : range === "all"
+      ? await getDailyTokens(9999)
+      : await getDailyTokens(30);
   const recent = await getRecentEvents(20);
   const top = await listBuyers({ limit: 10, sort: "score" });
 
@@ -115,17 +125,17 @@ export default async function HomePage({
       <section className="grid md:grid-cols-2 gap-4">
         <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-medium">Settlement volume — {rangeLabel}</h2>
+            <h2 className="font-medium">Network revenue — {rangeLabel}</h2>
             <TimeRangePills current={range} basePath="/" />
           </div>
           <VolumeChart data={daily} />
         </div>
         <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-medium">Active buyers — {rangeLabel}</h2>
+            <h2 className="font-medium">Tokens consumed — {rangeLabel}</h2>
             <TimeRangePills current={range} basePath="/" />
           </div>
-          <ActiveBuyersChart data={daily} />
+          <TokensChart data={tokens} />
         </div>
       </section>
 

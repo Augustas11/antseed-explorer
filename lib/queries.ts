@@ -444,6 +444,61 @@ export async function getHeroStats(): Promise<HeroStats> {
   };
 }
 
+export interface TokenBucket {
+  day: string;
+  in_tokens: number;
+  out_tokens: number;
+  total_tokens: number;
+}
+
+// Daily/hourly token throughput from the canonical AntseedStats events.
+// Per-call deltas, so SUM is the right shape; matches Dune's daily card.
+export async function getDailyTokens(days = 30): Promise<TokenBucket[]> {
+  const d = Math.max(1, Math.floor(days));
+  const rows = await db.execute<any>(sql`
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
+           COALESCE(SUM(input_tokens),0)::bigint  AS in_tokens,
+           COALESCE(SUM(output_tokens),0)::bigint AS out_tokens,
+           COALESCE(SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)),0)::bigint AS total_tokens
+    FROM events
+    WHERE event_type='metadata_recorded'
+      AND timestamp IS NOT NULL
+      AND timestamp > 0
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+    GROUP BY day
+    ORDER BY day ASC
+  `);
+  return rows.rows.map((r: any) => ({
+    day: r.day,
+    in_tokens: Number(r.in_tokens ?? 0),
+    out_tokens: Number(r.out_tokens ?? 0),
+    total_tokens: Number(r.total_tokens ?? 0),
+  }));
+}
+
+export async function getHourlyTokens(hours = 24): Promise<TokenBucket[]> {
+  const h = Math.max(1, Math.floor(hours));
+  const rows = await db.execute<any>(sql`
+    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD HH24:00') AS day,
+           COALESCE(SUM(input_tokens),0)::bigint  AS in_tokens,
+           COALESCE(SUM(output_tokens),0)::bigint AS out_tokens,
+           COALESCE(SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)),0)::bigint AS total_tokens
+    FROM events
+    WHERE event_type='metadata_recorded'
+      AND timestamp IS NOT NULL
+      AND timestamp > 0
+      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+    GROUP BY day
+    ORDER BY day ASC
+  `);
+  return rows.rows.map((r: any) => ({
+    day: r.day,
+    in_tokens: Number(r.in_tokens ?? 0),
+    out_tokens: Number(r.out_tokens ?? 0),
+    total_tokens: Number(r.total_tokens ?? 0),
+  }));
+}
+
 export async function getDailyVolume(days = 30) {
   // sql.raw(String(days)) — Drizzle's parameterized binding via Neon HTTP
   // returns empty rows for arithmetic on bigint columns when the param is a
