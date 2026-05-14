@@ -293,6 +293,85 @@ export async function getNetworkStats() {
   };
 }
 
+export interface HeroStats {
+  // Network Revenue — settled USDC across the network
+  totalRevenueUsdc: number;
+  recentRevenueUsdc: number;
+  priorRevenueUsdc: number;
+  // Tokens Consumed — sum of input+output from settled metadata
+  totalTokens: number;
+  totalTokensInput: number;
+  totalTokensOutput: number;
+  recentTokens: number;
+  priorTokens: number;
+  // Paying Users — distinct on-chain addresses that paid USDC. The next phase
+  // will expand this denominator to include $ANT holders (live balance > 0).
+  totalPayingUsers: number;
+  recentPayingUsers: number;
+  priorPayingUsers: number;
+}
+
+export async function getHeroStats(): Promise<HeroStats> {
+  // Window cutoffs inlined as ints — same Neon-HTTP/Drizzle quirk that the
+  // rest of this file works around with sql.raw.
+  const now = Math.floor(Date.now() / 1000);
+  const day30 = String(now - 30 * 86400);
+  const day60 = String(now - 60 * 86400);
+
+  const r = await db.execute<any>(sql`
+    WITH s AS (
+      SELECT
+        timestamp,
+        delta_usdc,
+        COALESCE(input_tokens, 0)  AS in_tok,
+        COALESCE(output_tokens, 0) AS out_tok,
+        COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) AS tok
+      FROM events
+      WHERE event_type = 'settled'
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp < 32503680000
+    ),
+    p AS (
+      SELECT buyer_address, timestamp
+      FROM events
+      WHERE event_type IN ('settled', 'topup')
+        AND buyer_address IS NOT NULL
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+    )
+    SELECT
+      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s) AS total_tokens,
+      (SELECT COALESCE(SUM(in_tok),0)::bigint     FROM s) AS total_tokens_input,
+      (SELECT COALESCE(SUM(out_tok),0)::bigint    FROM s) AS total_tokens_output,
+      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_tokens,
+      (SELECT COALESCE(SUM(tok),0)::bigint        FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_tokens,
+
+      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s) AS total_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s WHERE timestamp > ${sql.raw(day30)}) AS recent_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float  FROM s WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_revenue,
+
+      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p) AS total_paying_users,
+      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p WHERE timestamp > ${sql.raw(day30)}) AS recent_paying_users,
+      (SELECT COUNT(DISTINCT buyer_address)::int  FROM p WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_paying_users
+  `);
+
+  const x = r.rows[0] ?? {};
+  return {
+    totalRevenueUsdc: Number(x.total_revenue ?? 0),
+    recentRevenueUsdc: Number(x.recent_revenue ?? 0),
+    priorRevenueUsdc: Number(x.prior_revenue ?? 0),
+    totalTokens: Number(x.total_tokens ?? 0),
+    totalTokensInput: Number(x.total_tokens_input ?? 0),
+    totalTokensOutput: Number(x.total_tokens_output ?? 0),
+    recentTokens: Number(x.recent_tokens ?? 0),
+    priorTokens: Number(x.prior_tokens ?? 0),
+    totalPayingUsers: Number(x.total_paying_users ?? 0),
+    recentPayingUsers: Number(x.recent_paying_users ?? 0),
+    priorPayingUsers: Number(x.prior_paying_users ?? 0),
+  };
+}
+
 export async function getDailyVolume(days = 30) {
   // sql.raw(String(days)) — Drizzle's parameterized binding via Neon HTTP
   // returns empty rows for arithmetic on bigint columns when the param is a
