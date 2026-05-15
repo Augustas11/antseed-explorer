@@ -20,6 +20,7 @@ import {
 } from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "./components/Badges";
 import { TokensChart, VolumeChart } from "./components/Charts";
+import { DauChart } from "./components/DauChart";
 import HeroCard from "./components/HeroCard";
 import Sparkline from "./components/Sparkline";
 import TimeRangePills from "./components/TimeRangePills";
@@ -154,6 +155,10 @@ export default async function HomePage({
           </div>
           <TokensChart data={tokens} />
         </div>
+      </section>
+
+      <section>
+        <DauChart />
       </section>
 
       <ActivityFeed events={recent} />
