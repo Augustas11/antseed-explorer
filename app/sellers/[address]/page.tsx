@@ -24,15 +24,25 @@ export async function generateMetadata({
 }: {
   params: { address: string };
 }): Promise<Metadata> {
-  const seller = await getSeller(params.address).catch(() => null);
+  const [seller, provider] = await Promise.all([
+    getSeller(params.address).catch(() => null),
+    lookupProviderFn(params.address).catch(() => null),
+  ]);
   const short = shortAddr(params.address);
-  if (!seller) {
+  if (!seller && !provider) {
     return {
       title: `Seller ${short} — not indexed | AntSeed Explorer`,
     };
   }
+  const label = provider?.display_name ?? short;
+  if (!seller) {
+    return {
+      title: `${label} — listed, no settled sessions yet | AntSeed Explorer`,
+      description: `Provider ${label} is listed in the AntSeed directory but has no settled sessions yet.`,
+    };
+  }
   return {
-    title: `Seller ${short} — ${fmtUsd(seller.total_earned_usdc)} earned | AntSeed Explorer`,
+    title: `${label} — ${fmtUsd(seller.total_earned_usdc)} earned | AntSeed Explorer`,
     description: `Seller on AntSeed P2P AI network. Earned ${fmtUsd(seller.total_earned_usdc)} USDC across ${fmtNum(seller.total_sessions)} sessions for ${fmtNum(seller.unique_buyers)} unique buyers.`,
   };
 }
@@ -44,8 +54,24 @@ export default async function SellerProfilePage({
   params: { address: string };
   searchParams: { range?: string };
 }) {
-  const seller = await getSeller(params.address).catch(() => null);
-  if (!seller) notFound();
+  const addrLc = params.address.toLowerCase();
+  const [sellerRaw, provider] = await Promise.all([
+    getSeller(params.address).catch(() => null),
+    lookupProviderFn(params.address).catch((e) => { console.error("lookupProvider failed:", e); return null; }),
+  ]);
+  if (!sellerRaw && !provider) notFound();
+
+  const seller = sellerRaw ?? {
+    address: addrLc,
+    unique_buyers: 0,
+    total_sessions: 0,
+    total_earned_usdc: 0,
+    ghost_sessions: 0,
+    first_seen_ts: null,
+    last_seen_ts: null,
+    first_seen_block: null,
+    last_seen_block: null,
+  };
 
   const range = searchParams.range || "30d";
   const rangeLabel =
@@ -56,8 +82,10 @@ export default async function SellerProfilePage({
       : range === "all"
       ? "all time"
       : "last 30d";
-  const activity =
-    range === "24h"
+  const hasEvents = sellerRaw !== null;
+  const activity = !hasEvents
+    ? []
+    : range === "24h"
       ? await getSellerHourlyVolume(seller.address, 24).catch((e) => { console.error("getSellerHourlyVolume failed:", e); return []; })
       : range === "7d"
       ? await getSellerDailyVolume(seller.address, 7).catch((e) => { console.error("getSellerDailyVolume failed:", e); return []; })
@@ -65,11 +93,12 @@ export default async function SellerProfilePage({
       ? await getSellerDailyVolume(seller.address, 9999).catch((e) => { console.error("getSellerDailyVolume failed:", e); return []; })
       : await getSellerDailyVolume(seller.address, 30).catch((e) => { console.error("getSellerDailyVolume failed:", e); return []; });
 
-  const [topBuyers, provider] = await Promise.all([
-    getSellerBuyerSummary(seller.address, 10).catch((e) => { console.error("getSellerBuyerSummary failed:", e); return []; }),
-    lookupProviderFn(seller.address).catch((e) => { console.error("lookupProvider failed:", e); return null; }),
-  ]);
-  const buyerMap = await lookupProviders(topBuyers.map((b) => b.buyer_address)).catch(() => new Map());
+  const topBuyers = hasEvents
+    ? await getSellerBuyerSummary(seller.address, 10).catch((e) => { console.error("getSellerBuyerSummary failed:", e); return []; })
+    : [];
+  const buyerMap = topBuyers.length > 0
+    ? await lookupProviders(topBuyers.map((b) => b.buyer_address)).catch(() => new Map())
+    : new Map();
 
   return (
     <div className="space-y-6">
