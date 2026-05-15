@@ -9,9 +9,9 @@ Initial release. Model Context Protocol server for the [AntFeed Explorer](https:
 ### Added
 
 - **Always-on tools** (read-only):
-  - `lookup` — fuzzy search over the AntFeed seller directory (client-side substring on address; server-side `/api/search` planned).
-  - `list_providers` — paginated provider directory ranked by USDC earned or recency.
-  - `get_pricing` — placeholder returning `NOT_INDEXED`; will populate when the explorer exposes per-service pricing.
+  - `lookup` — fuzzy search over the AntFeed provider directory; matches against address, displayName, and service names.
+  - `list_providers` — paginated directory with displayName, region, services, **per-service pricing**, on-chain aggregates.
+  - `get_pricing` — **live $/M-token pricing** (input + output) for a (peerId, service) pair. Returns `INDEXED` for advertised prices, `PROVIDER_NOT_INDEXED` / `SERVICE_NOT_OFFERED` / `PRICE_NOT_PUBLISHED` for the edge cases. Source: AntFeed provider directory, refreshed hourly from `network.antseed.com`.
   - `get_session_status` — on-chain channel state by channel ID.
 - **Conditional tools** (registered based on local buyer detection at startup):
   - `create_session` — open a new buyer→seller session via the local AntSeed buyer at `localhost:8377`. Deposit hard-capped by `ANTSEED_MAX_DEPOSIT_USDC` (default 10).

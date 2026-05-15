@@ -1,10 +1,11 @@
-import type { ExplorerClient, SellerRow } from "../explorer.js";
+import type { ExplorerClient } from "../explorer.js";
+import type { DirectoryProviderRow } from "../schemas.js";
 import { listProvidersSchema } from "../schemas.js";
 
 export const listProvidersTool = {
   name: "list_providers",
   description:
-    "Paginated directory of AntFeed sellers (service providers). Backed by /api/sellers on the AntFeed Explorer. Sellers are identified by their on-chain Ethereum address; this is the canonical peerId on the AntSeed network.",
+    "Paginated directory of AntFeed providers (AntSeed sellers). Returns display name, region, advertised services, per-service pricing ($/M tokens, input + output), session count, total USDC earned, ghost rate, and last-refresh timestamp. Sourced from /api/providers on the AntFeed Explorer, refreshed hourly from network.antseed.com.",
   inputSchema: {
     type: "object" as const,
     properties: {
@@ -15,7 +16,7 @@ export const listProvidersTool = {
         enum: ["score", "recent"],
         default: "score",
         description:
-          "score = ranked by total USDC earned (the explorer's seller-volume metric). recent = newest sellers (first_seen desc).",
+          "score = total USDC earned (volume). recent = newest in directory (by last-refresh timestamp).",
       },
     },
     additionalProperties: false,
@@ -33,15 +34,19 @@ export async function listProviders(
   sort: "score" | "recent";
 }> {
   const input = listProvidersSchema.parse(raw);
-  const explorerSort = input.sort === "score" ? "volume" : "first_seen";
-  const page = await deps.explorer.listSellers({
+  const page = await deps.explorer.listProvidersDirectory({
     offset: input.offset,
     limit: input.limit,
-    sort: explorerSort,
-    dir: "desc",
+    sort: input.sort === "score" ? "volume" : "volume",
   });
+  // We don't ask the API for "recent" sort because the API surfaces "volume",
+  // "sessions", "ghost". For "recent" we sort client-side by updatedAt desc.
+  let providers = page.providers;
+  if (input.sort === "recent") {
+    providers = [...providers].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  }
   return {
-    providers: page.sellers.map(toProvider),
+    providers: providers.map(toProvider),
     total: page.total,
     offset: page.offset,
     limit: page.limit,
@@ -49,18 +54,46 @@ export async function listProviders(
   };
 }
 
-export function toProvider(s: SellerRow) {
+export function toProvider(p: DirectoryProviderRow) {
+  const ghostRate =
+    p.closedCount > 0 ? Number((p.ghostCount / p.closedCount).toFixed(4)) : null;
   return {
-    peerId: s.address,
-    displayName: shortAddress(s.address),
-    score: s.total_earned_usdc,
-    servicesOffered: [] as string[],
-    lastSeen: s.last_seen_ts ? new Date(s.last_seen_ts * 1000).toISOString() : null,
-    totalSessions: s.total_sessions,
-    uniqueBuyers: s.unique_buyers,
-    ghostSessions: s.ghost_sessions,
-    totalEarnedUsdc: s.total_earned_usdc,
-    firstSeen: s.first_seen_ts ? new Date(s.first_seen_ts * 1000).toISOString() : null,
+    peerId: p.address,
+    displayName: p.displayName ?? shortAddress(p.address),
+    region: p.region,
+    services: p.services,
+    pricing: p.pricing,
+    pricingSummary: summarizePricing(p.pricing, p.services),
+    sessionCount: p.sessionCount,
+    totalVolumeUsdc: p.totalVolumeUsdc,
+    ghostCount: p.ghostCount,
+    closedCount: p.closedCount,
+    ghostRate,
+    score: p.totalVolumeUsdc,
+    lastUpdated: p.updatedAt ? new Date(p.updatedAt).toISOString() : null,
+  };
+}
+
+function summarizePricing(
+  pricing: DirectoryProviderRow["pricing"],
+  services: string[],
+): { minInputUsdPerMillion: number | null; maxInputUsdPerMillion: number | null; servicesPriced: number } {
+  const inputs: number[] = [];
+  let priced = 0;
+  for (const svc of services) {
+    const p = pricing[svc];
+    if (!p) continue;
+    if (typeof p.inputUsdPerMillion === "number") {
+      inputs.push(p.inputUsdPerMillion);
+      priced++;
+    } else if (typeof p.outputUsdPerMillion === "number") {
+      priced++;
+    }
+  }
+  return {
+    minInputUsdPerMillion: inputs.length ? Math.min(...inputs) : null,
+    maxInputUsdPerMillion: inputs.length ? Math.max(...inputs) : null,
+    servicesPriced: priced,
   };
 }
 

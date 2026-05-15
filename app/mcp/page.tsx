@@ -32,17 +32,17 @@ const READ_ONLY_TOOLS: { name: string; inputs: string; output: string }[] = [
   {
     name: "lookup",
     inputs: "query, limit?",
-    output: "matched provider list (case-insensitive substring on address)",
+    output: "matched providers — substring on address, displayName, OR service name",
   },
   {
     name: "list_providers",
     inputs: "offset?, limit?, sort? (score | recent)",
-    output: "paginated seller directory ranked by USDC earned",
+    output: "provider directory with displayName, services, per-service pricing, region, USDC earned, ghost rate",
   },
   {
     name: "get_pricing",
     inputs: "peerId, service",
-    output: "pricing placeholder (NOT_INDEXED until /api/sellers/{address}/services lands)",
+    output: "live $/M-token pricing (input + output) from the AntFeed directory; refreshed hourly",
   },
   {
     name: "get_session_status",

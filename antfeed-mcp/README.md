@@ -33,9 +33,9 @@ Restart your MCP host. The server boots over stdio and exposes the tools below.
 
 | Tool                  | Inputs                                                                       | Output                                                                                  | Requires local buyer? |
 | --------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------- |
-| `lookup`              | `query` (string), `limit?` (1–100, default 10)                               | `{ query, matches[], matched, searchedOver, explorerTotal }`                            | no                    |
-| `list_providers`      | `offset?` (default 0), `limit?` (1–1000, default 20), `sort?` (`score`\|`recent`, default `score`) | `{ providers[], total, offset, limit, sort }`                                  | no                    |
-| `get_pricing`         | `peerId` (string), `service` (string)                                        | `{ peerId, service, pricePerToken, currency, model, lastUpdated, status, message }`     | no                    |
+| `lookup`              | `query` (string), `limit?` (1–100, default 10)                               | `{ query, matches[], matched, searchedOver, explorerTotal, truncated }` — matches against **address, displayName, and service names** | no                    |
+| `list_providers`      | `offset?` (default 0), `limit?` (1–1000, default 20), `sort?` (`score`\|`recent`, default `score`) | `{ providers[], total, offset, limit, sort }` — each provider includes displayName, region, services, **per-service pricing**, sessionCount, USDC earned, ghost rate | no                    |
+| `get_pricing`         | `peerId` (string), `service` (string)                                        | `{ peerId, service, status, currency, inputUsdPerMillion, outputUsdPerMillion, displayName, region, lastUpdated }` — **live pricing** from the AntFeed directory | no                    |
 | `get_session_status`  | `sessionId` (string — channel_id, bytes32 hex)                               | `{ sessionId, buyer, seller, status, channelBalance, settledAmountUsdc, ... }`          | no                    |
 | `create_session`      | `providerPeerId`, `service`, `initialDepositUsdc`, `initialMessage?`         | passthrough from `POST localhost:8377/sessions` on the local buyer                      | **yes**               |
 | `buyer_setup`         | _(none)_                                                                     | Diagnostic instructions for installing a local AntSeed buyer                            | exposed _instead of_ `create_session` when no buyer is detected at startup |
@@ -49,15 +49,18 @@ Restart your MCP host. The server boots over stdio and exposes the tools below.
 
 Returns the top three sellers ranked by total USDC earned, each shaped as `{ peerId, displayName, score, servicesOffered, lastSeen, totalSessions, uniqueBuyers, ghostSessions, totalEarnedUsdc, firstSeen }`.
 
-### Notes on adapted behavior
+### Data sources
 
-The AntFeed Explorer's current public REST surface (`/api/sellers`, `/api/buyers`, `/api/channels`, `/api/score`, `/api/stats`) does not yet expose:
+The MCP wraps the following AntFeed Explorer endpoints:
 
-- a server-side fuzzy `/api/search` endpoint → `lookup` performs **client-side substring matching** over a single page of `/api/sellers`. A v1.1 of this MCP will switch to the server endpoint once it exists.
-- a per-service pricing endpoint → `get_pricing` returns a `status: "NOT_INDEXED"` placeholder. To get a live quote, call `create_session` — the local buyer negotiates pricing with the seller at session open.
-- a per-channel `/api/channels/{id}` endpoint → `get_session_status` paginates `/api/channels` (sorted by `last_activity desc`) and filters client-side. Channels still under-indexed at the deepest pages may return `SESSION_NOT_FOUND`.
+- `GET /api/providers` — provider directory (displayName, services, per-service pricing, region, on-chain aggregates). Refreshed hourly from `network.antseed.com`. Backs `list_providers` and `lookup`.
+- `GET /api/sellers/{address}/services` — one seller's service catalog + live pricing. Backs `get_pricing`.
+- `GET /api/channels` — on-chain payment channel records. Backs `get_session_status`.
 
-These adaptations let `@antfeed/mcp` work today against the production explorer without requiring any changes to it.
+A few small client-side adaptations remain:
+
+- No server-side `/api/search` yet → `lookup` performs **client-side substring matching** over the top page of `/api/providers` (matching against address, displayName, and service names). A future server-side endpoint will let `lookup` scale past 1000 providers — the MCP will switch over without any client changes.
+- No per-channel `/api/channels/{id}` yet → `get_session_status` paginates `/api/channels` (sorted by `last_activity desc`) and filters client-side. Channels deeper than 5000 records may return `SESSION_OUT_OF_RANGE`.
 
 ---
 
