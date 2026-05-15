@@ -24,6 +24,10 @@ export const CHANNELS_DEPLOYMENT_BLOCK = 44_469_557n;
 export const ANTSEED_STATS_DEPLOYMENT_BLOCK = 44_469_557n;
 export const ANTS_TOKEN_DEPLOYMENT_BLOCK = 44_469_557n;
 export const EMISSIONS_DEPLOYMENT_BLOCK = 45_937_736n;
+// Verified via viem getCode bisection against Base RPC: 0x0F7a...9fD2 has
+// no code at block 44_469_556 and has code at 44_469_557, so AntseedDeposits
+// was deployed in the same batch as AntseedChannels (2026-04-09 09:54:21 UTC).
+export const ANTSEED_DEPOSITS_DEPLOYMENT_BLOCK = 44_469_557n;
 
 // Addresses that hold $ANT as part of protocol mechanics, not as end-users.
 // Excluded from the "$ANT holders" headcount that feeds Paying Users.
@@ -141,7 +145,33 @@ export type EventType =
   | "withdrawn"
   | "close_requested"
   | "metadata_recorded"
-  | "ants_claim";
+  | "ants_claim"
+  | "deposited"
+  | "withdrawal_executed";
+
+// AntseedDeposits — escrow contract that lets buyers top-up an off-chain
+// balance and withdraw refunds. Source-of-truth for the "new users" metric
+// in Dune q6974179: a buyer counts as new on the day of their first
+// Deposited event (sellers can never be new). ABI fragment verified via
+// eth_getLogs against the verified contract on Basescan.
+export const depositsAbi = [
+  {
+    type: "event",
+    name: "Deposited",
+    inputs: [
+      { indexed: true, name: "buyer", type: "address" },
+      { indexed: false, name: "amount", type: "uint256" },
+    ],
+  },
+  {
+    type: "event",
+    name: "WithdrawalExecuted",
+    inputs: [
+      { indexed: true, name: "buyer", type: "address" },
+      { indexed: false, name: "amount", type: "uint256" },
+    ],
+  },
+] as const;
 
 // ERC-20 Transfer on the ANTS token. Indexed for the live-balance table
 // that powers the "$ANT holders" headcount. Individual transfers aren't
