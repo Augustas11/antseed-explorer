@@ -1,0 +1,94 @@
+name: Publish @antfeed/mcp to npm
+
+on:
+  push:
+    tags:
+      - "mcp-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run all checks but skip npm publish"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write  # required for npm provenance attestation
+
+jobs:
+  publish:
+    name: Publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: antfeed-mcp
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+          cache-dependency-path: antfeed-mcp/package-lock.json
+
+      - name: Verify package name is @antfeed/mcp
+        run: |
+          PKG_NAME=$(node -p "require('./package.json').name")
+          if [ "$PKG_NAME" != "@antfeed/mcp" ]; then
+            echo "::error::package.json name is '$PKG_NAME', expected '@antfeed/mcp'"
+            exit 1
+          fi
+
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#mcp-v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME implies version $TAG_VERSION but package.json says $PKG_VERSION"
+            exit 1
+          fi
+          echo "Will publish @antfeed/mcp@$PKG_VERSION"
+
+      - name: Verify CHANGELOG has entry for this version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if ! grep -qE "^## $PKG_VERSION( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md is missing a '## $PKG_VERSION' entry"
+            exit 1
+          fi
+
+      - name: Install (clean)
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Dry-run pack
+        run: npm pack --dry-run
+
+      - name: Publish to npm with provenance
+        if: github.event_name == 'push' || inputs.dry_run == false
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Summary
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.dry_run }}" = "false" ]; then
+            echo "### Published @antfeed/mcp@$PKG_VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- npm: https://www.npmjs.com/package/@antfeed/mcp/v/$PKG_VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "- Verify provenance: \`npm audit signatures @antfeed/mcp@$PKG_VERSION\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Dry run successful for @antfeed/mcp@$PKG_VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All checks passed. Push a \`mcp-v$PKG_VERSION\` tag to actually publish." >> $GITHUB_STEP_SUMMARY
+          fi

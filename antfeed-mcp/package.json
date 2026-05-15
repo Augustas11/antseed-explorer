@@ -1,0 +1,54 @@
+{
+  "name": "@antfeed/mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for the AntFeed Explorer — discover and transact on the AntSeed P2P AI network from any MCP-compatible agent.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "antfeed-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "prepare": "npm run build",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "antfeed",
+    "antseed",
+    "p2p",
+    "ai-agents",
+    "claude"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "~1.29.0",
+    "zod": "~3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Augustas11/antseed-explorer.git",
+    "directory": "antfeed-mcp"
+  },
+  "homepage": "https://antfeed.org"
+}

@@ -90,6 +90,14 @@ export default async function HomePage({
           Settled USDC, tokens consumed, and paying users on the AntSeed P2P AI
           services network. All metrics derived from on-chain events on Base.
         </p>
+        <Link
+          href="/mcp"
+          className="inline-flex items-center gap-2 mt-4 px-3 py-1.5 rounded-full border border-accent/30 bg-accent/5 text-xs text-accent hover:bg-accent/10 transition-colors"
+        >
+          <span className="font-medium">Use from any AI agent</span>
+          <span className="text-muted">— one-line MCP install</span>
+          <span aria-hidden="true">→</span>
+        </Link>
       </section>
 
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
