@@ -6,10 +6,12 @@ import {
   ANTSEED_STATS_DEPLOYMENT_BLOCK,
   ANTS_TOKEN_DEPLOYMENT_BLOCK,
   EMISSIONS_DEPLOYMENT_BLOCK,
+  ANTSEED_DEPOSITS_DEPLOYMENT_BLOCK,
   channelsAbi,
   antseedStatsAbi,
   antsTokenAbi,
   emissionsAbi,
+  depositsAbi,
   type EventType,
 } from "./antseed";
 import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./db";
@@ -111,14 +113,35 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
     }
 
     const elapsedAfterAnts = Date.now() - syncStart;
-    const emissionsDeadline = Math.max(
-      2_000,
-      cronBudgetMs - elapsedAfterAnts - 3_000,
-    );
+    // Split remaining budget across emissions + deposits. Deposits has very
+    // low event density (couple per day) so 5s is plenty in steady state;
+    // backfill is handled by a one-shot script.
+    const tailBudgetMs = Math.max(4_000, cronBudgetMs - elapsedAfterAnts - 3_000);
+    const emissionsDeadline = Math.max(2_000, Math.floor(tailBudgetMs / 2));
     try {
       await syncEmissions({ deadlineMs: emissionsDeadline });
     } catch (e) {
       console.warn("[indexer] emissions sync failed:", (e as Error)?.message || e);
+    }
+
+    const elapsedAfterEmissions = Date.now() - syncStart;
+    const depositsDeadline = Math.max(
+      2_000,
+      cronBudgetMs - elapsedAfterEmissions - 2_000,
+    );
+    try {
+      await syncAntseedDeposits({ deadlineMs: depositsDeadline });
+    } catch (e) {
+      console.warn("[indexer] antseed_deposits sync failed:", (e as Error)?.message || e);
+    }
+
+    // Daily DAU pre-aggregate refresh. The closed-day buckets are immutable;
+    // we just need to keep "today" and "yesterday" warm. Backfill of older
+    // days is done once by scripts/_backfill-deposits.ts.
+    try {
+      await recomputeDailyDauRecent(2);
+    } catch (e) {
+      console.warn("[indexer] daily_dau recompute failed:", (e as Error)?.message || e);
     }
     return channels;
   } finally {
@@ -412,6 +435,8 @@ export function mapEventType(name: string | undefined): EventType | null {
     case "ChannelTopUp": return "topup";
     case "ChannelWithdrawn": return "withdrawn";
     case "CloseRequested": return "close_requested";
+    case "Deposited": return "deposited";
+    case "WithdrawalExecuted": return "withdrawal_executed";
     default: return null;
   }
 }
@@ -1181,4 +1206,319 @@ export async function syncEmissions(
     toBlock: head.toString(),
     claimsProcessed,
   };
+}
+
+// ============================================================================
+// AntseedDeposits.Deposited / WithdrawalExecuted — escrow buyer flows.
+// These two events are required for the Dune q6974179 "Daily Active Users"
+// widget. Stored as event_type='deposited' and 'withdrawal_executed' rows
+// in the existing events table. buyer_address is set; seller_address stays
+// null (Deposits is buyer-only). Backfill is handled by
+// scripts/_backfill-deposits.ts for speed; the cron path keeps the tail warm.
+// ============================================================================
+
+const DEPOSITS_CURSOR_KEY = "last_indexed_block_antseed_deposits";
+const DEPOSITS_BATCH_KEY = "log_batch_size_antseed_deposits";
+// Deposits density is low (couple per day in steady state). Big batches are
+// safe and let the live cron skip across long quiet stretches in one tick.
+const DEPOSITS_BATCH_INITIAL = 50_000n;
+const DEPOSITS_BATCH_MAX = 100_000n;
+
+interface DepositsSyncResult {
+  ok: boolean;
+  fromBlock: string;
+  toBlock: string;
+  recordsAdded: number;
+  error?: string;
+}
+
+export async function syncAntseedDeposits(
+  opts: { deadlineMs?: number } = {},
+): Promise<DepositsSyncResult> {
+  const last = await getState(DEPOSITS_CURSOR_KEY);
+  const lastIndexed = BigInt(
+    last || (ANTSEED_DEPOSITS_DEPLOYMENT_BLOCK - 1n).toString(),
+  );
+
+  let head: bigint;
+  try {
+    head = await publicClient.getBlockNumber();
+  } catch (e: any) {
+    return {
+      ok: false,
+      fromBlock: "?",
+      toBlock: "?",
+      recordsAdded: 0,
+      error: e?.message || String(e),
+    };
+  }
+
+  const fromBlockStart = lastIndexed + 1n;
+  if (fromBlockStart > head) {
+    return {
+      ok: true,
+      fromBlock: fromBlockStart.toString(),
+      toBlock: head.toString(),
+      recordsAdded: 0,
+    };
+  }
+
+  const persistedBatch = await getState(DEPOSITS_BATCH_KEY);
+  let batchSize = persistedBatch
+    ? BigInt(persistedBatch)
+    : DEPOSITS_BATCH_INITIAL;
+  if (batchSize > DEPOSITS_BATCH_MAX) batchSize = DEPOSITS_BATCH_MAX;
+  let consecutiveSuccesses = 0;
+  let recordsAdded = 0;
+  const startedAt = Date.now();
+  const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
+  const cursor = { from: fromBlockStart };
+
+  while (cursor.from <= head) {
+    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
+      return {
+        ok: true,
+        fromBlock: fromBlockStart.toString(),
+        toBlock: cursor.from.toString(),
+        recordsAdded,
+        error: "deadline_partial",
+      };
+    }
+
+    const to =
+      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
+
+    let logs: Log[];
+    let rateLimitRetries = 0;
+    while (true) {
+      try {
+        logs = await publicClient.getLogs({
+          address: CONTRACTS.AntseedDeposits as `0x${string}`,
+          events: depositsAbi as any,
+          fromBlock: cursor.from,
+          toBlock: to,
+        });
+        break;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (isRangeError(msg) && batchSize > 1n) {
+          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
+          if (batchSize < 1n) batchSize = 1n;
+          await setState(DEPOSITS_BATCH_KEY, batchSize.toString());
+          consecutiveSuccesses = 0;
+          break;
+        }
+        if (isRateLimitError(msg) && rateLimitRetries < 3) {
+          rateLimitRetries++;
+          await sleep(1500 * rateLimitRetries);
+          continue;
+        }
+        return {
+          ok: false,
+          fromBlock: cursor.from.toString(),
+          toBlock: to.toString(),
+          recordsAdded,
+          error: msg,
+        };
+      }
+    }
+    if (!logs!) continue;
+
+    if (logs.length > 0) {
+      const uniqueBlocks = [
+        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
+      ];
+      const blockTs = new Map<bigint, number>();
+      if (uniqueBlocks.length > 0) {
+        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
+        try {
+          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
+          const anchorTs = Number(blk.timestamp);
+          for (const bn of uniqueBlocks) {
+            const diff = Number(anchorBn - bn);
+            blockTs.set(bn, anchorTs - diff * 2);
+          }
+        } catch {
+          // Timestamp fetch is non-fatal — fall back to 0.
+        }
+      }
+
+      const rows = (logs as any[]).map((log) => {
+        const args = log.args || {};
+        const eventType = mapEventType(log.eventName);
+        return {
+          txHash: log.transactionHash,
+          logIndex: log.logIndex,
+          blockNumber: Number(log.blockNumber),
+          eventType: (eventType ?? "deposited") as EventType,
+          buyerAddress: (args.buyer as string | undefined)?.toLowerCase() ?? null,
+          sellerAddress: null,
+          channelId: null,
+          // amount is escrow-USDC (6 decimals) — store as USDC float for
+          // parity with the rest of the table; we only need address+day for
+          // DAU, but recording the amount is cheap and lets LTV land later
+          // without a re-index.
+          maxAmountUsdc:
+            eventType === "deposited" && args.amount != null
+              ? Number(args.amount) / USDC_DECIMALS
+              : null,
+          deltaUsdc: null,
+          refundUsdc:
+            eventType === "withdrawal_executed" && args.amount != null
+              ? Number(args.amount) / USDC_DECIMALS
+              : null,
+          settledAmountUsdc: null,
+          cumulativeAmountUsdc: null,
+          platformFeeUsdc: null,
+          newDepositUsdc: null,
+          gracePeriodEnd: null,
+          inputTokens: null,
+          outputTokens: null,
+          requestCount: null,
+          timestamp: blockTs.get(log.blockNumber!) ?? 0,
+          rawLog: JSON.stringify(serializableLog(log)),
+        };
+      });
+
+      if (rows.length > 0) {
+        const result = await db
+          .insert(eventsTbl)
+          .values(rows)
+          .onConflictDoNothing()
+          .returning({ id: eventsTbl.id });
+        recordsAdded += result.length;
+      }
+    }
+
+    await setState(DEPOSITS_CURSOR_KEY, to.toString());
+    consecutiveSuccesses += 1;
+    if (consecutiveSuccesses >= 5 && batchSize < DEPOSITS_BATCH_MAX) {
+      batchSize =
+        batchSize * 2n > DEPOSITS_BATCH_MAX
+          ? DEPOSITS_BATCH_MAX
+          : batchSize * 2n;
+      await setState(DEPOSITS_BATCH_KEY, batchSize.toString());
+      consecutiveSuccesses = 0;
+    }
+    cursor.from = to + 1n;
+    await sleep(150);
+  }
+
+  return {
+    ok: true,
+    fromBlock: fromBlockStart.toString(),
+    toBlock: head.toString(),
+    recordsAdded,
+  };
+}
+
+// ============================================================================
+// Daily Active Users pre-aggregate.
+// One row per UTC day in `daily_dau`, populated from the events table. This
+// is the authoritative implementation of Dune q6974179:
+//   • DAU       = COUNT(DISTINCT addr) over 8 (event_type, address) pairs:
+//                 (deposited,buyer), (withdrawal_executed,buyer),
+//                 (reserved,buyer), (reserved,seller),
+//                 (settled,buyer),  (settled,seller),
+//                 (closed,buyer),   (closed,seller)
+//   • new_users = count of buyers whose lifetime-first `deposited` event
+//                 falls on this day. Sellers never count as new — this
+//                 mirrors Dune exactly.
+//   • dau_buyers / dau_sellers scope DAU to the corresponding role only.
+// timestamp→day uses to_timestamp(...)::date which produces UTC, matching
+// Dune's date_trunc('day', evt_block_time).
+// ============================================================================
+
+export async function recomputeDailyDau(days: string[]) {
+  // De-dup + drop invalids.
+  const ds = [...new Set(days.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))];
+  if (ds.length === 0) return;
+  const now = Date.now();
+  for (const day of ds) {
+    await recomputeDailyDauOne(day, now);
+  }
+}
+
+async function recomputeDailyDauOne(day: string, now: number) {
+  // Single SQL statement: compute the four metrics for the given day from
+  // the union of activity rows, plus the first-deposit lookup for new_users.
+  // Inline-safe because `day` is sanitized to YYYY-MM-DD by the caller.
+  await db.execute(sql`
+    WITH user_activity AS (
+      SELECT buyer_address AS addr, 'buyer' AS role
+      FROM events
+      WHERE event_type IN ('deposited','withdrawal_executed','reserved','settled','closed')
+        AND buyer_address IS NOT NULL
+        AND timestamp > 0
+        AND to_timestamp(timestamp)::date = ${sql.raw(`DATE '${day}'`)}
+      UNION ALL
+      SELECT seller_address AS addr, 'seller' AS role
+      FROM events
+      WHERE event_type IN ('reserved','settled','closed')
+        AND seller_address IS NOT NULL
+        AND timestamp > 0
+        AND to_timestamp(timestamp)::date = ${sql.raw(`DATE '${day}'`)}
+    ),
+    first_deposits AS (
+      SELECT buyer_address AS addr, MIN(to_timestamp(timestamp)::date) AS first_day
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+        AND timestamp > 0
+      GROUP BY 1
+    ),
+    a AS (
+      SELECT
+        COUNT(DISTINCT addr)::int AS dau,
+        COUNT(DISTINCT CASE WHEN role='buyer'  THEN addr END)::int AS dau_buyers,
+        COUNT(DISTINCT CASE WHEN role='seller' THEN addr END)::int AS dau_sellers
+      FROM user_activity
+    ),
+    n AS (
+      SELECT COUNT(*)::int AS new_users
+      FROM first_deposits
+      WHERE first_day = ${sql.raw(`DATE '${day}'`)}
+    )
+    INSERT INTO daily_dau (day, dau, dau_buyers, dau_sellers, new_users, last_recomputed_at)
+    SELECT ${sql.raw(`DATE '${day}'`)}, a.dau, a.dau_buyers, a.dau_sellers, n.new_users, ${now}
+    FROM a, n
+    ON CONFLICT (day) DO UPDATE SET
+      dau                = EXCLUDED.dau,
+      dau_buyers         = EXCLUDED.dau_buyers,
+      dau_sellers        = EXCLUDED.dau_sellers,
+      new_users          = EXCLUDED.new_users,
+      last_recomputed_at = EXCLUDED.last_recomputed_at
+  `);
+}
+
+// Recompute the most recent `n` UTC days — used by the cron path to keep
+// the live "today" + "yesterday" rows warm without scanning the full table.
+export async function recomputeDailyDauRecent(n: number) {
+  const today = new Date();
+  const days: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const d = new Date(today.getTime() - i * 86_400_000);
+    days.push(d.toISOString().slice(0, 10));
+  }
+  await recomputeDailyDau(days);
+}
+
+// Full backfill: recompute every day from the earliest event to today.
+// Cheap (~37 rows today) — safe to run at deploy or from a script.
+export async function recomputeDailyDauAll() {
+  const r = await db.execute<{ min_ts: string | null }>(sql`
+    SELECT MIN(timestamp)::bigint AS min_ts FROM events WHERE timestamp > 0
+  `);
+  const minTs = r.rows[0]?.min_ts ? Number(r.rows[0].min_ts) : null;
+  if (!minTs) return;
+  const start = new Date(minTs * 1000);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date();
+  end.setUTCHours(0, 0, 0, 0);
+  const days: string[] = [];
+  for (let t = start.getTime(); t <= end.getTime(); t += 86_400_000) {
+    days.push(new Date(t).toISOString().slice(0, 10));
+  }
+  await recomputeDailyDau(days);
+  return days.length;
 }

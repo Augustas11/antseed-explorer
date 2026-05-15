@@ -6,6 +6,7 @@
 import {
   bigint,
   boolean,
+  date,
   doublePrecision,
   index,
   integer,
@@ -97,6 +98,20 @@ export const apiKeys = pgTable("api_keys", {
   key: text("key").primaryKey(),
   label: text("label"),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// Daily Active Users pre-aggregate. One row per UTC day; populated by
+// recomputeDailyDau() after each indexer pass. Mirrors Dune query 6974179
+// exactly: DAU = COUNT(DISTINCT addr) across 8 (event_type, address) pairs
+// from AntseedDeposits + AntseedChannels. new_users tracks lifetime-first
+// Deposited only (sellers can never be "new").
+export const dailyDau = pgTable("daily_dau", {
+  day: date("day").primaryKey(),
+  dau: integer("dau").notNull().default(0),
+  dauBuyers: integer("dau_buyers").notNull().default(0),
+  dauSellers: integer("dau_sellers").notNull().default(0),
+  newUsers: integer("new_users").notNull().default(0),
+  lastRecomputedAt: bigint("last_recomputed_at", { mode: "number" }),
 });
 
 // Live $ANT balance per address. Maintained incrementally by the indexer

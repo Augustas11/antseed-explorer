@@ -10,15 +10,17 @@
 // Dashboard: https://dune.com/antseed_com/antseed (id 209285).
 
 import "dotenv/config";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const DUNE_KEY = process.env.DUNE_API_KEY;
 const EXPLORER_BASE = (process.env.EXPLORER_BASE || "https://antfeed.org").replace(/\/$/, "");
 const DUNE_BASE = "https://api.dune.com/api/v1";
+const SNAPSHOT_DIR = ".omc/research/dune-snapshots";
 
-if (!DUNE_KEY) {
-  console.error("DUNE_API_KEY env var is required.");
-  process.exit(2);
-}
+// When DUNE_API_KEY is unset, fall back to the newest cached snapshot per
+// query in .omc/research/dune-snapshots/. This keeps the parity check
+// runnable in CI / local dev without burning Dune execution credits.
 
 // Widget catalog (resolved from .omc/research/dune-queries/*.sql)
 const WIDGETS = [
@@ -36,11 +38,21 @@ const WIDGETS = [
 ];
 
 async function fetchDuneLatest(qid: number): Promise<any> {
+  if (!DUNE_KEY) return loadSnapshot(qid);
   const r = await fetch(`${DUNE_BASE}/query/${qid}/results?limit=2000`, {
     headers: { "X-Dune-API-Key": DUNE_KEY! },
   });
   if (!r.ok) throw new Error(`dune ${qid}: ${r.status}`);
   return r.json();
+}
+
+function loadSnapshot(qid: number): any {
+  const files = readdirSync(SNAPSHOT_DIR)
+    .filter((f) => f.startsWith(`${qid}-`) && f.endsWith(".json"))
+    .sort();
+  if (files.length === 0) throw new Error(`no snapshot for query ${qid} in ${SNAPSHOT_DIR}`);
+  const newest = files[files.length - 1];
+  return JSON.parse(readFileSync(join(SNAPSHOT_DIR, newest), "utf8"));
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -208,6 +220,62 @@ async function main() {
   const med = Number(dune[7437503]?.result?.rows?.[0]?.median_ltv_usdc ?? 0);
   rows.push({ metric: "Avg LTV (USDC)",    dune: avg, explorer: "(missing)", deltaPct: null, tolerancePct: 0, ok: false, note: "Implement after AntseedDeposits.Deposited is indexed." });
   rows.push({ metric: "Median LTV (USDC)", dune: med, explorer: "(missing)", deltaPct: null, tolerancePct: 0, ok: false, note: "Implement after AntseedDeposits.Deposited is indexed." });
+
+  // 8. Daily Active Users (Dune 6974179) vs explorer /api/metrics/dau.
+  //    Per-day exact match required for every CLOSED day. Today is informational
+  //    (Dune cache is hours old; explorer is live).
+  const dauDuneRows: any[] = (dune[6974179]?.result?.rows || [])
+    .slice()
+    .sort((a: any, b: any) => a.day.localeCompare(b.day));
+  if (dauDuneRows.length > 0) {
+    const firstDay = dauDuneRows[0].day.slice(0, 10);
+    const lastDay = dauDuneRows[dauDuneRows.length - 1].day.slice(0, 10);
+    let dauExpRows: any[] = [];
+    try {
+      dauExpRows = await fetchJson(`${EXPLORER_BASE}/api/metrics/dau?from=${firstDay}&to=${lastDay}`);
+    } catch (e: any) {
+      rows.push({
+        metric: "DAU endpoint reachable",
+        dune: dauDuneRows.length,
+        explorer: `(fetch failed: ${e.message})`,
+        deltaPct: null,
+        tolerancePct: 0,
+        ok: false,
+        note: "GET /api/metrics/dau returned non-2xx — deploy & retry.",
+      });
+    }
+    const expByDay = new Map<string, any>(dauExpRows.map((r) => [r.day, r]));
+    for (const dRow of dauDuneRows) {
+      const day = dRow.day.slice(0, 10);
+      const isToday = day === today;
+      const e = expByDay.get(day);
+      const dDau = Number(dRow.dau);
+      const dNew = Number(dRow.new_users);
+      const eDau = e ? Number(e.total) : null;
+      const eNew = e ? Number(e.new) : null;
+      const dauOk = e != null && eDau === dDau;
+      const newOk = e != null && eNew === dNew;
+      const note = isToday ? "informational — Dune cache hours old; explorer live" : undefined;
+      rows.push({
+        metric: `DAU ${day} dau`,
+        dune: dDau,
+        explorer: eDau ?? "(missing)",
+        deltaPct: e ? (eDau! - dDau) : null,
+        tolerancePct: 0,
+        ok: isToday ? true : dauOk,
+        note,
+      });
+      rows.push({
+        metric: `DAU ${day} new_users`,
+        dune: dNew,
+        explorer: eNew ?? "(missing)",
+        deltaPct: e ? (eNew! - dNew) : null,
+        tolerancePct: 0,
+        ok: isToday ? true : newOk,
+        note,
+      });
+    }
+  }
 
   // Pretty-print
   const widthMetric = Math.max(...rows.map(r => r.metric.length));
