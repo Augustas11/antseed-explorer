@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { z } from "zod";
 import { BuyerClient, BuyerError, detectBuyer } from "./buyer.js";
@@ -18,7 +18,7 @@ import { buildTools } from "./tools/registry.js";
 import { sanitizeMessage } from "./sanitize.js";
 
 const PACKAGE_NAME = "antfeed-mcp";
-const PACKAGE_VERSION = "0.1.0";
+const PACKAGE_VERSION = "0.1.1";
 const MIN_NODE_MAJOR = 20;
 
 const LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40 } as const;
@@ -268,7 +268,10 @@ function isMainModule(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;
   try {
-    return import.meta.url === pathToFileURL(entry).href;
+    // realpathSync resolves the bin symlink (e.g. node_modules/.bin/antfeed-mcp)
+    // to match import.meta.url, which Node always reports as the real file path.
+    const entryUrl = pathToFileURL(realpathSync(entry)).href;
+    return import.meta.url === entryUrl;
   } catch {
     return false;
   }
