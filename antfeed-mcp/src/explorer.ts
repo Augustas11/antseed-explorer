@@ -1,4 +1,11 @@
-import { BuyersPageZ, ChannelsPageZ, SellersPageZ } from "./schemas.js";
+import {
+  BuyersPageZ,
+  ChannelsPageZ,
+  ProvidersPageZ,
+  SellerServicesResponseZ,
+  SellersPageZ,
+} from "./schemas.js";
+import type { DirectoryProviderRow, ServicePricing } from "./schemas.js";
 import { readJsonCapped } from "./http.js";
 
 export class ExplorerError extends Error {
@@ -61,6 +68,20 @@ export interface ChannelRow {
 export type SellersPage = { sellers: SellerRow[]; total: number; limit: number; offset: number };
 export type BuyersPage = { buyers: BuyerRow[]; total: number; limit: number; offset: number };
 export type ChannelsPage = { channels: ChannelRow[]; total: number; limit: number; offset: number };
+export type ProvidersPage = {
+  providers: DirectoryProviderRow[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+export type SellerServicesResponse = {
+  address: string;
+  displayName: string | null;
+  region: string | null;
+  services: string[];
+  pricing: Record<string, ServicePricing>;
+  updatedAt: number | null;
+};
 
 type SellerSort = "volume" | "sessions" | "buyers" | "ghosts" | "first_seen";
 type ChannelSort = "amount" | "settled" | "events" | "opened" | "last_activity";
@@ -150,6 +171,56 @@ export class ExplorerClient {
     const parsed = BuyersPageZ.safeParse(raw);
     if (!parsed.success) throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/buyers response did not match expected shape");
     return parsed.data as BuyersPage;
+  }
+
+  async listProvidersDirectory(
+    params: { offset?: number; limit?: number; sort?: "volume" | "sessions" | "ghost" } = {},
+  ): Promise<ProvidersPage> {
+    const url = this.buildUrl("/api/providers", {
+      offset: params.offset,
+      limit: params.limit,
+      sort: params.sort,
+    });
+    const raw = await this.fetchJson(url);
+    const parsed = ProvidersPageZ.safeParse(raw);
+    if (!parsed.success) throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/providers response did not match expected shape");
+    return parsed.data as ProvidersPage;
+  }
+
+  async getSellerServices(address: string): Promise<SellerServicesResponse | null> {
+    const url = this.buildUrl(`/api/sellers/${address.toLowerCase()}/services`, {});
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+    } catch (err) {
+      const e = err as { name?: string; message?: string };
+      if (e?.name === "AbortError") {
+        throw new ExplorerError("EXPLORER_DOWN", `Timed out after ${this.timeoutMs}ms calling /api/sellers/.../services`);
+      }
+      throw new ExplorerError("EXPLORER_DOWN", "Network error calling /api/sellers/.../services");
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 404) return null;
+    if (res.status === 429) throw new ExplorerError("RATE_LIMITED", "Explorer rate limit hit on /api/sellers/.../services");
+    if (!res.ok) throw new ExplorerError(`EXPLORER_HTTP_${res.status}`, `Explorer returned ${res.status} on /api/sellers/.../services`);
+
+    let raw: unknown;
+    try {
+      const { readJsonCapped } = await import("./http.js");
+      raw = await readJsonCapped(res, this.maxBytes);
+    } catch (err) {
+      const e = err as { code?: string };
+      if (e?.code === "RESPONSE_TOO_LARGE") {
+        throw new ExplorerError("EXPLORER_TOO_LARGE", `Explorer response exceeded ${this.maxBytes}B`);
+      }
+      throw new ExplorerError("EXPLORER_INVALID_JSON", "Malformed JSON from /api/sellers/.../services");
+    }
+    const parsed = SellerServicesResponseZ.safeParse(raw);
+    if (!parsed.success) throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/sellers/.../services response did not match expected shape");
+    return parsed.data as SellerServicesResponse;
   }
 
   async listChannels(params: { offset?: number; limit?: number; sort?: ChannelSort; dir?: Direction } = {}): Promise<ChannelsPage> {

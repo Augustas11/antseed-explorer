@@ -71,6 +71,52 @@ const spec = {
           event_count: { type: "integer" },
         },
       },
+      ServicePricing: {
+        type: "object",
+        description: "Per-service pricing as USDC per million tokens.",
+        properties: {
+          inputUsdPerMillion: { type: "number", nullable: true, example: 0.21 },
+          outputUsdPerMillion: { type: "number", nullable: true, example: 5.00 },
+        },
+      },
+      DirectoryProviderRow: {
+        type: "object",
+        description: "Service provider as indexed in the AntFeed provider directory (refreshed hourly from network.antseed.com), joined with on-chain channel aggregates.",
+        properties: {
+          address: { type: "string", example: "0x4668854ba3e8b094e6f48fbeb59cec1cfde162f2" },
+          displayName: { type: "string", nullable: true, example: "Dark Signal" },
+          region: { type: "string", nullable: true, example: "us-east" },
+          services: { type: "array", items: { type: "string" }, example: ["gpt-5.4", "gpt-5.5"] },
+          pricing: {
+            type: "object",
+            description: "Map of service name to { inputUsdPerMillion, outputUsdPerMillion }.",
+            additionalProperties: { "$ref": "#/components/schemas/ServicePricing" },
+          },
+          sessionCount: { type: "integer", example: 3645 },
+          totalVolumeUsdc: { type: "number", example: 2821.08 },
+          ghostCount: { type: "integer", example: 0 },
+          closedCount: { type: "integer", example: 100 },
+          updatedAt: {
+            type: "integer",
+            nullable: true,
+            description: "Unix milliseconds — last directory refresh for this provider.",
+          },
+        },
+      },
+      SellerServicesResponse: {
+        type: "object",
+        properties: {
+          address: { type: "string" },
+          displayName: { type: "string", nullable: true },
+          region: { type: "string", nullable: true },
+          services: { type: "array", items: { type: "string" } },
+          pricing: {
+            type: "object",
+            additionalProperties: { "$ref": "#/components/schemas/ServicePricing" },
+          },
+          updatedAt: { type: "integer", nullable: true },
+        },
+      },
       ScoreResponse: {
         type: "object",
         properties: {
@@ -177,6 +223,55 @@ const spec = {
               },
             },
           },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
+        },
+      },
+    },
+    "/api/providers": {
+      get: {
+        summary: "List providers (directory)",
+        description: "Returns the AntFeed provider directory (display names, services, per-service pricing, region, trust score, on-chain aggregates). Refreshed hourly from network.antseed.com.",
+        operationId: "listProviders",
+        security: [{ ApiKey: [] }, {}],
+        parameters: [
+          { name: "limit", in: "query", schema: { type: "integer", default: 100, maximum: 1000 } },
+          { name: "offset", in: "query", schema: { type: "integer", default: 0 } },
+          { name: "sort", in: "query", schema: { type: "string", enum: ["volume", "sessions", "ghost"], default: "volume" } },
+        ],
+        responses: {
+          "200": {
+            description: "Provider directory page",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    providers: { type: "array", items: { "$ref": "#/components/schemas/DirectoryProviderRow" } },
+                    total: { type: "integer" },
+                    limit: { type: "integer" },
+                    offset: { type: "integer" },
+                  },
+                },
+              },
+            },
+          },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
+        },
+      },
+    },
+    "/api/sellers/{address}/services": {
+      get: {
+        summary: "Get a seller's service catalog + pricing",
+        description: "Returns the services advertised by one seller, with per-service pricing as USDC per million tokens. Source: AntFeed provider directory, refreshed hourly.",
+        operationId: "getSellerServices",
+        security: [{ ApiKey: [] }, {}],
+        parameters: [
+          { name: "address", in: "path", required: true, schema: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }, description: "Seller's on-chain Ethereum address" },
+        ],
+        responses: {
+          "200": { description: "Seller services + pricing", content: { "application/json": { schema: { "$ref": "#/components/schemas/SellerServicesResponse" } } } },
+          "400": { description: "Invalid address format" },
+          "404": { description: "Seller not in the indexed directory" },
           "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
         },
       },

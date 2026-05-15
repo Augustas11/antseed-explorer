@@ -198,7 +198,7 @@ async function main() {
           result = await listProviders(args, { explorer });
           break;
         case "get_pricing":
-          result = await getPricing(args);
+          result = await getPricing(args, { explorer });
           break;
         case "get_session_status":
           result = await getSessionStatus(args, { explorer });

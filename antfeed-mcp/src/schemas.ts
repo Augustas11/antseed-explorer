@@ -131,3 +131,48 @@ export const BuyerHealthZ = z
     version: z.string().max(64).optional(),
   })
   .passthrough();
+
+const SERVICE_NAME_RE = /^[A-Za-z0-9_.\-:/]+$/;
+
+export const ServicePricingZ = z
+  .object({
+    inputUsdPerMillion: z.number().finite().nonnegative().optional(),
+    outputUsdPerMillion: z.number().finite().nonnegative().optional(),
+  })
+  .passthrough();
+
+export const DirectoryProviderRowZ = z
+  .object({
+    address: ETH_ADDRESS,
+    displayName: z.string().max(200).nullable(),
+    region: z.string().max(64).nullable(),
+    services: z.array(z.string().max(64).regex(SERVICE_NAME_RE)).max(500),
+    pricing: z.record(z.string().max(64), ServicePricingZ),
+    sessionCount: z.number().int().nonnegative(),
+    totalVolumeUsdc: z.number().finite().nonnegative(),
+    ghostCount: z.number().int().nonnegative(),
+    closedCount: z.number().int().nonnegative(),
+    updatedAt: z.number().int().nullable(),
+  })
+  .passthrough();
+
+export const ProvidersPageZ = z.object({
+  providers: z.array(DirectoryProviderRowZ).max(1000),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+});
+
+export const SellerServicesResponseZ = z
+  .object({
+    address: ETH_ADDRESS,
+    displayName: z.string().max(200).nullable(),
+    region: z.string().max(64).nullable(),
+    services: z.array(z.string().max(64).regex(SERVICE_NAME_RE)).max(500),
+    pricing: z.record(z.string().max(64), ServicePricingZ),
+    updatedAt: z.number().int().nullable(),
+  })
+  .passthrough();
+
+export type ServicePricing = z.infer<typeof ServicePricingZ>;
+export type DirectoryProviderRow = z.infer<typeof DirectoryProviderRowZ>;

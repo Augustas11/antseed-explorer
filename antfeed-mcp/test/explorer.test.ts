@@ -70,6 +70,36 @@ const sellersPage = (sellers: typeof SELLER_ROW[], total: number) =>
 const channelsPage = (channels: typeof CHANNEL_ROW[], total: number, offset = 0) =>
   jsonResponse({ channels, total, limit: 1000, offset });
 
+const PROVIDER_ROW = {
+  address: ADDR_A,
+  displayName: "Dark Signal",
+  region: "us-east",
+  services: ["gpt-5.4", "gpt-5.5"],
+  pricing: {
+    "gpt-5.4": { inputUsdPerMillion: 0.21, outputUsdPerMillion: 0.84 },
+    "gpt-5.5": { inputUsdPerMillion: 5.0, outputUsdPerMillion: 15.0 },
+  },
+  sessionCount: 3645,
+  totalVolumeUsdc: 2821.08,
+  ghostCount: 0,
+  closedCount: 100,
+  updatedAt: 1_700_000_000_000,
+};
+
+const PROVIDER_ROW_2 = {
+  ...PROVIDER_ROW,
+  address: ADDR_B,
+  displayName: "Open Forge",
+  services: ["deepseek-r1"],
+  pricing: { "deepseek-r1": { inputUsdPerMillion: 0.0, outputUsdPerMillion: 1.05 } },
+  totalVolumeUsdc: 945.16,
+  sessionCount: 1065,
+  updatedAt: 1_700_001_000_000,
+};
+
+const providersPage = (providers: typeof PROVIDER_ROW[], total: number, offset = 0) =>
+  jsonResponse({ providers, total, limit: 1000, offset });
+
 describe("ExplorerClient URL construction", () => {
   it("listSellers hits /api/sellers with correct query params", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(sellersPage([], 0));
@@ -182,16 +212,32 @@ describe("ExplorerClient error paths", () => {
 });
 
 describe("lookup tool", () => {
-  it("matches sellers by address substring (case-insensitive)", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(sellersPage([SELLER_ROW, SELLER_ROW_2], 2));
+  it("matches providers by address substring (case-insensitive)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW, PROVIDER_ROW_2], 2));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const result = await lookup({ query: "bbbb" }, { explorer });
     expect(result.matched).toBe(1);
     expect(result.matches[0]!.peerId).toBe(ADDR_B);
   });
 
+  it("matches providers by displayName", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW, PROVIDER_ROW_2], 2));
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const result = await lookup({ query: "dark" }, { explorer });
+    expect(result.matched).toBe(1);
+    expect(result.matches[0]!.displayName).toBe("Dark Signal");
+  });
+
+  it("matches providers by service name", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW, PROVIDER_ROW_2], 2));
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const result = await lookup({ query: "deepseek" }, { explorer });
+    expect(result.matched).toBe(1);
+    expect(result.matches[0]!.peerId).toBe(ADDR_B);
+  });
+
   it("respects limit", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(sellersPage([SELLER_ROW, SELLER_ROW_2], 2));
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW, PROVIDER_ROW_2], 2));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const result = await lookup({ query: "0x", limit: 1 }, { explorer });
     expect(result.matched).toBe(1);
@@ -204,23 +250,29 @@ describe("lookup tool", () => {
 });
 
 describe("list_providers tool", () => {
-  it("maps sort=score → /api/sellers?sort=volume&dir=desc", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(sellersPage([SELLER_ROW], 1));
+  it("hits /api/providers with sort=volume for sort=score", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW], 1));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const out = await listProviders({ sort: "score", limit: 20 }, { explorer });
     const url = fetchImpl.mock.calls[0]![0] as string;
+    expect(url).toContain("/api/providers");
     expect(url).toContain("sort=volume");
-    expect(url).toContain("dir=desc");
     expect(out.providers).toHaveLength(1);
-    expect(out.providers[0]!.peerId).toBe(SELLER_ROW.address);
+    expect(out.providers[0]!.peerId).toBe(PROVIDER_ROW.address);
+    expect(out.providers[0]!.displayName).toBe("Dark Signal");
+    expect(out.providers[0]!.services).toEqual(["gpt-5.4", "gpt-5.5"]);
+    expect(out.providers[0]!.pricingSummary.minInputUsdPerMillion).toBe(0.21);
+    expect(out.providers[0]!.pricingSummary.maxInputUsdPerMillion).toBe(5.0);
   });
 
-  it("maps sort=recent → /api/sellers?sort=first_seen&dir=desc", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(sellersPage([], 0));
+  it("sorts by updatedAt desc when sort=recent", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(providersPage([PROVIDER_ROW, PROVIDER_ROW_2], 2));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
-    await listProviders({ sort: "recent" }, { explorer });
-    const url = fetchImpl.mock.calls[0]![0] as string;
-    expect(url).toContain("sort=first_seen");
+    const out = await listProviders({ sort: "recent" }, { explorer });
+    expect(out.providers[0]!.peerId).toBe(ADDR_B); // updatedAt = 1_700_001_000_000 (newer)
+    expect(out.providers[1]!.peerId).toBe(ADDR_A);
   });
 
   it("INVALID_INPUT on bad sort", async () => {
@@ -230,23 +282,72 @@ describe("list_providers tool", () => {
 });
 
 describe("get_pricing tool", () => {
-  it("returns NOT_INDEXED placeholder with no network calls", async () => {
-    const result = await getPricing({ peerId: ADDR_C, service: "code-auditor" });
-    expect(result.status).toBe("NOT_INDEXED");
-    expect(result.pricePerToken).toBeNull();
+  const sellerServicesResponse = (overrides: Partial<typeof PROVIDER_ROW> = {}) =>
+    jsonResponse({
+      address: PROVIDER_ROW.address,
+      displayName: PROVIDER_ROW.displayName,
+      region: PROVIDER_ROW.region,
+      services: PROVIDER_ROW.services,
+      pricing: PROVIDER_ROW.pricing,
+      updatedAt: PROVIDER_ROW.updatedAt,
+      ...overrides,
+    });
+
+  it("returns INDEXED with live pricing when service is offered + priced", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(sellerServicesResponse());
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const result = await getPricing({ peerId: ADDR_A, service: "gpt-5.4" }, { explorer });
+    expect(result.status).toBe("INDEXED");
+    expect(result.inputUsdPerMillion).toBe(0.21);
+    expect(result.outputUsdPerMillion).toBe(0.84);
     expect(result.currency).toBe("USDC");
-    expect(result.peerId).toBe(ADDR_C);
-    expect(result.service).toBe("code-auditor");
+    expect(result.displayName).toBe("Dark Signal");
+    expect(fetchImpl.mock.calls[0]![0]).toContain(`/api/sellers/${ADDR_A.toLowerCase()}/services`);
+  });
+
+  it("returns PROVIDER_NOT_INDEXED when explorer 404s the seller", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("not found", { status: 404 }));
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const result = await getPricing({ peerId: ADDR_C, service: "gpt-5.4" }, { explorer });
+    expect(result.status).toBe("PROVIDER_NOT_INDEXED");
+    expect(result.inputUsdPerMillion).toBeNull();
+  });
+
+  it("returns SERVICE_NOT_OFFERED when seller doesn't list the service", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(sellerServicesResponse());
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const result = await getPricing({ peerId: ADDR_A, service: "unknown-svc" }, { explorer });
+    expect(result.status).toBe("SERVICE_NOT_OFFERED");
+    expect(result.availableServices).toEqual(["gpt-5.4", "gpt-5.5"]);
+  });
+
+  it("returns PRICE_NOT_PUBLISHED when service listed but no price entry", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        sellerServicesResponse({
+          services: ["mystery-svc"],
+          pricing: {}, // no entry for mystery-svc
+        } as Partial<typeof PROVIDER_ROW>),
+      );
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const result = await getPricing({ peerId: ADDR_A, service: "mystery-svc" }, { explorer });
+    expect(result.status).toBe("PRICE_NOT_PUBLISHED");
+    expect(result.inputUsdPerMillion).toBeNull();
   });
 
   it("INVALID_INPUT on non-hex peerId", async () => {
-    await expect(getPricing({ peerId: "not-a-hex-address", service: "x" })).rejects.toMatchObject({
-      name: "ZodError",
-    });
+    const explorer = makeExplorer(vi.fn() as unknown as typeof fetch);
+    await expect(
+      getPricing({ peerId: "not-a-hex-address", service: "x" }, { explorer }),
+    ).rejects.toMatchObject({ name: "ZodError" });
   });
 
   it("INVALID_INPUT on missing fields", async () => {
-    await expect(getPricing({ peerId: ADDR_C })).rejects.toMatchObject({ name: "ZodError" });
+    const explorer = makeExplorer(vi.fn() as unknown as typeof fetch);
+    await expect(getPricing({ peerId: ADDR_C }, { explorer })).rejects.toMatchObject({
+      name: "ZodError",
+    });
   });
 });
 
@@ -307,14 +408,14 @@ describe("get_session_status tool", () => {
 
 describe("lookup truncation flag", () => {
   it("sets truncated=true when explorer.total exceeds page size", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(sellersPage([SELLER_ROW, SELLER_ROW_2], 5000));
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW, PROVIDER_ROW_2], 5000));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const out = await lookup({ query: "0x" }, { explorer });
     expect(out.truncated).toBe(true);
   });
 
   it("sets truncated=false when explorer.total <= page size", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(sellersPage([SELLER_ROW], 1));
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW], 1));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const out = await lookup({ query: "0x" }, { explorer });
     expect(out.truncated).toBe(false);
