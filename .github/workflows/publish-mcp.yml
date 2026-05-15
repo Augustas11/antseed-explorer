@@ -74,10 +74,10 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish to npm with provenance
+        # Auth is via npm Trusted Publishing (OIDC) — no NPM_TOKEN secret needed.
+        # See: https://docs.npmjs.com/trusted-publishers
         if: github.event_name == 'push' || inputs.dry_run == false
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Summary
         run: |
