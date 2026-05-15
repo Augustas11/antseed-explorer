@@ -12,6 +12,8 @@
     "db:studio": "drizzle-kit studio",
     "import:sqlite": "tsx scripts/import-sqlite.ts",
     "sync": "tsx scripts/sync-cli.ts",
+    "signals": "tsx scripts/detect-signals.ts",
+    "signals:dry": "tsx scripts/detect-signals.ts --dry",
     "vercel-build": "tsx scripts/migrate.ts && next build"
   },
   "dependencies": {
