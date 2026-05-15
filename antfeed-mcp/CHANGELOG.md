@@ -2,6 +2,12 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.1 — 2026-05-15
+
+### Fixed
+
+- Server failed to start when launched through a bin symlink — the standard `npx -y @antfeed/mcp` and `node_modules/.bin/antfeed-mcp` invocation paths. `isMainModule()` compared `process.argv[1]` to `import.meta.url`, but Node resolves symlinks for module URLs while leaving `argv[1]` as the symlink path, so the check returned `false` and `main()` was never called. The server connected to stdio briefly then exited with no handshake, surfacing as `-32000 failed` in MCP clients (e.g. Claude Code). `realpathSync()` now normalizes the entry path before comparing.
+
 ## 0.1.0 — 2026-05-15
 
 Initial release. Model Context Protocol server for the [AntFeed Explorer](https://antfeed.org), giving any MCP-compatible AI agent a one-line door into the AntSeed P2P AI network.
