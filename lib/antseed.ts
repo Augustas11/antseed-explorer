@@ -15,7 +15,12 @@ export const CONTRACTS = {
   IdentityRegistry: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
 } as const;
 
-export const CHANNELS_DEPLOYMENT_BLOCK = 45_667_842n;
+// Verified via viem getCode bisection against Base RPC: this is the first
+// block at which 0xBA66... has bytecode. Matches Dune's leaderboard genesis
+// (TIMESTAMP '2026-04-09 09:54:21' UTC) exactly. The prior value 45_667_842n
+// caused the indexer to skip ~28 days of channel events (~$1.6k of settled
+// volume), producing a ‑22% gap vs. the Dune dashboard (query 6978394).
+export const CHANNELS_DEPLOYMENT_BLOCK = 44_469_557n;
 export const ANTSEED_STATS_DEPLOYMENT_BLOCK = 44_469_557n;
 export const ANTS_TOKEN_DEPLOYMENT_BLOCK = 44_469_557n;
 export const EMISSIONS_DEPLOYMENT_BLOCK = 45_937_736n;

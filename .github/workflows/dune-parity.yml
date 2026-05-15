@@ -1,0 +1,52 @@
+name: Dune parity check
+
+# Non-blocking parity report against the Antseed Dune dashboard.
+# Compares production /api/stats values to cached Dune query results.
+# To enable: set repository secret DUNE_API_KEY.
+
+on:
+  pull_request:
+    paths:
+      - "lib/queries.ts"
+      - "lib/indexer.ts"
+      - "lib/antseed.ts"
+      - "app/api/stats/**"
+      - "scripts/check-dune-parity.ts"
+      - ".github/workflows/dune-parity.yml"
+  schedule:
+    - cron: "37 */6 * * *"  # 4x/day, offset so it doesn't collide with cron syncs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: Compare explorer vs Dune
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Install
+        run: npm ci
+      - name: Check parity
+        env:
+          DUNE_API_KEY: ${{ secrets.DUNE_API_KEY }}
+          EXPLORER_BASE: https://antfeed.org
+        run: |
+          if [ -z "$DUNE_API_KEY" ]; then
+            echo "::warning::DUNE_API_KEY not set — skipping parity check."
+            exit 0
+          fi
+          npx tsx scripts/check-dune-parity.ts | tee parity-report.txt
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-report
+          path: parity-report.txt
+          if-no-files-found: ignore
