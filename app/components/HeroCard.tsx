@@ -38,9 +38,9 @@ export default function HeroCard({
         {value}
       </div>
       {sparkline ? <div className="mt-1">{sparkline}</div> : null}
-      <div className="flex items-baseline justify-between gap-2 mt-auto text-xs">
-        <span className="text-muted truncate">{sublabel ?? ""}</span>
-        <span className={`tabular-nums ${deltaCls}`}>
+      <div className="flex items-start justify-between gap-2 mt-auto text-xs">
+        <span className="text-muted min-w-0">{sublabel ?? ""}</span>
+        <span className={`tabular-nums shrink-0 text-right ${deltaCls}`}>
           {fmtPct(delta ?? null)}
           <span className="text-muted ml-1">{deltaLabel}</span>
         </span>
