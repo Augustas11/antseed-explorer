@@ -100,4 +100,11 @@ a { color: inherit; }
   .btn-accent {
     @apply px-3 py-1.5 text-sm rounded-md bg-accent text-bg font-medium hover:opacity-90 transition;
   }
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }

@@ -323,13 +323,15 @@ export interface HeroStats {
   recentTokens: number;
   priorTokens: number;
   // Paying Users — distinct addresses that either paid USDC into a channel
-  // or hold $ANT (live balance > 0, excluding protocol contracts).
+  // or hold $ANTS (live balance > 0, excluding protocol contracts).
   totalPayingUsers: number;
   recentPayingUsers: number;
   priorPayingUsers: number;
-  // Sub-counts so the UI can attribute the headline to its two sources.
+  // Sub-counts so the UI can attribute the headline to its sources.
+  // totalPayingUsers = usdcPayers + antHolders - bothCount.
   usdcPayers: number;
   antHolders: number;
+  bothCount: number;
 }
 
 export async function getHeroStats(): Promise<HeroStats> {
@@ -356,10 +358,11 @@ export async function getHeroStats(): Promise<HeroStats> {
   // convention) and is not used here.
   //
   // Paying Users: distinct over the union of (a) addresses that paid USDC
-  // into a channel and (b) addresses currently holding $ANT (balance > 0),
+  // into a channel and (b) addresses currently holding $ANTS (balance > 0),
   // excluding protocol contracts. Recent/prior windows reflect transaction
-  // activity for USDC payers; $ANT holders are treated as active-by-balance
-  // (no per-transfer timestamp without indexing more state).
+  // activity for USDC payers; $ANTS holders are treated as active-by-balance
+  // (no per-transfer timestamp without indexing more state). bothCount is
+  // the intersection so the UI can show disjoint segments that sum to total.
   const r = await db.execute<any>(sql`
     WITH settled AS (
       SELECT timestamp, delta_usdc
@@ -423,7 +426,12 @@ export async function getHeroStats(): Promise<HeroStats> {
       (SELECT COUNT(*)::int                             FROM paying WHERE active_recent) AS recent_paying_users,
       (SELECT COUNT(*)::int                             FROM paying WHERE active_prior)  AS prior_paying_users,
       (SELECT COUNT(*)::int                             FROM usdc_payers) AS usdc_payers,
-      (SELECT COUNT(*)::int                             FROM ant_holders_clean) AS ant_holders
+      (SELECT COUNT(*)::int                             FROM ant_holders_clean) AS ant_holders,
+      (SELECT COUNT(*)::int FROM (
+        SELECT addr FROM usdc_payers
+        INTERSECT
+        SELECT addr FROM ant_holders_clean
+      ) i) AS both_count
   `);
 
   const x = r.rows[0] ?? {};
@@ -441,6 +449,7 @@ export async function getHeroStats(): Promise<HeroStats> {
     priorPayingUsers: Number(x.prior_paying_users ?? 0),
     usdcPayers: Number(x.usdc_payers ?? 0),
     antHolders: Number(x.ant_holders ?? 0),
+    bothCount: Number(x.both_count ?? 0),
   };
 }
 

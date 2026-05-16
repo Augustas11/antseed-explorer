@@ -26,10 +26,10 @@ export default async function HoldersPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">$ANT holders</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">$ANTS holders</h1>
         <p className="text-muted text-sm mt-1">
           {total > 0
-            ? `${fmtNum(total)} addresses currently holding $ANT. Protocol contracts excluded; %share is of indexed circulating balance.`
+            ? `${fmtNum(total)} addresses currently holding $ANTS. Protocol contracts excluded; %share is of indexed circulating balance.`
             : "Backfill in progress — Transfer event index is still walking forward from the token deploy block. Numbers will populate as the cron catches up."}
         </p>
       </div>
@@ -45,7 +45,7 @@ export default async function HoldersPage({
               <tr>
                 <th>#</th>
                 <th>Address</th>
-                <th className="text-right">$ANT</th>
+                <th className="text-right">$ANTS</th>
                 <th className="text-right">% supply</th>
               </tr>
             </thead>

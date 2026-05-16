@@ -130,12 +130,13 @@ export default async function HomePage({
                 href="/holders"
                 className="text-accent hover:underline underline-offset-2"
               >
-                {fmtNum(hero.antHolders)} hold $ANT
+                {fmtNum(hero.antHolders)} hold $ANTS
               </Link>
+              {hero.bothCount > 0 ? ` · ${fmtNum(hero.bothCount)} both` : ""}
             </>
           }
           delta={pctDelta(hero.recentPayingUsers, hero.priorPayingUsers)}
-          tooltip="Distinct addresses that either paid USDC into a channel or currently hold $ANT (excluding protocol contracts)."
+          tooltip="Distinct addresses that either paid USDC into a channel or currently hold $ANTS (excluding protocol contracts). Headline = USDC payers + $ANTS holders − overlap."
           sparkline={<Sparkline data={usersSpark} color="#f5b656" />}
         />
       </section>
