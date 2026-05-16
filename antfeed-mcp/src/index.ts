@@ -173,10 +173,10 @@ async function main() {
   // Two-attempt detection covers the startup-race case where the buyer
   // comes up shortly after the MCP host launches.
   const mode = cfg.buyerStrict ? "strict" : "lenient";
-  let detect = await detectBuyer(cfg.buyerUrl, 500, mode, fetch, USER_AGENT);
+  let detect = await detectBuyer(cfg.buyerUrl, { timeoutMs: 500, mode, userAgent: USER_AGENT });
   if (!detect.reachable && !cfg.buyerStrict) {
     await new Promise((r) => setTimeout(r, 500));
-    detect = await detectBuyer(cfg.buyerUrl, 1000, mode, fetch, USER_AGENT);
+    detect = await detectBuyer(cfg.buyerUrl, { timeoutMs: 1000, mode, userAgent: USER_AGENT });
   }
   log(
     "info",

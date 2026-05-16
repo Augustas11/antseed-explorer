@@ -33,7 +33,7 @@ describe("buyer auto-detect (lenient mode)", () => {
         res.end();
       }
     });
-    const r = await detectBuyer(url, 500, "lenient");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "lenient" });
     expect(r.reachable).toBe(true);
     expect(r.identityVerified).toBe(true);
     expect(r.warning).toBeUndefined();
@@ -44,7 +44,7 @@ describe("buyer auto-detect (lenient mode)", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ service: "antstation" }));
     });
-    const r = await detectBuyer(url, 500, "lenient");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "lenient" });
     expect(r.identityVerified).toBe(true);
   });
 
@@ -53,7 +53,7 @@ describe("buyer auto-detect (lenient mode)", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     });
-    const r = await detectBuyer(url, 500, "lenient");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "lenient" });
     expect(r.reachable).toBe(true);
     expect(r.identityVerified).toBe(false);
     expect(r.warning).toBeDefined();
@@ -64,7 +64,7 @@ describe("buyer auto-detect (lenient mode)", () => {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("OK");
     });
-    const r = await detectBuyer(url, 500, "lenient");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "lenient" });
     expect(r.reachable).toBe(true);
     expect(r.identityVerified).toBe(false);
   });
@@ -74,12 +74,12 @@ describe("buyer auto-detect (lenient mode)", () => {
       res.writeHead(500);
       res.end();
     });
-    const r = await detectBuyer(url, 500, "lenient");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "lenient" });
     expect(r.reachable).toBe(false);
   });
 
   it("returns not-reachable when buyer is unreachable", async () => {
-    const r = await detectBuyer("http://127.0.0.1:1", 200, "lenient");
+    const r = await detectBuyer("http://127.0.0.1:1", { timeoutMs: 200, mode: "lenient" });
     expect(r.reachable).toBe(false);
   });
 
@@ -88,7 +88,7 @@ describe("buyer auto-detect (lenient mode)", () => {
       // never respond — AbortController fires
     });
     const t0 = Date.now();
-    const r = await detectBuyer(url, 100, "lenient");
+    const r = await detectBuyer(url, { timeoutMs: 100, mode: "lenient" });
     const elapsed = Date.now() - t0;
     expect(r.reachable).toBe(false);
     expect(elapsed).toBeLessThan(1500);
@@ -101,7 +101,7 @@ describe("buyer auto-detect (strict mode)", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
     });
-    const r = await detectBuyer(url, 500, "strict");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "strict" });
     expect(r.reachable).toBe(false);
     expect(r.warning).toMatch(/ANTSEED_BUYER_STRICT/);
   });
@@ -111,7 +111,7 @@ describe("buyer auto-detect (strict mode)", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ service: "evil-service" }));
     });
-    const r = await detectBuyer(url, 500, "strict");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "strict" });
     expect(r.reachable).toBe(false);
   });
 
@@ -120,7 +120,7 @@ describe("buyer auto-detect (strict mode)", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ service: "antseed-buyer" }));
     });
-    const r = await detectBuyer(url, 500, "strict");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "strict" });
     expect(r.reachable).toBe(true);
     expect(r.identityVerified).toBe(true);
   });
@@ -137,7 +137,7 @@ describe("tool registry depends on buyer detection", () => {
         res.end();
       }
     });
-    const r = await detectBuyer(url, 500, "lenient");
+    const r = await detectBuyer(url, { timeoutMs: 500, mode: "lenient" });
     const tools = buildTools(r.reachable);
     const names = tools.map((t) => t.name);
     expect(names).toContain("create_session");
@@ -146,7 +146,7 @@ describe("tool registry depends on buyer detection", () => {
   });
 
   it("includes buyer_setup when buyer unreachable, omits create_session", async () => {
-    const r = await detectBuyer("http://127.0.0.1:1", 200, "lenient");
+    const r = await detectBuyer("http://127.0.0.1:1", { timeoutMs: 200, mode: "lenient" });
     const tools = buildTools(r.reachable);
     const names = tools.map((t) => t.name);
     expect(names).toContain("buyer_setup");

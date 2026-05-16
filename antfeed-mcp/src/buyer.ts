@@ -13,9 +13,9 @@ export class BuyerError extends Error {
 export interface BuyerConfig {
   baseUrl: string;
   timeoutMs: number;
+  userAgent: string;
   maxBytes?: number;
   fetchImpl?: typeof fetch;
-  userAgent?: string;
 }
 
 const DEFAULT_MAX_BYTES = 256_000;
@@ -30,13 +30,23 @@ export interface BuyerDetectResult {
 
 const ACCEPTED_IDENTITIES = ["antseed-buyer", "antstation", "antstation-desktop"];
 
+export interface DetectBuyerOptions {
+  timeoutMs?: number;
+  mode?: BuyerDetectMode;
+  fetchImpl?: typeof fetch;
+  userAgent?: string;
+}
+
 export async function detectBuyer(
   baseUrl: string,
-  timeoutMs = 500,
-  mode: BuyerDetectMode = "lenient",
-  fetchImpl: typeof fetch = fetch,
-  userAgent = "antfeed-mcp",
+  opts: DetectBuyerOptions = {},
 ): Promise<BuyerDetectResult> {
+  const {
+    timeoutMs = 500,
+    mode = "lenient",
+    fetchImpl = fetch,
+    userAgent = "antfeed-mcp",
+  } = opts;
   const url = `${baseUrl.replace(/\/+$/, "")}/health`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -101,7 +111,7 @@ export class BuyerClient {
     this.timeoutMs = cfg.timeoutMs;
     this.maxBytes = cfg.maxBytes ?? DEFAULT_MAX_BYTES;
     this.fetchImpl = cfg.fetchImpl ?? fetch;
-    this.userAgent = cfg.userAgent ?? "antfeed-mcp";
+    this.userAgent = cfg.userAgent;
   }
 
   async createSession(input: CreateSessionRequest): Promise<unknown> {

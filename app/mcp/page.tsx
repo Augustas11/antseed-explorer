@@ -274,7 +274,7 @@ export default function McpPage() {
             className="text-accent hover:underline"
             href="https://x.com/AntFeed"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
           >
             @AntFeed
           </a>{" "}

@@ -9,6 +9,11 @@ All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep 
 - Outbound HTTP requests from both the explorer client and the buyer client now send a versioned `User-Agent: antfeed-mcp/<version>` header. This lets us attribute MCP-originated traffic in server logs and triage by client version when responding to issues.
 - Every tool description now ends with `Feedback or issues: https://antfeed.org/mcp#feedback`, and the `/mcp` landing page has a new `#feedback` section with a direct mailto and an `@AntFeed` link — giving agents a discoverable, in-band channel for surfacing complaints.
 
+### Changed (internal API surface)
+
+- `ExplorerConfig.userAgent` and `BuyerConfig.userAgent` are now **required** fields (previously optional with an unversioned default). Direct constructors of `ExplorerClient` / `BuyerClient` must pass a versioned UA; the stdio entry point already does. This prevents a silent-degradation path where an external importer would hit upstream APIs with an unversioned `antfeed-mcp` and break our log-triage story.
+- `detectBuyer(baseUrl, ...)` was refactored from a five-positional-argument signature to an options-object signature (`detectBuyer(baseUrl, { timeoutMs?, mode?, fetchImpl?, userAgent? })`). Easier to extend without growing more positional params.
+
 ## 0.1.1 — 2026-05-15
 
 ### Fixed
