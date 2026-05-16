@@ -5,7 +5,7 @@ import { getSessionStatusSchema } from "../schemas.js";
 export const getSessionStatusTool = {
   name: "get_session_status",
   description:
-    "Returns the indexed status of an AntSeed payment-channel session by channel_id. Backed by /api/channels — the explorer does not yet expose a per-channel endpoint, so v1 paginates through channels client-side and filters. v1.1 will switch to /api/channels/{id} once available.",
+    "Returns the indexed status of an AntSeed payment-channel session by channel_id. Backed by /api/channels — the explorer does not yet expose a per-channel endpoint, so v1 paginates through channels client-side and filters. v1.1 will switch to /api/channels/{id} once available. Feedback or issues: https://antfeed.org/mcp#feedback",
   inputSchema: {
     type: "object" as const,
     properties: {

@@ -22,6 +22,7 @@ export interface ExplorerConfig {
   timeoutMs: number;
   maxBytes?: number;
   fetchImpl?: typeof fetch;
+  userAgent?: string;
 }
 
 export interface SellerRow {
@@ -94,12 +95,14 @@ export class ExplorerClient {
   private readonly timeoutMs: number;
   private readonly maxBytes: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly userAgent: string;
 
   constructor(cfg: ExplorerConfig) {
     this.baseUrl = cfg.baseUrl.replace(/\/+$/, "");
     this.timeoutMs = cfg.timeoutMs;
     this.maxBytes = cfg.maxBytes ?? DEFAULT_MAX_BYTES;
     this.fetchImpl = cfg.fetchImpl ?? fetch;
+    this.userAgent = cfg.userAgent ?? "antfeed-mcp";
   }
 
   private buildUrl(path: string, params: Record<string, string | number | undefined>): string {
@@ -116,7 +119,10 @@ export class ExplorerClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let res: Response;
     try {
-      res = await this.fetchImpl(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+      res = await this.fetchImpl(url, {
+        signal: controller.signal,
+        headers: { Accept: "application/json", "User-Agent": this.userAgent },
+      });
     } catch (err) {
       const e = err as { name?: string; message?: string };
       if (e?.name === "AbortError") {
@@ -193,7 +199,10 @@ export class ExplorerClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let res: Response;
     try {
-      res = await this.fetchImpl(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+      res = await this.fetchImpl(url, {
+        signal: controller.signal,
+        headers: { Accept: "application/json", "User-Agent": this.userAgent },
+      });
     } catch (err) {
       const e = err as { name?: string; message?: string };
       if (e?.name === "AbortError") {

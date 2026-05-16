@@ -100,6 +100,22 @@ const PROVIDER_ROW_2 = {
 const providersPage = (providers: typeof PROVIDER_ROW[], total: number, offset = 0) =>
   jsonResponse({ providers, total, limit: 1000, offset });
 
+describe("ExplorerClient User-Agent header", () => {
+  it("sends the configured User-Agent on fetches", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(sellersPage([], 0));
+    const explorer = new ExplorerClient({
+      baseUrl: BASE,
+      timeoutMs: 1000,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: "antfeed-mcp/9.9.9-test",
+    });
+    await explorer.listSellers({});
+    const init = fetchImpl.mock.calls[0]![1] as RequestInit;
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    expect(headers["User-Agent"]).toBe("antfeed-mcp/9.9.9-test");
+  });
+});
+
 describe("ExplorerClient URL construction", () => {
   it("listSellers hits /api/sellers with correct query params", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(sellersPage([], 0));

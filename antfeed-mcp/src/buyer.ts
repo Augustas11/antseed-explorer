@@ -15,6 +15,7 @@ export interface BuyerConfig {
   timeoutMs: number;
   maxBytes?: number;
   fetchImpl?: typeof fetch;
+  userAgent?: string;
 }
 
 const DEFAULT_MAX_BYTES = 256_000;
@@ -34,6 +35,7 @@ export async function detectBuyer(
   timeoutMs = 500,
   mode: BuyerDetectMode = "lenient",
   fetchImpl: typeof fetch = fetch,
+  userAgent = "antfeed-mcp",
 ): Promise<BuyerDetectResult> {
   const url = `${baseUrl.replace(/\/+$/, "")}/health`;
   const controller = new AbortController();
@@ -41,7 +43,7 @@ export async function detectBuyer(
   try {
     const res = await fetchImpl(url, {
       signal: controller.signal,
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", "User-Agent": userAgent },
     });
     if (!res.ok) return { reachable: false, identityVerified: false };
 
@@ -92,12 +94,14 @@ export class BuyerClient {
   private readonly timeoutMs: number;
   private readonly maxBytes: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly userAgent: string;
 
   constructor(cfg: BuyerConfig) {
     this.baseUrl = cfg.baseUrl.replace(/\/+$/, "");
     this.timeoutMs = cfg.timeoutMs;
     this.maxBytes = cfg.maxBytes ?? DEFAULT_MAX_BYTES;
     this.fetchImpl = cfg.fetchImpl ?? fetch;
+    this.userAgent = cfg.userAgent ?? "antfeed-mcp";
   }
 
   async createSession(input: CreateSessionRequest): Promise<unknown> {
@@ -108,7 +112,11 @@ export class BuyerClient {
     try {
       res = await this.fetchImpl(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "User-Agent": this.userAgent,
+        },
         body: JSON.stringify(input),
         signal: controller.signal,
       });

@@ -18,7 +18,8 @@ import { buildTools } from "./tools/registry.js";
 import { sanitizeMessage } from "./sanitize.js";
 
 const PACKAGE_NAME = "antfeed-mcp";
-const PACKAGE_VERSION = "0.1.1";
+const PACKAGE_VERSION = "0.1.2";
+const USER_AGENT = `${PACKAGE_NAME}/${PACKAGE_VERSION}`;
 const MIN_NODE_MAJOR = 20;
 
 const LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40 } as const;
@@ -158,16 +159,24 @@ async function main() {
     );
   }
 
-  const explorer = new ExplorerClient({ baseUrl: cfg.explorerUrl, timeoutMs: cfg.timeoutMs });
-  const buyer = new BuyerClient({ baseUrl: cfg.buyerUrl, timeoutMs: cfg.timeoutMs });
+  const explorer = new ExplorerClient({
+    baseUrl: cfg.explorerUrl,
+    timeoutMs: cfg.timeoutMs,
+    userAgent: USER_AGENT,
+  });
+  const buyer = new BuyerClient({
+    baseUrl: cfg.buyerUrl,
+    timeoutMs: cfg.timeoutMs,
+    userAgent: USER_AGENT,
+  });
 
   // Two-attempt detection covers the startup-race case where the buyer
   // comes up shortly after the MCP host launches.
   const mode = cfg.buyerStrict ? "strict" : "lenient";
-  let detect = await detectBuyer(cfg.buyerUrl, 500, mode);
+  let detect = await detectBuyer(cfg.buyerUrl, 500, mode, fetch, USER_AGENT);
   if (!detect.reachable && !cfg.buyerStrict) {
     await new Promise((r) => setTimeout(r, 500));
-    detect = await detectBuyer(cfg.buyerUrl, 1000, mode);
+    detect = await detectBuyer(cfg.buyerUrl, 1000, mode, fetch, USER_AGENT);
   }
   log(
     "info",
