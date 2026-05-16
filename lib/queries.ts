@@ -611,6 +611,9 @@ export interface ProviderRow {
   services: string[];
   pricing: Record<string, any>;
   description: string | null;
+  // Non-null when `address` is a seller delegation contract; holds the
+  // operator EVM address derived from peerId[:40]. See refreshProviderDirectory.
+  operator_address: string | null;
 }
 
 export async function lookupProvider(
@@ -637,6 +640,7 @@ export async function lookupProvider(
     services: parseJson<string[]>(r.services) ?? [],
     pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
     description: r.description ?? null,
+    operator_address: r.operator_address ?? null,
   };
 }
 
@@ -674,6 +678,7 @@ export async function lookupProviders(
       services: parseJson<string[]>(r.services) ?? [],
       pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
       description: r.description ?? null,
+      operator_address: r.operator_address ?? null,
     });
   }
   return m;
@@ -1312,6 +1317,9 @@ export interface DirectoryProviderRow {
   ghostCount: number;
   closedCount: number;
   updatedAt: number | null;
+  // Non-null when `address` is a seller delegation contract; the operator
+  // EVM address derived from the libp2p peerId.
+  operatorAddress: string | null;
 }
 
 export async function listProviders(opts: {
@@ -1331,6 +1339,7 @@ export async function listProviders(opts: {
       pd.region,
       pd.services,
       pd.pricing,
+      pd.operator_address,
       pd.updated_at,
       COALESCE(agg.session_count, 0)::int   AS session_count,
       COALESCE(agg.total_volume, 0)::float  AS total_volume,
@@ -1362,6 +1371,7 @@ export async function listProviders(opts: {
     ghostCount: Number(r.ghost_count ?? 0),
     closedCount: Number(r.closed_count ?? 0),
     updatedAt: r.updated_at != null ? Number(r.updated_at) : null,
+    operatorAddress: r.operator_address ?? null,
   }));
 }
 

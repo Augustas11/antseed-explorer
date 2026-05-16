@@ -101,6 +101,12 @@ const spec = {
             nullable: true,
             description: "Unix milliseconds — last directory refresh for this provider.",
           },
+          operatorAddress: {
+            type: "string",
+            nullable: true,
+            description: "When non-null, `address` is a seller delegation contract that settles on AntseedChannels and `operatorAddress` is the peerId-derived operator EVM address. When null, `address` IS the operator.",
+            example: "0x9e8f9aaee684298b7f2af2ae008e3692f0e9f4f7",
+          },
         },
       },
       SellerServicesResponse: {

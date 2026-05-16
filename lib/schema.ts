@@ -91,6 +91,11 @@ export const providerDirectory = pgTable("provider_directory", {
   services: text("services"), // JSON array
   pricing: text("pricing"),   // JSON object
   description: text("description"), // Markdown long-form "About this provider"
+  // When set, `address` is a seller delegation contract that settles on
+  // AntseedChannels on behalf of `operator_address` (the peerId-derived
+  // operator EVM address). When null, `address` IS the operator and settles
+  // directly. See refreshProviderDirectory().
+  operatorAddress: text("operator_address"),
   updatedAt: bigint("updated_at", { mode: "number" }),
 });
 

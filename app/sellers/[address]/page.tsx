@@ -128,6 +128,17 @@ export default async function SellerProfilePage({
               )}
             </div>
           )}
+          {provider?.operator_address && (
+            <div className="mt-2 text-xs text-muted">
+              Settles via delegation contract — operated by{" "}
+              <Link
+                className="text-accent hover:underline"
+                href={`/sellers/${provider.operator_address}`}
+              >
+                {shortAddr(provider.operator_address)}
+              </Link>
+            </div>
+          )}
         </div>
       </div>
 

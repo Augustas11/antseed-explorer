@@ -43,6 +43,13 @@
       "when": 1778837988101,
       "tag": "0005_nebulous_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779302400000,
+      "tag": "0006_provider_operator_address",
+      "breakpoints": true
     }
   ]
 }

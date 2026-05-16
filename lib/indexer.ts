@@ -572,12 +572,27 @@ export async function refreshProviderDirectory() {
     const data = (await res.json()) as { peers?: any[] };
     const now = Date.now();
     const rows: any[] = [];
+    // Track operator addresses that have been superseded by a seller
+    // delegation contract — those operator-keyed rows (created by older
+    // indexer builds) need to be deleted so the seller profile resolves
+    // to the contract that actually settles on AntseedChannels.
+    const supersededOperators: string[] = [];
     for (const peer of data.peers || []) {
       const peerId = peer.peerId?.toString().toLowerCase();
       if (!peerId || peerId.length < 40) continue;
       const hex40 = peerId.slice(0, 40);
       if (!/^[0-9a-f]{40}$/.test(hex40)) continue;
-      const addr = "0x" + hex40;
+      const operatorAddr = "0x" + hex40;
+
+      // Sellers can settle via a delegation contract; in that case the
+      // on-chain seller_address in AntseedChannels events is the contract,
+      // not the operator peerId. Key the directory off the contract so the
+      // row joins to events; remember the operator for display.
+      const scRaw = (peer.sellerContract || "").toString().toLowerCase().replace(/^0x/, "");
+      const hasSc = /^[0-9a-f]{40}$/.test(scRaw);
+      const addr = hasSc ? "0x" + scRaw : operatorAddr;
+      if (hasSc && addr !== operatorAddr) supersededOperators.push(operatorAddr);
+
       const services: string[] = [];
       const pricing: Record<string, any> = {};
       for (const p of peer.providers || []) {
@@ -594,6 +609,7 @@ export async function refreshProviderDirectory() {
         trustScore: peer.trustScore ?? null,
         services: services.length ? JSON.stringify(services) : null,
         pricing: Object.keys(pricing).length ? JSON.stringify(pricing) : null,
+        operatorAddress: hasSc ? operatorAddr : null,
         updatedAt: now,
       });
     }
@@ -610,9 +626,21 @@ export async function refreshProviderDirectory() {
           trustScore: sql`excluded.trust_score`,
           services: sql`excluded.services`,
           pricing: sql`excluded.pricing`,
+          operatorAddress: sql`excluded.operator_address`,
           updatedAt: sql`excluded.updated_at`,
         },
       });
+    if (supersededOperators.length > 0) {
+      const safe = supersededOperators
+        .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
+        .map((a) => `'${a}'`)
+        .join(",");
+      if (safe) {
+        await db.execute(
+          sql`DELETE FROM provider_directory WHERE address IN (${sql.raw(safe)})`,
+        );
+      }
+    }
     await setState("provider_dir_refreshed_at", Date.now().toString());
   } catch {
     // Non-fatal — network unreachable, timed out, or upstream returned junk.
