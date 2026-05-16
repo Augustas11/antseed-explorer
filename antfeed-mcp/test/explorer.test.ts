@@ -23,12 +23,14 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   });
 }
 
+const TEST_UA = "antfeed-mcp/test";
+
 function makeExplorer(fetchImpl: typeof fetch) {
-  return new ExplorerClient({ baseUrl: BASE, timeoutMs: 1000, fetchImpl });
+  return new ExplorerClient({ baseUrl: BASE, timeoutMs: 1000, fetchImpl, userAgent: TEST_UA });
 }
 
 function makeBuyer(fetchImpl: typeof fetch) {
-  return new BuyerClient({ baseUrl: BUYER_BASE, timeoutMs: 1000, fetchImpl });
+  return new BuyerClient({ baseUrl: BUYER_BASE, timeoutMs: 1000, fetchImpl, userAgent: TEST_UA });
 }
 
 const SELLER_ROW = {
@@ -139,6 +141,7 @@ describe("ExplorerClient URL construction", () => {
       baseUrl: `${BASE}///`,
       timeoutMs: 1000,
       fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: TEST_UA,
     });
     await explorer.listSellers({});
     expect((fetchImpl.mock.calls[0]![0] as string).startsWith(`${BASE}/api/sellers`)).toBe(true);
@@ -208,6 +211,7 @@ describe("ExplorerClient error paths", () => {
       timeoutMs: 1000,
       maxBytes: 100,
       fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: TEST_UA,
     });
     await expect(explorer.listSellers({})).rejects.toMatchObject({ code: "EXPLORER_TOO_LARGE" });
   });
@@ -222,6 +226,7 @@ describe("ExplorerClient error paths", () => {
       timeoutMs: 1000,
       maxBytes: 100,
       fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: TEST_UA,
     });
     await expect(explorer.listSellers({})).rejects.toMatchObject({ code: "EXPLORER_TOO_LARGE" });
   });
@@ -521,6 +526,7 @@ describe("create_session tool", () => {
       timeoutMs: 1000,
       maxBytes: 100,
       fetchImpl: fetchImpl as unknown as typeof fetch,
+      userAgent: TEST_UA,
     });
     await expect(createSession(goodInput, { buyer, maxDepositUsdc: 10 })).rejects.toMatchObject({
       code: "BUYER_TOO_LARGE",

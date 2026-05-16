@@ -20,9 +20,9 @@ export class ExplorerError extends Error {
 export interface ExplorerConfig {
   baseUrl: string;
   timeoutMs: number;
+  userAgent: string;
   maxBytes?: number;
   fetchImpl?: typeof fetch;
-  userAgent?: string;
 }
 
 export interface SellerRow {
@@ -102,7 +102,7 @@ export class ExplorerClient {
     this.timeoutMs = cfg.timeoutMs;
     this.maxBytes = cfg.maxBytes ?? DEFAULT_MAX_BYTES;
     this.fetchImpl = cfg.fetchImpl ?? fetch;
-    this.userAgent = cfg.userAgent ?? "antfeed-mcp";
+    this.userAgent = cfg.userAgent;
   }
 
   private buildUrl(path: string, params: Record<string, string | number | undefined>): string {
