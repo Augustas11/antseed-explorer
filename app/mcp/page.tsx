@@ -265,9 +265,14 @@ export default function McpPage() {
       <section id="feedback" className="panel p-5 space-y-3 scroll-mt-20">
         <h2 className="font-medium">Feedback</h2>
         <p className="text-sm text-muted leading-relaxed">
-          This MCP is early — rough edges, missing tools, surprising agent behavior all welcome. Email{" "}
-          <a className="text-accent hover:underline" href="mailto:[redacted]">
-            [redacted]
+          This MCP is early — rough edges, missing tools, surprising agent behavior all welcome. File a{" "}
+          <a
+            className="text-accent hover:underline"
+            href="https://github.com/Augustas11/antseed-explorer/issues/new"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub issue
           </a>{" "}
           with a transcript or a description of what you expected, or ping{" "}
           <a
@@ -278,7 +283,7 @@ export default function McpPage() {
           >
             @AntFeed
           </a>{" "}
-          on X. Tool descriptions link here so any agent can surface this address back to you when something goes wrong.
+          on X. Tool descriptions link here so any agent can surface this channel back to you when something goes wrong.
         </p>
       </section>
 
