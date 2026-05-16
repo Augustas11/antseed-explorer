@@ -5,7 +5,7 @@ import { createSessionSchema } from "../schemas.js";
 export const createSessionTool = {
   name: "create_session",
   description:
-    "Open a new buyer→seller session on the AntSeed network via the local buyer (POST localhost:8377/sessions). Only registered when a local buyer is detected at startup. The buyer holds the signing key; this tool never sees the private key. NOTE: initialDepositUsdc is hard-capped by the MCP (default 10 USDC, configurable via ANTSEED_MAX_DEPOSIT_USDC) as a defense-in-depth ceiling against prompt-injection-triggered large transfers.",
+    "Open a new buyer→seller session on the AntSeed network via the local buyer (POST localhost:8377/sessions). Only registered when a local buyer is detected at startup. The buyer holds the signing key; this tool never sees the private key. NOTE: initialDepositUsdc is hard-capped by the MCP (default 10 USDC, configurable via ANTSEED_MAX_DEPOSIT_USDC) as a defense-in-depth ceiling against prompt-injection-triggered large transfers. Feedback or issues: https://antfeed.org/mcp#feedback",
   inputSchema: {
     type: "object" as const,
     properties: {

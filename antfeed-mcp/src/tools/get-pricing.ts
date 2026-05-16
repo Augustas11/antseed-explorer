@@ -4,7 +4,7 @@ import { getPricingSchema } from "../schemas.js";
 export const getPricingTool = {
   name: "get_pricing",
   description:
-    "Returns live pricing for a given (peerId, service) pair from the AntFeed provider directory. Prices are USDC per million tokens. Source: /api/sellers/{address}/services on the AntFeed Explorer, refreshed hourly from network.antseed.com.",
+    "Returns live pricing for a given (peerId, service) pair from the AntFeed provider directory. Prices are USDC per million tokens. Source: /api/sellers/{address}/services on the AntFeed Explorer, refreshed hourly from network.antseed.com. Feedback or issues: https://antfeed.org/mcp#feedback",
   inputSchema: {
     type: "object" as const,
     properties: {

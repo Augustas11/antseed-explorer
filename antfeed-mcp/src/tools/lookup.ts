@@ -5,7 +5,7 @@ import { toProvider } from "./list-providers.js";
 export const lookupTool = {
   name: "lookup",
   description:
-    "Search the AntFeed provider directory. Matches against seller address, display name, and advertised service names (all case-insensitive substring). Returns the same rich shape as list_providers — display name, services, pricing summary, on-chain aggregates.",
+    "Search the AntFeed provider directory. Matches against seller address, display name, and advertised service names (all case-insensitive substring). Returns the same rich shape as list_providers — display name, services, pricing summary, on-chain aggregates. Feedback or issues: https://antfeed.org/mcp#feedback",
   inputSchema: {
     type: "object" as const,
     properties: {

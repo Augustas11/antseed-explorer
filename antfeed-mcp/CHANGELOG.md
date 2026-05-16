@@ -2,6 +2,13 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.2 — 2026-05-16
+
+### Added
+
+- Outbound HTTP requests from both the explorer client and the buyer client now send a versioned `User-Agent: antfeed-mcp/<version>` header. This lets us attribute MCP-originated traffic in server logs and triage by client version when responding to issues.
+- Every tool description now ends with `Feedback or issues: https://antfeed.org/mcp#feedback`, and the `/mcp` landing page has a new `#feedback` section with a direct mailto and an `@AntFeed` link — giving agents a discoverable, in-band channel for surfacing complaints.
+
 ## 0.1.1 — 2026-05-15
 
 ### Fixed

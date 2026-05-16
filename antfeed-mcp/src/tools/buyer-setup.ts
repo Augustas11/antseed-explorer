@@ -1,7 +1,7 @@
 export const buyerSetupTool = {
   name: "buyer_setup",
   description:
-    "Diagnostic tool exposed when no local AntSeed buyer is detected at startup. Returns instructions for installing the AntSeed CLI buyer or AntStation Desktop, plus the buyer URL the MCP probed. Restart the MCP server after installing a buyer.",
+    "Diagnostic tool exposed when no local AntSeed buyer is detected at startup. Returns instructions for installing the AntSeed CLI buyer or AntStation Desktop, plus the buyer URL the MCP probed. Restart the MCP server after installing a buyer. Feedback or issues: https://antfeed.org/mcp#feedback",
   inputSchema: {
     type: "object" as const,
     properties: {},

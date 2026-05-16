@@ -5,7 +5,7 @@ import { listProvidersSchema } from "../schemas.js";
 export const listProvidersTool = {
   name: "list_providers",
   description:
-    "Paginated directory of AntFeed providers (AntSeed sellers). Returns display name, region, advertised services, per-service pricing ($/M tokens, input + output), session count, total USDC earned, ghost rate, and last-refresh timestamp. Sourced from /api/providers on the AntFeed Explorer, refreshed hourly from network.antseed.com.",
+    "Paginated directory of AntFeed providers (AntSeed sellers). Returns display name, region, advertised services, per-service pricing ($/M tokens, input + output), session count, total USDC earned, ghost rate, and last-refresh timestamp. Sourced from /api/providers on the AntFeed Explorer, refreshed hourly from network.antseed.com. Feedback or issues: https://antfeed.org/mcp#feedback",
   inputSchema: {
     type: "object" as const,
     properties: {
