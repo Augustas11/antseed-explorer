@@ -38,7 +38,7 @@ To analyze a buyer: use \`get_buyer\` with a 0x address — returns trust score,
 
 For state-of-network questions: use \`network_stats\` for the current snapshot (revenue, DAU, drift, gas). Use \`dau_trend\` for growth over time.
 
-To transact: \`buyer_setup\` first if no local buyer is running, then \`create_session\` to open a channel and deposit USDC. \`create_session\` is a real on-chain action — confirm with the user before calling. \`get_session_status\` polls channel state.
+To transact: the server exposes exactly one of \`create_session\` or \`buyer_setup\`. If \`create_session\` is in the tool list, a local buyer is running — call it to open a channel and deposit USDC. If only \`buyer_setup\` is exposed, no buyer was detected; call it for install instructions, then ask the user to start a buyer and restart the MCP host. \`create_session\` moves real USDC on Base — present \`providerPeerId\`, \`service\`, and \`initialDepositUsdc\` to the user and get explicit confirmation in the same turn before calling. \`get_session_status\` polls channel state.
 
 Feedback: https://antfeed.org/mcp#feedback`;
 
