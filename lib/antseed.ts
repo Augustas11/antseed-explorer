@@ -28,6 +28,13 @@ export const EMISSIONS_DEPLOYMENT_BLOCK = 45_937_736n;
 // no code at block 44_469_556 and has code at 44_469_557, so AntseedDeposits
 // was deployed in the same batch as AntseedChannels (2026-04-09 09:54:21 UTC).
 export const ANTSEED_DEPOSITS_DEPLOYMENT_BLOCK = 44_469_557n;
+// IdentityRegistry — ERC-8004 identity/attestation layer for agents. Proxy at
+// 0x8004A1...32 delegates to implementation 0x7274e8...02 (UUPS pattern).
+// Verified via viem getBytecode bisection: no code at block 41_663_782, code
+// at 41_663_783 (creation tx 0xb7aec0..., 2026-02-03 11:08:33 UTC). Predates
+// the Antseed-specific contracts by ~2 months: this is the shared ERC-8004
+// registry, not Antseed-deployed.
+export const IDENTITY_REGISTRY_DEPLOYMENT_BLOCK = 41_663_783n;
 
 // Addresses that hold $ANT as part of protocol mechanics, not as end-users.
 // Excluded from the "$ANT holders" headcount that feeds Paying Users.
@@ -147,7 +154,10 @@ export type EventType =
   | "metadata_recorded"
   | "ants_claim"
   | "deposited"
-  | "withdrawal_executed";
+  | "withdrawal_executed"
+  | "identity_registered"
+  | "identity_uri_updated"
+  | "identity_metadata_set";
 
 // AntseedDeposits — escrow contract that lets buyers top-up an off-chain
 // balance and withdraw refunds. Source-of-truth for the "new users" metric
@@ -200,6 +210,42 @@ export const emissionsAbi = [
       { indexed: true, name: "recipient", type: "address" },
       { indexed: false, name: "amount", type: "uint256" },
       { indexed: false, name: "epochs", type: "uint256[]" },
+    ],
+  },
+] as const;
+
+// ERC-8004 IdentityRegistry — agent identity NFT. Events sourced from the
+// verified implementation contract at 0x7274e8...02 (proxy at 0x8004A1...32).
+// We index the three lifecycle/attestation events; the ERC721 Transfer /
+// Approval surface is intentionally skipped (noisy boilerplate; revisit if a
+// downstream consumer needs ownership changes).
+export const identityRegistryAbi = [
+  {
+    type: "event",
+    name: "Registered",
+    inputs: [
+      { indexed: true, name: "agentId", type: "uint256" },
+      { indexed: false, name: "agentURI", type: "string" },
+      { indexed: true, name: "owner", type: "address" },
+    ],
+  },
+  {
+    type: "event",
+    name: "URIUpdated",
+    inputs: [
+      { indexed: true, name: "agentId", type: "uint256" },
+      { indexed: false, name: "newURI", type: "string" },
+      { indexed: true, name: "updatedBy", type: "address" },
+    ],
+  },
+  {
+    type: "event",
+    name: "MetadataSet",
+    inputs: [
+      { indexed: true, name: "agentId", type: "uint256" },
+      { indexed: true, name: "indexedMetadataKey", type: "string" },
+      { indexed: false, name: "metadataKey", type: "string" },
+      { indexed: false, name: "metadataValue", type: "bytes" },
     ],
   },
 ] as const;

@@ -7,11 +7,13 @@ import {
   ANTS_TOKEN_DEPLOYMENT_BLOCK,
   EMISSIONS_DEPLOYMENT_BLOCK,
   ANTSEED_DEPOSITS_DEPLOYMENT_BLOCK,
+  IDENTITY_REGISTRY_DEPLOYMENT_BLOCK,
   channelsAbi,
   antseedStatsAbi,
   antsTokenAbi,
   emissionsAbi,
   depositsAbi,
+  identityRegistryAbi,
   type EventType,
 } from "./antseed";
 import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./db";
@@ -125,14 +127,27 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
     }
 
     const elapsedAfterEmissions = Date.now() - syncStart;
-    const depositsDeadline = Math.max(
-      2_000,
-      cronBudgetMs - elapsedAfterEmissions - 2_000,
-    );
+    // Split remaining tail budget across deposits + identity. Deposits has
+    // very low event density; identity is doing a full backfill from
+    // 41_663_783 (Feb 2026) on first sync so it benefits from the larger
+    // half once deposits has caught up.
+    const tailRemainingMs = Math.max(4_000, cronBudgetMs - elapsedAfterEmissions - 2_000);
+    const depositsDeadline = Math.max(2_000, Math.floor(tailRemainingMs / 2));
     try {
       await syncAntseedDeposits({ deadlineMs: depositsDeadline });
     } catch (e) {
       console.warn("[indexer] antseed_deposits sync failed:", (e as Error)?.message || e);
+    }
+
+    const elapsedAfterDeposits = Date.now() - syncStart;
+    const identityDeadline = Math.max(
+      2_000,
+      cronBudgetMs - elapsedAfterDeposits - 2_000,
+    );
+    try {
+      await syncIdentityRegistry({ deadlineMs: identityDeadline });
+    } catch (e) {
+      console.warn("[indexer] identity_registry sync failed:", (e as Error)?.message || e);
     }
 
     // Daily DAU pre-aggregate refresh. The closed-day buckets are immutable;
@@ -445,6 +460,29 @@ function serializableLog(log: any) {
   return JSON.parse(
     JSON.stringify(log, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
   );
+}
+
+// JSON.stringify a serializable log object, then if the result exceeds
+// `maxBytes` rewrite oversize string/array fields under args with a
+// `__truncated:N` marker. Used by the IdentityRegistry pass because
+// MetadataSet.metadataValue can carry multi-KB attestation payloads that
+// blow past Neon HTTP's per-row parameter limit. The decoded args remain
+// readable; the raw bytes are recoverable by re-querying the chain via
+// (tx_hash, log_index).
+function truncateRawLog(log: any, maxBytes: number): string {
+  let s = JSON.stringify(log);
+  if (s.length <= maxBytes) return s;
+  const clone = JSON.parse(s);
+  if (clone?.args && typeof clone.args === "object") {
+    for (const k of Object.keys(clone.args)) {
+      const v = clone.args[k];
+      if (typeof v === "string" && v.length > 256) {
+        clone.args[k] = `${v.slice(0, 256)}…__truncated:${v.length}`;
+      }
+    }
+  }
+  s = JSON.stringify(clone);
+  return s.length > maxBytes ? s.slice(0, maxBytes - 32) + "…__truncated_total" : s;
 }
 
 // ============================================================================
@@ -1529,6 +1567,238 @@ export async function recomputeDailyDauRecent(n: number) {
     days.push(d.toISOString().slice(0, 10));
   }
   await recomputeDailyDau(days);
+}
+
+// ============================================================================
+// ERC-8004 IdentityRegistry — agent identity NFT registry. We index three
+// lifecycle/attestation events as rows in the existing events table:
+//   • Registered    → event_type='identity_registered'
+//   • URIUpdated    → event_type='identity_uri_updated'
+//   • MetadataSet   → event_type='identity_metadata_set'
+// The contract is the shared ERC-8004 registry on Base (predates the Antseed
+// deployment by ~2 months), so the first sync backfills ~6 months of history.
+// Schema reuse: agentId → channel_id (text), agentURI / new URI text →
+// raw_log (already stored), owner → buyer_address, updater → seller_address.
+// No new columns; if a downstream consumer needs the URI string surfaced
+// directly we can decode out of raw_log at query time.
+// ============================================================================
+
+const IDENTITY_CURSOR_KEY = "last_indexed_block_identity_registry";
+const IDENTITY_BATCH_KEY = "log_batch_size_identity_registry";
+// 66k tx since Feb 2026 across ~3.5M blocks. Event density is low-medium —
+// start with a moderate batch and let the auto-shrink/grow logic find the
+// right value the same way the other passes do. Cap raised to 50_000:
+// publicnode (https://base-rpc.publicnode.com) accepts that range in ~5s.
+// If the configured RPC has a tighter limit (e.g. drpc free-tier at 10k),
+// the auto-shrink on range errors will discover and persist the lower cap.
+const IDENTITY_BATCH_INITIAL = 2_000n;
+const IDENTITY_BATCH_MAX = 50_000n;
+
+interface IdentitySyncResult {
+  ok: boolean;
+  fromBlock: string;
+  toBlock: string;
+  recordsAdded: number;
+  error?: string;
+}
+
+export async function syncIdentityRegistry(
+  opts: { deadlineMs?: number } = {},
+): Promise<IdentitySyncResult> {
+  const last = await getState(IDENTITY_CURSOR_KEY);
+  const lastIndexed = BigInt(
+    last || (IDENTITY_REGISTRY_DEPLOYMENT_BLOCK - 1n).toString(),
+  );
+
+  let head: bigint;
+  try {
+    head = await publicClient.getBlockNumber();
+  } catch (e: any) {
+    return {
+      ok: false,
+      fromBlock: "?",
+      toBlock: "?",
+      recordsAdded: 0,
+      error: e?.message || String(e),
+    };
+  }
+
+  const fromBlockStart = lastIndexed + 1n;
+  if (fromBlockStart > head) {
+    return {
+      ok: true,
+      fromBlock: fromBlockStart.toString(),
+      toBlock: head.toString(),
+      recordsAdded: 0,
+    };
+  }
+
+  const persistedBatch = await getState(IDENTITY_BATCH_KEY);
+  let batchSize = persistedBatch
+    ? BigInt(persistedBatch)
+    : IDENTITY_BATCH_INITIAL;
+  if (batchSize > IDENTITY_BATCH_MAX) batchSize = IDENTITY_BATCH_MAX;
+  let consecutiveSuccesses = 0;
+  let recordsAdded = 0;
+  const startedAt = Date.now();
+  const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
+  const cursor = { from: fromBlockStart };
+
+  while (cursor.from <= head) {
+    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
+      return {
+        ok: true,
+        fromBlock: fromBlockStart.toString(),
+        toBlock: cursor.from.toString(),
+        recordsAdded,
+        error: "deadline_partial",
+      };
+    }
+
+    const to =
+      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
+
+    let logs: Log[];
+    let rateLimitRetries = 0;
+    while (true) {
+      try {
+        logs = await publicClient.getLogs({
+          address: CONTRACTS.IdentityRegistry as `0x${string}`,
+          events: identityRegistryAbi as any,
+          fromBlock: cursor.from,
+          toBlock: to,
+        });
+        break;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (isRangeError(msg) && batchSize > 1n) {
+          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
+          if (batchSize < 1n) batchSize = 1n;
+          await setState(IDENTITY_BATCH_KEY, batchSize.toString());
+          consecutiveSuccesses = 0;
+          break;
+        }
+        if (isRateLimitError(msg) && rateLimitRetries < 3) {
+          rateLimitRetries++;
+          await sleep(1500 * rateLimitRetries);
+          continue;
+        }
+        return {
+          ok: false,
+          fromBlock: cursor.from.toString(),
+          toBlock: to.toString(),
+          recordsAdded,
+          error: msg,
+        };
+      }
+    }
+    if (!logs!) continue;
+
+    if (logs.length > 0) {
+      const uniqueBlocks = [
+        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
+      ];
+      const blockTs = new Map<bigint, number>();
+      if (uniqueBlocks.length > 0) {
+        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
+        try {
+          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
+          const anchorTs = Number(blk.timestamp);
+          for (const bn of uniqueBlocks) {
+            const diff = Number(anchorBn - bn);
+            blockTs.set(bn, anchorTs - diff * 2);
+          }
+        } catch {
+          // Timestamp fetch is non-fatal — fall back to 0.
+        }
+      }
+
+      const rows = (logs as any[]).map((log) => {
+        const args = log.args || {};
+        const eventType = mapIdentityEventType(log.eventName);
+        // agentId is a uint256; bigint → string for the text channel_id slot.
+        // It's a deterministic per-row key, fits the "find this token's
+        // history" use case the channel_id column was built for.
+        const agentId =
+          args.agentId != null ? (args.agentId as bigint).toString() : null;
+        return {
+          txHash: log.transactionHash,
+          logIndex: log.logIndex,
+          blockNumber: Number(log.blockNumber),
+          eventType: (eventType ?? "identity_registered") as EventType,
+          // owner / updater are stuffed into the existing address columns:
+          // buyer_address = the identity's owner (Registered.owner),
+          // seller_address = whoever made the change (URIUpdated.updatedBy).
+          // MetadataSet has no address arg — both stay null.
+          buyerAddress: (args.owner as string | undefined)?.toLowerCase() ?? null,
+          sellerAddress:
+            (args.updatedBy as string | undefined)?.toLowerCase() ?? null,
+          channelId: agentId,
+          maxAmountUsdc: null,
+          deltaUsdc: null,
+          refundUsdc: null,
+          settledAmountUsdc: null,
+          cumulativeAmountUsdc: null,
+          platformFeeUsdc: null,
+          newDepositUsdc: null,
+          gracePeriodEnd: null,
+          inputTokens: null,
+          outputTokens: null,
+          requestCount: null,
+          timestamp: blockTs.get(log.blockNumber!) ?? 0,
+          // URI strings / metadata bytes are preserved in raw_log. MetadataSet
+          // events can carry multi-KB byte payloads (the actual attestation
+          // bodies), so we cap at 8KB to fit Neon HTTP's request-size limit.
+          // The decoded args are JSON-friendly; the raw bytes are recoverable
+          // via the (tx_hash, log_index) key against the chain if needed.
+          rawLog: truncateRawLog(serializableLog(log), 8_192),
+        };
+      });
+
+      // Chunk inserts to keep each Neon HTTP request small enough — a single
+      // 10k-block batch can hold ~300 logs and the resulting parameter blob
+      // exceeds Neon's transmit limit. 50 rows/insert ≈ 100KB payload.
+      const CHUNK = 50;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK);
+        const result = await db
+          .insert(eventsTbl)
+          .values(chunk)
+          .onConflictDoNothing()
+          .returning({ id: eventsTbl.id });
+        recordsAdded += result.length;
+      }
+    }
+
+    await setState(IDENTITY_CURSOR_KEY, to.toString());
+    consecutiveSuccesses += 1;
+    if (consecutiveSuccesses >= 5 && batchSize < IDENTITY_BATCH_MAX) {
+      batchSize =
+        batchSize * 2n > IDENTITY_BATCH_MAX
+          ? IDENTITY_BATCH_MAX
+          : batchSize * 2n;
+      await setState(IDENTITY_BATCH_KEY, batchSize.toString());
+      consecutiveSuccesses = 0;
+    }
+    cursor.from = to + 1n;
+    await sleep(150);
+  }
+
+  return {
+    ok: true,
+    fromBlock: fromBlockStart.toString(),
+    toBlock: head.toString(),
+    recordsAdded,
+  };
+}
+
+function mapIdentityEventType(name: string | undefined): EventType | null {
+  switch (name) {
+    case "Registered": return "identity_registered";
+    case "URIUpdated": return "identity_uri_updated";
+    case "MetadataSet": return "identity_metadata_set";
+    default: return null;
+  }
 }
 
 // Full backfill: recompute every day from the earliest event to today.
