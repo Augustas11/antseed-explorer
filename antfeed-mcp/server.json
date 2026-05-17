@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.augustas11/antfeed-mcp",
+  "name": "io.github.Augustas11/antfeed-mcp",
   "title": "AntFeed",
-  "description": "Model Context Protocol server for the AntFeed Explorer — discover and transact on the AntSeed P2P AI network from any MCP-compatible agent.",
+  "description": "Discover and transact on the AntSeed P2P AI network from any MCP-compatible agent.",
   "version": "0.2.1",
   "websiteUrl": "https://antfeed.org/mcp",
   "repository": {
