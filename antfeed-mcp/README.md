@@ -31,14 +31,19 @@ Restart your MCP host. The server boots over stdio and exposes the tools below.
 
 ## Tools
 
-| Tool                  | Inputs                                                                       | Output                                                                                  | Requires local buyer? |
-| --------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------- |
-| `lookup`              | `query` (string), `limit?` (1–100, default 10)                               | `{ query, matches[], matched, searchedOver, explorerTotal, truncated }` — matches against **address, displayName, and service names** | no                    |
-| `list_providers`      | `offset?` (default 0), `limit?` (1–1000, default 20), `sort?` (`score`\|`recent`, default `score`) | `{ providers[], total, offset, limit, sort }` — each provider includes displayName, region, services, **per-service pricing**, sessionCount, USDC earned, ghost rate | no                    |
-| `get_pricing`         | `peerId` (string), `service` (string)                                        | `{ peerId, service, status, currency, inputUsdPerMillion, outputUsdPerMillion, displayName, region, lastUpdated }` — **live pricing** from the AntFeed directory | no                    |
-| `get_session_status`  | `sessionId` (string — channel_id, bytes32 hex)                               | `{ sessionId, buyer, seller, status, channelBalance, settledAmountUsdc, ... }`          | no                    |
-| `create_session`      | `providerPeerId`, `service`, `initialDepositUsdc`, `initialMessage?`         | passthrough from `POST localhost:8377/sessions` on the local buyer                      | **yes**               |
-| `buyer_setup`         | _(none)_                                                                     | Diagnostic instructions for installing a local AntSeed buyer                            | exposed _instead of_ `create_session` when no buyer is detected at startup |
+Every tool returns both `structuredContent` (typed object matching its declared `outputSchema`) and `content[0].text` (the same payload serialized as JSON, for older MCP clients). Annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) are exposed so hosts like Claude Desktop / Cursor can render confirm dialogs before destructive calls.
+
+| Tool                  | Inputs                                                                       | Output                                                                                  | Annotations | Requires local buyer? |
+| --------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ----------- | --------------------- |
+| `lookup`              | `query`, `limit?` (1–200, default 50), `cursor?`                              | `{ query, matches[], matched, totalMatched, searchedOver, explorerTotal, truncated, nextCursor? }` — matches against **address, displayName, and service names** | readOnly, idempotent | no                    |
+| `list_providers`      | `limit?` (1–200, default 50), `cursor?`, `sort?` (`score`\|`recent`)         | `{ providers[], total, sort, nextCursor? }` — each provider includes displayName, region, services, `pricingSummary`, sessionCount, USDC earned, ghost rate | readOnly, idempotent | no                    |
+| `get_pricing`         | `peerId`, `service`                                                          | `{ peerId, service, status, currency, inputUsdPerMillion, outputUsdPerMillion, displayName, region, lastUpdated }` — **live pricing** from the AntFeed directory | readOnly, idempotent | no                    |
+| `get_session_status`  | `sessionId` (channel_id, bytes32 hex)                                        | `{ sessionId, buyer, seller, status, channelBalance, settledAmountUsdc, totalDeltaUsdc, eventCount, settled, openedAt, closedAt }` | readOnly | no                    |
+| `network_stats`       | _(none)_                                                                     | `{ revenueUsdc, dau, drift, gasGwei, asOf, partialFailures[] }` — point-in-time snapshot (parallel-fetches `/api/stats` + `/api/gas` + `/api/metrics/dau` for today; per-endpoint failures degrade the field to `null` and are listed in `partialFailures`) | readOnly | no                    |
+| `get_buyer`           | `address`                                                                    | `{ address, qualified, trustScore{…}, sessions{total, settledUsdc, monthlyVolume[]}, recentSessions[≤20], topSellers[] }` | readOnly, idempotent | no                    |
+| `dau_trend`           | `from?` (ISO date), `to?` (ISO date), `granularity?` (`day`)                 | `{ from, to, granularity, series[{date, dau, dauBuyers, dauSellers, newUsers}] }` — default window: last 30 days | readOnly | no                    |
+| `create_session`      | `providerPeerId`, `service`, `initialDepositUsdc`, `initialMessage?`         | `{ sessionId, status, channelAddress?, txHash? }` from the local buyer                  | **destructive** | **yes**               |
+| `buyer_setup`         | _(none)_                                                                     | Diagnostic instructions for installing a local AntSeed buyer                            | readOnly | exposed _instead of_ `create_session` when no buyer is detected at startup |
 
 ### Example: list top providers
 
@@ -47,7 +52,7 @@ Restart your MCP host. The server boots over stdio and exposes the tools below.
 { "name": "list_providers", "arguments": { "limit": 3, "sort": "score" } }
 ```
 
-Returns the top three sellers ranked by total USDC earned, each shaped as `{ peerId, displayName, score, servicesOffered, lastSeen, totalSessions, uniqueBuyers, ghostSessions, totalEarnedUsdc, firstSeen }`.
+Returns the top three sellers ranked by total USDC earned. To paginate, pass back the returned `nextCursor` as `cursor` on the next call.
 
 ### Data sources
 
@@ -56,6 +61,10 @@ The MCP wraps the following AntFeed Explorer endpoints:
 - `GET /api/providers` — provider directory (displayName, services, per-service pricing, region, on-chain aggregates). Refreshed hourly from `network.antseed.com`. Backs `list_providers` and `lookup`.
 - `GET /api/sellers/{address}/services` — one seller's service catalog + live pricing. Backs `get_pricing`.
 - `GET /api/channels` — on-chain payment channel records. Backs `get_session_status`.
+- `GET /api/stats` — network-wide aggregates (revenue, sessions, drift). Backs `network_stats`.
+- `GET /api/gas` — current Base gas price. Backs `network_stats`.
+- `GET /api/buyers/{address}` + `GET /api/score/{address}` — buyer profile, session history, top sellers, and trust-score breakdown. Backs `get_buyer`.
+- `GET /api/metrics/dau` — daily active users, by UTC day. Backs `dau_trend` and the DAU field in `network_stats`.
 
 A few small client-side adaptations remain:
 
@@ -111,6 +120,8 @@ Every tool returns either a successful structured payload or an MCP error result
 | `BUYER_HTTP_<n>`     | Local buyer returned a non-2xx status.                     |
 | `BUYER_INVALID_JSON` | Buyer response body was not JSON.                          |
 | `SESSION_NOT_FOUND`  | `get_session_status` could not locate the channel.         |
+| `BUYER_NOT_FOUND`    | `get_buyer` could not find the address in the explorer's index. |
+| `INVALID_CURSOR`     | `cursor` argument is not a valid pagination token returned by a previous call. Surfaced as `INVALID_INPUT`. |
 | `INTERNAL`           | Anything else (sanitized; no stack traces or env values).  |
 
 ---

@@ -1,18 +1,56 @@
 import type { ChannelRow, ExplorerClient } from "../explorer.js";
 import { ExplorerError } from "../explorer.js";
 import { getSessionStatusSchema } from "../schemas.js";
+import type { ToolDef } from "./registry.js";
 
-export const getSessionStatusTool = {
+export const getSessionStatusTool: ToolDef = {
   name: "get_session_status",
   description:
-    "Returns the indexed status of an AntSeed payment-channel session by channel_id. Backed by /api/channels — the explorer does not yet expose a per-channel endpoint, so v1 paginates through channels client-side and filters. v1.1 will switch to /api/channels/{id} once available. Feedback or issues: https://antfeed.org/mcp#feedback",
+    "Look up the on-chain status of one payment channel by channel_id. Use for 'is my session settled yet?' checks; use create_session to open one. Returns {sessionId, buyer, seller, status, channelBalance, settledAmountUsdc, settled, openedAt, closedAt}. v1 paginates /api/channels client-side because there is no per-channel endpoint yet.",
   inputSchema: {
-    type: "object" as const,
+    type: "object",
     properties: {
       sessionId: { type: "string", description: "Channel ID (bytes32 hex, e.g. 0xabc...)" },
     },
     required: ["sessionId"],
     additionalProperties: false,
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", pattern: "^0x[0-9a-fA-F]{1,128}$" },
+      buyer: { type: ["string", "null"], pattern: "^0x[0-9a-fA-F]{40}$" },
+      seller: { type: ["string", "null"], pattern: "^0x[0-9a-fA-F]{40}$" },
+      status: { type: "string", description: "Channel state (e.g. 'Open', 'Settled')" },
+      channelBalance: { type: ["number", "null"], description: "Max deposit, USDC" },
+      settledAmountUsdc: { type: ["number", "null"] },
+      totalDeltaUsdc: { type: ["number", "null"] },
+      eventCount: { type: "integer" },
+      settled: { type: "boolean" },
+      openedAt: { type: ["string", "null"], description: "ISO timestamp" },
+      closedAt: { type: ["string", "null"], description: "ISO timestamp; only when settled" },
+    },
+    required: [
+      "sessionId",
+      "buyer",
+      "seller",
+      "status",
+      "channelBalance",
+      "settledAmountUsdc",
+      "totalDeltaUsdc",
+      "eventCount",
+      "settled",
+      "openedAt",
+      "closedAt",
+    ],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Get Session Status",
+    readOnlyHint: true,
+    // Status mutates as the channel progresses — not idempotent over time.
+    idempotentHint: false,
+    openWorldHint: false,
   },
 };
 
@@ -60,17 +98,13 @@ function formatSession(c: ChannelRow) {
     sessionId: c.channel_id,
     buyer: c.buyer_address,
     seller: c.seller_address,
-    service: null,
     status: c.state,
     channelBalance: c.max_amount_usdc,
     settledAmountUsdc: c.settled_amount_usdc,
     totalDeltaUsdc: c.total_delta_usdc,
-    messagesDelivered: null,
     eventCount: c.event_count,
     settled,
-    lastTxHash: null,
     openedAt: c.opened_ts ? new Date(c.opened_ts * 1000).toISOString() : null,
     closedAt: settled && c.last_ts ? new Date(c.last_ts * 1000).toISOString() : null,
-    note: "service / messagesDelivered / lastTxHash are not currently indexed by the explorer.",
   };
 }

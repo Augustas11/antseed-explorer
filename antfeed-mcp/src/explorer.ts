@@ -1,11 +1,24 @@
 import {
+  BuyerProfileResponseZ,
+  BuyerScoreResponseZ,
   BuyersPageZ,
   ChannelsPageZ,
+  DauTrendResponseZ,
+  GasResponseZ,
+  NetworkStatsResponseZ,
   ProvidersPageZ,
   SellerServicesResponseZ,
   SellersPageZ,
 } from "./schemas.js";
-import type { DirectoryProviderRow, ServicePricing } from "./schemas.js";
+import type {
+  BuyerProfileResponse,
+  BuyerScoreResponse,
+  DauDayRow,
+  DirectoryProviderRow,
+  GasResponse,
+  NetworkStatsResponse,
+  ServicePricing,
+} from "./schemas.js";
 import { readJsonCapped } from "./http.js";
 
 export class ExplorerError extends Error {
@@ -243,6 +256,103 @@ export class ExplorerClient {
     const parsed = ChannelsPageZ.safeParse(raw);
     if (!parsed.success) throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/channels response did not match expected shape");
     return parsed.data as ChannelsPage;
+  }
+
+  async getNetworkStats(): Promise<NetworkStatsResponse> {
+    const url = this.buildUrl("/api/stats", {});
+    const raw = await this.fetchJson(url);
+    const parsed = NetworkStatsResponseZ.safeParse(raw);
+    if (!parsed.success) {
+      throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/stats response did not match expected shape");
+    }
+    return parsed.data as NetworkStatsResponse;
+  }
+
+  async getGas(): Promise<GasResponse> {
+    const url = this.buildUrl("/api/gas", {});
+    const raw = await this.fetchJson(url);
+    const parsed = GasResponseZ.safeParse(raw);
+    if (!parsed.success) {
+      throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/gas response did not match expected shape");
+    }
+    return parsed.data as GasResponse;
+  }
+
+  async getDauTrend(params: { from: string; to: string }): Promise<DauDayRow[]> {
+    const url = this.buildUrl("/api/metrics/dau", {
+      from: params.from,
+      to: params.to,
+      granularity: "day",
+    });
+    const raw = await this.fetchJson(url);
+    const parsed = DauTrendResponseZ.safeParse(raw);
+    if (!parsed.success) {
+      throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/metrics/dau response did not match expected shape");
+    }
+    return parsed.data;
+  }
+
+  async getBuyerProfile(address: string): Promise<BuyerProfileResponse | null> {
+    const url = this.buildUrl(`/api/buyers/${address.toLowerCase()}`, {});
+    const res = await this.fetchRaw(url);
+    if (res.status === 404) return null;
+    const raw = await this.consumeJson(res, url);
+    const parsed = BuyerProfileResponseZ.safeParse(raw);
+    if (!parsed.success) {
+      throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/buyers/{address} response did not match expected shape");
+    }
+    return parsed.data as BuyerProfileResponse;
+  }
+
+  async getBuyerScore(address: string): Promise<BuyerScoreResponse | null> {
+    const url = this.buildUrl(`/api/score/${address.toLowerCase()}`, {});
+    const res = await this.fetchRaw(url);
+    // Score endpoint returns 404 with a body when no activity — treat as "no score".
+    if (res.status === 404) return null;
+    const raw = await this.consumeJson(res, url);
+    const parsed = BuyerScoreResponseZ.safeParse(raw);
+    if (!parsed.success) {
+      throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/score/{address} response did not match expected shape");
+    }
+    return parsed.data as BuyerScoreResponse;
+  }
+
+  private async fetchRaw(url: string): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await this.fetchImpl(url, {
+        signal: controller.signal,
+        headers: { Accept: "application/json", "User-Agent": this.userAgent },
+      });
+      if (res.status === 429) throw new ExplorerError("RATE_LIMITED", `Explorer rate limit hit on ${pathOf(url)}`);
+      // 404 surfaced to the caller (lets buyer/score endpoints return null).
+      if (!res.ok && res.status !== 404) {
+        throw new ExplorerError(`EXPLORER_HTTP_${res.status}`, `Explorer returned ${res.status} on ${pathOf(url)}`);
+      }
+      return res;
+    } catch (err) {
+      if (err instanceof ExplorerError) throw err;
+      const e = err as { name?: string };
+      if (e?.name === "AbortError") {
+        throw new ExplorerError("EXPLORER_DOWN", `Timed out after ${this.timeoutMs}ms calling ${pathOf(url)}`);
+      }
+      throw new ExplorerError("EXPLORER_DOWN", `Network error calling ${pathOf(url)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async consumeJson(res: Response, url: string): Promise<unknown> {
+    try {
+      return await readJsonCapped(res, this.maxBytes);
+    } catch (err) {
+      const e = err as { code?: string };
+      if (e?.code === "RESPONSE_TOO_LARGE") {
+        throw new ExplorerError("EXPLORER_TOO_LARGE", `Explorer response exceeded ${this.maxBytes}B on ${pathOf(url)}`);
+      }
+      throw new ExplorerError("EXPLORER_INVALID_JSON", `Malformed JSON from ${pathOf(url)}`);
+    }
   }
 }
 

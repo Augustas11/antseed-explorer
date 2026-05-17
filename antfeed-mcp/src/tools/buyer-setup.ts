@@ -1,11 +1,44 @@
-export const buyerSetupTool = {
+import type { ToolDef } from "./registry.js";
+
+export const buyerSetupTool: ToolDef = {
   name: "buyer_setup",
   description:
-    "Diagnostic tool exposed when no local AntSeed buyer is detected at startup. Returns instructions for installing the AntSeed CLI buyer or AntStation Desktop, plus the buyer URL the MCP probed. Restart the MCP server after installing a buyer. Feedback or issues: https://antfeed.org/mcp#feedback",
+    "Diagnose missing local AntSeed buyer — registered instead of create_session when no buyer responded to /health at startup. Use this to tell the user how to install a buyer (CLI or AntStation Desktop). Returns the probed buyer URL and install instructions. For trading, install a buyer and restart the MCP server.",
   inputSchema: {
-    type: "object" as const,
+    type: "object",
     properties: {},
     additionalProperties: false,
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      status: { type: "string", enum: ["BUYER_NOT_DETECTED"] },
+      probedAt: { type: "string", description: "URL the MCP probed for /health" },
+      strictMode: { type: "boolean" },
+      message: { type: "string" },
+      options: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            description: { type: "string" },
+            defaultPort: { type: "integer" },
+            envVar: { type: "string" },
+            installHint: { type: "string" },
+          },
+          required: ["name", "description", "defaultPort", "envVar", "installHint"],
+        },
+      },
+      nextSteps: { type: "string" },
+    },
+    required: ["status", "probedAt", "strictMode", "message", "options", "nextSteps"],
+    additionalProperties: false,
+  },
+  annotations: {
+    title: "Buyer Setup Help",
+    readOnlyHint: true,
+    openWorldHint: false,
   },
 };
 
@@ -34,8 +67,6 @@ export async function buyerSetup(_raw: unknown, deps: { buyerUrl: string; strict
           "Set ANTSEED_BUYER_URL=http://localhost:8378 in your MCP config if you use AntStation instead of the CLI buyer.",
       },
     ],
-    securityNote:
-      "For higher security on shared or multi-tenant boxes, set ANTSEED_BUYER_STRICT=1 once your buyer emits {\"service\":\"antseed-buyer\"} on /health. This prevents another local process from impersonating the buyer.",
     nextSteps:
       "1) Install a buyer. 2) Confirm it serves a 200 on GET /health (ideally with a JSON body {service:'antseed-buyer'}). 3) Restart this MCP server. 4) create_session should appear in the tool list.",
   };

@@ -2,6 +2,24 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 — 2026-05-17
+
+Quality pass on every tool plus three new read tools that fill the biggest gaps in MCP coverage of antfeed.org's public data. Optimized against MCP spec 2025-06-18 (`annotations`, `outputSchema`) so tools behave well in Claude Desktop / Cursor / Smithery: clients can render confirm dialogs before destructive calls, validate responses against a declared schema, and consume `structuredContent` directly instead of re-parsing the text payload.
+
+### Added
+
+- **`network_stats`** — one-shot snapshot of antfeed: settled revenue, today's DAU, indexer→profile drift, current Base gas price. Parallel-fetches `/api/stats`, `/api/gas`, and `/api/metrics/dau`. Use for "state of the network right now"; use `dau_trend` for trends. Each upstream is independent: a per-endpoint failure degrades that field to `null` and is reported in `partialFailures: string[]` rather than failing the whole snapshot.
+- **`get_buyer`** — symmetric to provider lookup but for buyers. Returns trust-score breakdown (volume / consistency / diversity / reliability), aggregate session stats, the last 20 recent settled sessions, and the buyer's top sellers by spend. Parallel-fetches `/api/buyers/[address]` + `/api/score/[address]`; degrades gracefully when the score endpoint is rate-limited.
+- **`dau_trend`** — daily active users between two ISO dates (default: last 30 days). Returns per-day total DAU plus buyer/seller breakdown and new-user count. Backed by `/api/metrics/dau`.
+
+### Changed
+
+- **Tool annotations (MCP 2025-06-18).** Every tool registration now includes the `annotations` hint object: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`. `create_session` is marked `destructiveHint=true` so MCP hosts can show a confirm prompt before the call.
+- **Structured output.** Every tool now declares an `outputSchema` and returns both `structuredContent` (typed object) and `content[0].text` (serialized JSON, for clients that haven't migrated). Older clients see no change; newer clients can validate responses against the declared schema and skip the text round-trip.
+- **Cursor pagination on `list_providers` and `lookup`.** Replaces the prior `offset` / `limit` shape with an opaque base64url `cursor` token. Default page size 50 (was 20 on `list_providers`, 10 on `lookup`); hard cap 200. The response includes `nextCursor` when more results exist; agents page by passing it back as `cursor`. Lookup paginates over the filtered match set, not the underlying directory page. The old `offset` parameter is removed — this is a breaking change for direct callers of those two tools.
+- **Trimmed response payloads.** Tool responses no longer echo raw upstream JSON. Dropped: provider `pricing` full map (kept the `pricingSummary` derived from it), `score` duplicate (kept inside `pricingSummary`), `messagesDelivered`/`lastTxHash`/`service` placeholders on `get_session_status` (they were always `null`/null-equivalent in v1). The shape now matches each tool's declared `outputSchema`.
+- **Description audit.** Every tool description was rewritten to the pattern *"[verb] [object] — when to use this vs. similar tools. Returns X."* with enum values inlined. The aim is to fix the most common defect in MCP tool descriptions in the wild: unclear purpose vs. sibling tools.
+
 ## 0.1.2 — 2026-05-16
 
 ### Added

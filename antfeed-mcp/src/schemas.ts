@@ -11,15 +11,32 @@ const SERVICE_ID = z
   .min(1)
   .max(64)
   .regex(/^[A-Za-z0-9_.\-:/]+$/, "must be a short service identifier");
+const ISO_DATE = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be an ISO date in YYYY-MM-DD form");
+
+export const PAGINATION_DEFAULT_LIMIT = 50;
+export const PAGINATION_MAX_LIMIT = 200;
 
 export const lookupSchema = z.object({
   query: z.string().min(1).max(256, "query is too long"),
-  limit: z.number().int().min(1).max(100).default(10),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(PAGINATION_MAX_LIMIT)
+    .default(PAGINATION_DEFAULT_LIMIT),
+  cursor: z.string().max(256).optional(),
 });
 
 export const listProvidersSchema = z.object({
-  offset: z.number().int().nonnegative().default(0),
-  limit: z.number().int().min(1).max(1000).default(20),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(PAGINATION_MAX_LIMIT)
+    .default(PAGINATION_DEFAULT_LIMIT),
+  cursor: z.string().max(256).optional(),
   sort: z.enum(["score", "recent"]).default("score"),
 });
 
@@ -39,11 +56,41 @@ export const createSessionSchema = z.object({
   initialMessage: z.string().max(4_000).optional(),
 });
 
+export const getBuyerSchema = z.object({
+  address: ETH_ADDRESS,
+});
+
+const MAX_DAU_WINDOW_DAYS = 366;
+
+export const dauTrendSchema = z
+  .object({
+    from: ISO_DATE.optional(),
+    to: ISO_DATE.optional(),
+    granularity: z.literal("day").default("day"),
+  })
+  .refine((v) => !(v.from && v.to) || v.from <= v.to, {
+    message: "from must be on or before to",
+    path: ["from"],
+  })
+  .refine(
+    (v) => {
+      if (!v.from || !v.to) return true;
+      const from = Date.parse(v.from + "T00:00:00Z");
+      const to = Date.parse(v.to + "T00:00:00Z");
+      if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+      const days = Math.round((to - from) / 86_400_000) + 1;
+      return days <= MAX_DAU_WINDOW_DAYS;
+    },
+    { message: `window may not exceed ${MAX_DAU_WINDOW_DAYS} days`, path: ["to"] },
+  );
+
 export type LookupInput = z.infer<typeof lookupSchema>;
 export type ListProvidersInput = z.infer<typeof listProvidersSchema>;
 export type GetPricingInput = z.infer<typeof getPricingSchema>;
 export type GetSessionStatusInput = z.infer<typeof getSessionStatusSchema>;
 export type CreateSessionInput = z.infer<typeof createSessionSchema>;
+export type GetBuyerInput = z.infer<typeof getBuyerSchema>;
+export type DauTrendInput = z.infer<typeof dauTrendSchema>;
 
 const HexHash = z.string().regex(/^0x[0-9a-fA-F]{1,128}$/);
 
@@ -174,5 +221,116 @@ export const SellerServicesResponseZ = z
   })
   .passthrough();
 
+// /api/stats — shape returned by app/api/stats/route.ts (passthrough on
+// optional fields so future explorer additions don't break clients).
+export const NetworkStatsResponseZ = z
+  .object({
+    totalBuyers: z.number().int().nonnegative().optional(),
+    qualifiedBuyers: z.number().int().nonnegative().optional(),
+    totalVolumeUsdc: z.number().finite().nonnegative().optional(),
+    totalSessions: z.number().int().nonnegative().optional(),
+    totalGhosts: z.number().int().nonnegative().optional(),
+    lastSyncTs: z.number().int().nullable().optional(),
+    drift: z
+      .object({
+        eventsUsdc: z.number().finite().optional(),
+        profilesUsdc: z.number().finite().optional(),
+        driftUsdc: z.number().finite().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export const GasResponseZ = z
+  .object({
+    // upstream returns a string like "0.4231" or null when fee estimation fails
+    gwei: z.union([z.string().max(32), z.number(), z.null()]),
+  })
+  .passthrough();
+
+// One row from /api/metrics/dau (granularity=day). Shape mirrors the explorer
+// route in app/api/metrics/dau/route.ts.
+export const DauDayRowZ = z
+  .object({
+    day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    new: z.number().int().nonnegative(),
+    existing: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+    dau_buyers: z.number().int().nonnegative(),
+    dau_sellers: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
+export const DauTrendResponseZ = z.array(DauDayRowZ).max(3_650);
+
+// /api/buyers/[address]
+export const BuyerMonthlyVolumeRowZ = z
+  .object({
+    month: z.string().max(16),
+    sessions: z.number().int().nonnegative(),
+    volume: z.number().finite(),
+  })
+  .passthrough();
+
+export const BuyerSessionEventZ = z
+  .object({
+    tx_hash: z.string().max(128).nullable().optional(),
+    block_number: z.number().int().nullable().optional(),
+    event_type: z.string().max(32),
+    seller_address: ETH_ADDRESS.nullable().optional(),
+    channel_id: HexHash.nullable().optional(),
+    delta_usdc: z.number().finite().nullable().optional(),
+    settled_amount_usdc: z.number().finite().nullable().optional(),
+    timestamp: z.number().int().nullable().optional(),
+    seller_label: z.string().max(200).nullable().optional(),
+  })
+  .passthrough();
+
+export const BuyerSellerSummaryRowZ = z
+  .object({
+    seller_address: ETH_ADDRESS,
+    sessions: z.number().int().nonnegative(),
+    total_usdc: z.number().finite().nonnegative(),
+    seller_label: z.string().max(200).nullable().optional(),
+  })
+  .passthrough();
+
+export const BuyerProfileResponseZ = z
+  .object({
+    profile: BuyerRowZ,
+    sessions: z.array(BuyerSessionEventZ).max(200),
+    topSellers: z.array(BuyerSellerSummaryRowZ).max(100),
+    monthly: z.array(BuyerMonthlyVolumeRowZ).max(200),
+  })
+  .passthrough();
+
+// /api/score/[address]
+export const TrustScoreBreakdownZ = z
+  .object({
+    total: z.number().finite(),
+    volume: z.number().finite(),
+    consistency: z.number().finite(),
+    diversity: z.number().finite(),
+    reliability: z.number().finite(),
+    qualified: z.boolean(),
+  })
+  .passthrough();
+
+export const BuyerScoreResponseZ = z
+  .object({
+    address: ETH_ADDRESS,
+    score: z.number().finite(),
+    tier: z.string().max(32),
+    qualified: z.boolean(),
+    breakdown: TrustScoreBreakdownZ.nullable(),
+  })
+  .passthrough();
+
 export type ServicePricing = z.infer<typeof ServicePricingZ>;
 export type DirectoryProviderRow = z.infer<typeof DirectoryProviderRowZ>;
+export type NetworkStatsResponse = z.infer<typeof NetworkStatsResponseZ>;
+export type GasResponse = z.infer<typeof GasResponseZ>;
+export type DauDayRow = z.infer<typeof DauDayRowZ>;
+export type BuyerProfileResponse = z.infer<typeof BuyerProfileResponseZ>;
+export type BuyerScoreResponse = z.infer<typeof BuyerScoreResponseZ>;

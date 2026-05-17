@@ -1,13 +1,14 @@
 import type { BuyerClient } from "../buyer.js";
 import { BuyerError } from "../buyer.js";
 import { createSessionSchema } from "../schemas.js";
+import type { ToolDef } from "./registry.js";
 
-export const createSessionTool = {
+export const createSessionTool: ToolDef = {
   name: "create_session",
   description:
-    "Open a new buyer→seller session on the AntSeed network via the local buyer (POST localhost:8377/sessions). Only registered when a local buyer is detected at startup. The buyer holds the signing key; this tool never sees the private key. NOTE: initialDepositUsdc is hard-capped by the MCP (default 10 USDC, configurable via ANTSEED_MAX_DEPOSIT_USDC) as a defense-in-depth ceiling against prompt-injection-triggered large transfers. Feedback or issues: https://antfeed.org/mcp#feedback",
+    "Open a buyer→seller session — mutating, on-chain action via the local buyer. Use after get_pricing has confirmed cost; not for browsing. Returns {sessionId, status, channelAddress?, txHash?}. initialDepositUsdc is capped by ANTSEED_MAX_DEPOSIT_USDC (default 10 USDC) as a defense-in-depth ceiling against prompt-injected large transfers.",
   inputSchema: {
-    type: "object" as const,
+    type: "object",
     properties: {
       providerPeerId: {
         type: "string",
@@ -33,6 +34,33 @@ export const createSessionTool = {
     },
     required: ["providerPeerId", "service", "initialDepositUsdc"],
     additionalProperties: false,
+  },
+  outputSchema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Buyer-assigned session id" },
+      status: { type: "string", description: "Initial session status (e.g. 'Open')" },
+      channelAddress: {
+        type: "string",
+        pattern: "^0x[0-9a-fA-F]{40}$",
+        description: "On-chain channel contract address",
+      },
+      txHash: {
+        type: "string",
+        pattern: "^0x[0-9a-fA-F]{1,128}$",
+        description: "Open-channel transaction hash",
+      },
+    },
+    // Buyer responses are upstream-passthrough — additional fields (e.g.
+    // negotiated price) flow through without breaking the schema contract.
+    additionalProperties: true,
+  },
+  annotations: {
+    title: "Open Session",
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: false,
   },
 };
 

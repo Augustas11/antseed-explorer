@@ -7,18 +7,22 @@ import { readFileSync, realpathSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { z } from "zod";
 import { BuyerClient, BuyerError, detectBuyer } from "./buyer.js";
+import { InvalidCursorError } from "./cursor.js";
 import { ExplorerClient, ExplorerError } from "./explorer.js";
 import { buyerSetup } from "./tools/buyer-setup.js";
 import { createSession } from "./tools/create-session.js";
+import { dauTrend } from "./tools/dau-trend.js";
+import { getBuyer } from "./tools/get-buyer.js";
 import { getPricing } from "./tools/get-pricing.js";
 import { getSessionStatus } from "./tools/get-session-status.js";
 import { listProviders } from "./tools/list-providers.js";
 import { lookup } from "./tools/lookup.js";
+import { networkStats } from "./tools/network-stats.js";
 import { buildTools } from "./tools/registry.js";
 import { sanitizeMessage } from "./sanitize.js";
 
 const PACKAGE_NAME = "antfeed-mcp";
-const PACKAGE_VERSION = "0.1.2";
+const PACKAGE_VERSION = "0.2.0";
 const USER_AGENT = `${PACKAGE_NAME}/${PACKAGE_VERSION}`;
 const MIN_NODE_MAJOR = 20;
 
@@ -212,6 +216,15 @@ async function main() {
         case "get_session_status":
           result = await getSessionStatus(args, { explorer });
           break;
+        case "network_stats":
+          result = await networkStats(args, { explorer });
+          break;
+        case "get_buyer":
+          result = await getBuyer(args, { explorer });
+          break;
+        case "dau_trend":
+          result = await dauTrend(args, { explorer });
+          break;
         case "create_session":
           if (!detect.reachable) {
             return errorResponse(
@@ -266,6 +279,7 @@ function errorFor(err: unknown, log: (lvl: LogLevel, msg: string) => void) {
       .join("; ");
     return errorResponse("INVALID_INPUT", message);
   }
+  if (err instanceof InvalidCursorError) return errorResponse("INVALID_INPUT", err.message);
   if (err instanceof ExplorerError) return errorResponse(err.code, err.message);
   if (err instanceof BuyerError) return errorResponse(err.code, err.message);
   const raw = err instanceof Error ? err.message : String(err);
