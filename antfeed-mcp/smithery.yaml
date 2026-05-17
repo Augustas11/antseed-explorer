@@ -1,0 +1,44 @@
+# Smithery configuration for @antfeed/mcp.
+# Schema: https://smithery.ai/docs (startCommand pattern for npm-distributed
+# stdio MCP servers).
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema for the host-supplied config object passed to commandFunction.
+    # All fields are optional — the server runs read-only with defaults and only
+    # registers the transactional `create_session` tool when a local buyer is
+    # reachable at `buyerUrl`.
+    type: object
+    properties:
+      explorerUrl:
+        type: string
+        title: Explorer URL
+        description: Base URL for the AntFeed Explorer REST API.
+        default: https://antfeed.org
+      buyerUrl:
+        type: string
+        title: Local buyer URL
+        description: Local AntSeed buyer RPC. Required only for `create_session`; omit for read-only use.
+        default: http://localhost:8377
+      maxDepositUsdc:
+        type: number
+        title: Max deposit (USDC)
+        description: Defense-in-depth ceiling on `create_session` deposits. Hard-capped at 10000.
+        default: 10
+      buyerStrict:
+        type: boolean
+        title: Strict buyer identity check
+        description: Require the local buyer to identify itself via /health. Recommended on shared dev boxes.
+        default: false
+  commandFunction:
+    |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', '@antfeed/mcp@latest'],
+      env: {
+        ...(config.explorerUrl ? { ANTFEED_EXPLORER_URL: String(config.explorerUrl) } : {}),
+        ...(config.buyerUrl ? { ANTSEED_BUYER_URL: String(config.buyerUrl) } : {}),
+        ...(config.maxDepositUsdc != null ? { ANTSEED_MAX_DEPOSIT_USDC: String(config.maxDepositUsdc) } : {}),
+        ...(config.buyerStrict ? { ANTSEED_BUYER_STRICT: '1' } : {}),
+      },
+    })
