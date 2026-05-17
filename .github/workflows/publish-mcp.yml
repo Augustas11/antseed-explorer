@@ -34,6 +34,12 @@ jobs:
           cache: "npm"
           cache-dependency-path: antfeed-mcp/package-lock.json
 
+      - name: Upgrade npm for OIDC Trusted Publishing
+        # Node 22 ships npm 10.x; OIDC Trusted Publishing requires npm >= 11.5.1.
+        # Without this, `npm publish --provenance` 404s on PUT even when the
+        # Trusted Publisher is configured correctly on npmjs.com.
+        run: npm install -g npm@latest
+
       - name: Verify package name is @antfeed/mcp
         run: |
           PKG_NAME=$(node -p "require('./package.json').name")
