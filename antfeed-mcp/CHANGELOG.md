@@ -2,6 +2,16 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.3 — 2026-05-17
+
+### Added
+
+- **Per-tool attribution on outbound requests.** Every fetch into the antfeed.org explorer API now carries `?via=mcp&tool=<tool_name>` so the upstream can split MCP traffic by tool in server logs and Vercel Web Analytics without `User-Agent` parsing. Implemented via `AsyncLocalStorage` (`src/tool-context.ts`); the tool name is set once at the MCP `CallToolRequest` dispatch and propagates through every awaited fetch in `ExplorerClient`. Local-buyer calls (`create_session`) are not tagged — they don't hit the public surface.
+
+### Fixed
+
+- **`User-Agent` version drift.** `PACKAGE_VERSION` in `src/index.ts` was still `"0.2.1"` after the 0.2.2 publish, so the outbound `User-Agent` mis-reported the client version. Bumped to `0.2.3` and synced with `package.json`.
+
 ## 0.2.2 — 2026-05-17
 
 ### Added

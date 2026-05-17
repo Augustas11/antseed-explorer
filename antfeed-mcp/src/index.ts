@@ -19,10 +19,11 @@ import { listProviders } from "./tools/list-providers.js";
 import { lookup } from "./tools/lookup.js";
 import { networkStats } from "./tools/network-stats.js";
 import { buildTools } from "./tools/registry.js";
+import { toolContext } from "./tool-context.js";
 import { sanitizeMessage } from "./sanitize.js";
 
 const PACKAGE_NAME = "antfeed-mcp";
-const PACKAGE_VERSION = "0.2.1";
+const PACKAGE_VERSION = "0.2.3";
 const USER_AGENT = `${PACKAGE_NAME}/${PACKAGE_VERSION}`;
 const MIN_NODE_MAJOR = 20;
 
@@ -217,49 +218,51 @@ async function main() {
     const name = req.params.name;
     const args = (req.params.arguments ?? {}) as unknown;
     log("debug", `tool call: ${name}`);
-    try {
-      let result: unknown;
-      switch (name) {
-        case "lookup":
-          result = await lookup(args, { explorer });
-          break;
-        case "list_providers":
-          result = await listProviders(args, { explorer });
-          break;
-        case "get_pricing":
-          result = await getPricing(args, { explorer });
-          break;
-        case "get_session_status":
-          result = await getSessionStatus(args, { explorer });
-          break;
-        case "network_stats":
-          result = await networkStats(args, { explorer });
-          break;
-        case "get_buyer":
-          result = await getBuyer(args, { explorer });
-          break;
-        case "dau_trend":
-          result = await dauTrend(args, { explorer });
-          break;
-        case "create_session":
-          if (!detect.reachable) {
-            return errorResponse(
-              "BUYER_DOWN",
-              "Local buyer was not detected at MCP startup. Restart the MCP server with a running buyer.",
-            );
-          }
-          result = await createSession(args, { buyer, maxDepositUsdc: cfg.maxDepositUsdc });
-          break;
-        case "buyer_setup":
-          result = await buyerSetup(args, { buyerUrl: cfg.buyerUrl, strict: cfg.buyerStrict });
-          break;
-        default:
-          return errorResponse("INVALID_INPUT", `Unknown tool: ${name}`);
+    return toolContext.run({ tool: name }, async () => {
+      try {
+        let result: unknown;
+        switch (name) {
+          case "lookup":
+            result = await lookup(args, { explorer });
+            break;
+          case "list_providers":
+            result = await listProviders(args, { explorer });
+            break;
+          case "get_pricing":
+            result = await getPricing(args, { explorer });
+            break;
+          case "get_session_status":
+            result = await getSessionStatus(args, { explorer });
+            break;
+          case "network_stats":
+            result = await networkStats(args, { explorer });
+            break;
+          case "get_buyer":
+            result = await getBuyer(args, { explorer });
+            break;
+          case "dau_trend":
+            result = await dauTrend(args, { explorer });
+            break;
+          case "create_session":
+            if (!detect.reachable) {
+              return errorResponse(
+                "BUYER_DOWN",
+                "Local buyer was not detected at MCP startup. Restart the MCP server with a running buyer.",
+              );
+            }
+            result = await createSession(args, { buyer, maxDepositUsdc: cfg.maxDepositUsdc });
+            break;
+          case "buyer_setup":
+            result = await buyerSetup(args, { buyerUrl: cfg.buyerUrl, strict: cfg.buyerStrict });
+            break;
+          default:
+            return errorResponse("INVALID_INPUT", `Unknown tool: ${name}`);
+        }
+        return successResponse(result);
+      } catch (err) {
+        return errorFor(err, log);
       }
-      return successResponse(result);
-    } catch (err) {
-      return errorFor(err, log);
-    }
+    });
   });
 
   const transport = new StdioServerTransport();
