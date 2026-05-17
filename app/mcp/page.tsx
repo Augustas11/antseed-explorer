@@ -12,13 +12,11 @@ export const metadata: Metadata = {
     url: "https://www.antfeed.org/mcp",
     siteName: "AntSeed Demand Explorer",
     type: "website",
-    images: ["/mcp/opengraph-image"],
   },
   twitter: {
     card: "summary_large_image",
     title: "AntFeed MCP",
     description: "Discover and transact on the AntSeed P2P AI network from any AI agent.",
-    images: ["/mcp/opengraph-image"],
   },
 };
 

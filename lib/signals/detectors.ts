@@ -83,7 +83,7 @@ export async function detectDailySnapshot(asOf: Date): Promise<Signal[]> {
         active_buyers: activeBuyers,
         active_sellers: activeSellers,
       },
-      link: "https://antfeed.org",
+      link: `https://antfeed.org?d=${isoDate}`,
     },
   ];
 }
@@ -175,7 +175,7 @@ export async function detectDailyNewSellers(asOf: Date): Promise<Signal[]> {
         named_unique_count: namedCounts.size,
         unnamed_count: unnamedCount,
       },
-      link: "https://antfeed.org",
+      link: `https://antfeed.org?d=${isoDate}`,
     },
   ];
 }
@@ -212,7 +212,7 @@ export async function detectDailyNewBuyers(asOf: Date): Promise<Signal[]> {
         day: isoDate,
         count,
       },
-      link: "https://antfeed.org/buyers",
+      link: `https://antfeed.org/buyers?d=${isoDate}`,
     },
   ];
 }
@@ -246,7 +246,7 @@ export async function detectDailyNewServiceOffered(
           .map((s) => `${s}=${current.serviceProviderCounts[s] ?? 0}`)
           .join(", "),
       },
-      link: "https://antfeed.org",
+      link: `https://antfeed.org?d=${isoDate}`,
     },
   ];
 }
@@ -291,7 +291,7 @@ export async function detectDailyServiceSupplyDelta(
         movers: topLine,
         full_count: deltas.length,
       },
-      link: "https://antfeed.org",
+      link: `https://antfeed.org?d=${isoDate}`,
     },
   ];
 }
@@ -349,7 +349,7 @@ export async function detectDailyVolumeDelta(asOf: Date): Promise<Signal[]> {
         pct_change: round(pctChange * 100, 1),
         direction,
       },
-      link: "https://antfeed.org",
+      link: `https://antfeed.org?d=${isoDate}`,
     },
   ];
 }
