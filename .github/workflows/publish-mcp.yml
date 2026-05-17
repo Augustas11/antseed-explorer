@@ -34,12 +34,6 @@ jobs:
           cache: "npm"
           cache-dependency-path: antfeed-mcp/package-lock.json
 
-      - name: Upgrade npm for OIDC Trusted Publishing
-        # Node 22 ships npm 10.x; OIDC Trusted Publishing requires npm >= 11.5.1.
-        # Without this, `npm publish --provenance` 404s on PUT even when the
-        # Trusted Publisher is configured correctly on npmjs.com.
-        run: npm install -g npm@latest
-
       - name: Verify package name is @antfeed/mcp
         run: |
           PKG_NAME=$(node -p "require('./package.json').name")
@@ -82,8 +76,13 @@ jobs:
       - name: Publish to npm with provenance
         # Auth is via npm Trusted Publishing (OIDC) — no NPM_TOKEN secret needed.
         # See: https://docs.npmjs.com/trusted-publishers
+        # `npx -y npm@latest` because Node 22 ships npm 10.x but OIDC Trusted
+        # Publishing requires npm >= 11.5.1. In-place global upgrade
+        # (`npm i -g npm@latest`) corrupts the runner's npm install partway
+        # through (Cannot find module 'promise-retry'); npx-invoking a fresh
+        # npm sidesteps that entirely without touching the runner's npm.
         if: github.event_name == 'push' || inputs.dry_run == false
-        run: npm publish --provenance --access public
+        run: npx -y npm@latest publish --provenance --access public
 
       - name: Summary
         run: |
