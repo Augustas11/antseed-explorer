@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getNetworkStats, getDailyVolume, getProfileDrift } from "@/lib/queries";
+import { trackMcpUsage } from "@/lib/mcp-usage";
 
 export const runtime = "nodejs";
 // Aggregates change at most every minute (when the indexer pulses).
@@ -10,7 +11,8 @@ const RESPONSE_HEADERS = {
   "Cache-Control": "public, s-maxage=30, stale-while-revalidate=120",
 };
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  trackMcpUsage(req, "stats");
   // Serialized — Promise.all of many Neon HTTP requests from a cold Vercel
   // serverless instance occasionally returned empty rows. Sequential calls
   // are still <500ms total and 100% reliable.
