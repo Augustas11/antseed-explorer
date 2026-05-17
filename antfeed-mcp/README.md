@@ -161,6 +161,10 @@ npx @modelcontextprotocol/inspector dist/index.js
 
 ---
 
+## Registry submission
+
+The package is submitted to the public MCP server registries (registry.modelcontextprotocol.io, Smithery, PulseMCP, Glama, mcp.so) so any MCP-aware client can discover and install it without copy-pasting the snippet above. Source of truth for the official registry submission is [`server.json`](./server.json); the Smithery descriptor is [`smithery.yaml`](./smithery.yaml). The full submission checklist with current URLs lives in [`REGISTRIES.md`](./REGISTRIES.md). Registry repo: <https://github.com/modelcontextprotocol/registry>.
+
 ## Links
 
 - AntFeed Explorer: <https://antfeed.org>

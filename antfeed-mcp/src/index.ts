@@ -22,9 +22,25 @@ import { buildTools } from "./tools/registry.js";
 import { sanitizeMessage } from "./sanitize.js";
 
 const PACKAGE_NAME = "antfeed-mcp";
-const PACKAGE_VERSION = "0.2.0";
+const PACKAGE_VERSION = "0.2.1";
 const USER_AGENT = `${PACKAGE_NAME}/${PACKAGE_VERSION}`;
 const MIN_NODE_MAJOR = 20;
+
+// Returned to MCP hosts on `initialize`; surfaced to the agent as a
+// system-prompt-style preamble (per MCP spec 2025-06-18). Keep it short and
+// task-shaped so multi-step flows pick the right tool without scanning all
+// descriptions.
+export const SERVER_INSTRUCTIONS = `AntFeed is a P2P AI marketplace on Base. The server exposes the public antfeed.org data surface.
+
+To find a provider: use \`list_providers\` to browse the directory or \`lookup\` for substring search across address/displayName/services. Then use \`get_pricing\` for the specific (provider, service) pair.
+
+To analyze a buyer: use \`get_buyer\` with a 0x address — returns trust score, recent sessions, top sellers. To analyze a seller/provider: \`list_providers\` + \`get_pricing\`.
+
+For state-of-network questions: use \`network_stats\` for the current snapshot (revenue, DAU, drift, gas). Use \`dau_trend\` for growth over time.
+
+To transact: \`buyer_setup\` first if no local buyer is running, then \`create_session\` to open a channel and deposit USDC. \`create_session\` is a real on-chain action — confirm with the user before calling. \`get_session_status\` polls channel state.
+
+Feedback: https://antfeed.org/mcp#feedback`;
 
 const LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40 } as const;
 type LogLevel = keyof typeof LOG_LEVELS;
@@ -192,7 +208,7 @@ async function main() {
 
   const server = new Server(
     { name: PACKAGE_NAME, version: PACKAGE_VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));

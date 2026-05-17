@@ -2,6 +2,12 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.1 — 2026-05-17
+
+### Added
+
+- **Server `instructions` field** on the MCP `initialize` response (per MCP spec 2025-06-18). Hosts like Claude Desktop, Cursor, and Claude Code surface this string as a system-prompt-style preamble the agent sees on connect — gives the model a short task-shaped map of when to call which tool, which materially improves multi-step flows on servers with many tools.
+
 ## 0.2.0 — 2026-05-17
 
 Quality pass on every tool plus three new read tools that fill the biggest gaps in MCP coverage of antfeed.org's public data. Optimized against MCP spec 2025-06-18 (`annotations`, `outputSchema`) so tools behave well in Claude Desktop / Cursor / Smithery: clients can render confirm dialogs before destructive calls, validate responses against a declared schema, and consume `structuredContent` directly instead of re-parsing the text payload.
