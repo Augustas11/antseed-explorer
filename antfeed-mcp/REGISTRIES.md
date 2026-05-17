@@ -6,7 +6,7 @@ time — they drift.
 
 | # | Registry | Status | Action |
 |---|----------|--------|--------|
-| 1 | **registry.modelcontextprotocol.io** (official) | [ ] | Submit via the `mcp-publisher` CLI from <https://github.com/modelcontextprotocol/registry>. Source of truth: [`server.json`](./server.json). Namespace `io.github.augustas11/*` is verified via GitHub OAuth at publish time. |
+| 1 | **registry.modelcontextprotocol.io** (official) | [x] | Submitted via the `mcp-publisher` CLI (<https://github.com/modelcontextprotocol/registry>). Source of truth: [`server.json`](./server.json). Namespace `io.github.Augustas11/*` (case-sensitive — must match GitHub username casing) is verified via GitHub OAuth at publish time. Re-publish on a version bump: `mcp-publisher login github && mcp-publisher publish` from this directory. |
 | 2 | **Smithery** | [ ] | Push [`smithery.yaml`](./smithery.yaml), then submit at <https://smithery.ai/new>. Docs: <https://smithery.ai/docs/build/publish>. |
 | 3 | **PulseMCP** | [ ] | Submit via <https://www.pulsemcp.com/submit>. PulseMCP also ingests from the official registry, so step 1 may auto-populate this within a week. |
 | 4 | **Glama** | [ ] | Submit via <https://glama.ai/mcp/servers/add>. |

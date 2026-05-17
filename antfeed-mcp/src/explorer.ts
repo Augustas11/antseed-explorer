@@ -20,6 +20,7 @@ import type {
   ServicePricing,
 } from "./schemas.js";
 import { readJsonCapped } from "./http.js";
+import { toolContext } from "./tool-context.js";
 
 export class ExplorerError extends Error {
   code: string;
@@ -122,6 +123,11 @@ export class ExplorerClient {
     const usp = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null) usp.set(k, String(v));
+    }
+    const ctx = toolContext.getStore();
+    if (ctx) {
+      usp.set("via", "mcp");
+      usp.set("tool", ctx.tool);
     }
     const qs = usp.toString();
     return `${this.baseUrl}${path}${qs ? `?${qs}` : ""}`;
