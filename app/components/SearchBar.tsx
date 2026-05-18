@@ -13,12 +13,12 @@ export default function SearchBar() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex items-center gap-1">
+    <form onSubmit={handleSubmit} className="flex w-full items-center gap-1">
       <input
         ref={inputRef}
         type="text"
         placeholder="0x address…"
-        className="bg-panel border border-edge rounded px-3 py-1.5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent/60 w-44"
+        className="min-w-0 flex-1 bg-panel border border-edge rounded px-3 py-1.5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent/60 md:w-44"
       />
       <button type="submit" className="btn text-xs py-1.5 px-2">
         →

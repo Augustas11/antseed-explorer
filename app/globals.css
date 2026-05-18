@@ -81,14 +81,19 @@ a { color: inherit; }
   .pill {
     @apply px-2 py-0.5 text-[11px] uppercase tracking-wider rounded border border-edge text-muted;
   }
+  .table-scroll,
+  .panel:has(> table.tbl) {
+    @apply overflow-x-auto;
+    -webkit-overflow-scrolling: touch;
+  }
   table.tbl {
-    @apply w-full text-sm;
+    @apply w-full min-w-[760px] text-sm;
   }
   table.tbl th {
-    @apply text-left text-xs uppercase tracking-wider text-muted py-2 px-3 border-b border-edge font-normal;
+    @apply whitespace-nowrap text-left text-xs uppercase tracking-wider text-muted py-2 px-3 border-b border-edge font-normal;
   }
   table.tbl td {
-    @apply py-2.5 px-3 border-b;
+    @apply whitespace-nowrap py-2.5 px-3 border-b;
     border-color: color-mix(in srgb, var(--color-edge) 60%, transparent);
   }
   table.tbl tbody tr:hover {
