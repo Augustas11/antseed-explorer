@@ -97,15 +97,25 @@ export default async function ProvidersPage({
   const service = searchParams.service ?? "";
   const active7d = searchParams.active7d === "1";
 
-  const [providersRaw, facets] = await Promise.all([
-    listProviders({
-      sort,
-      service: service || undefined,
-      active7d,
-    }),
-    listProviderFacets(),
-  ]);
+  // Resolve canonical service key (?service=) to its raw aliases via facets.
+  // We have to await facets before listProviders so the filter can expand
+  // "claude-opus-4-6" into every advertised variant string.
+  const facets = await listProviderFacets();
   const { totalCount, activeCount } = facets;
+
+  let serviceAliases: string[] | undefined;
+  if (service) {
+    const match = facets.serviceGroups.find((g) => g.key === service);
+    // Fallback: an unknown key (e.g. bookmarked old URL) passes through as a
+    // single-element alias list so the filter still matches the literal string.
+    serviceAliases = match ? match.aliases : [service];
+  }
+
+  const providersRaw = await listProviders({
+    sort,
+    serviceAliases,
+    active7d,
+  });
 
   // Compute trust score per row from on-chain events (lib/reputation.ts).
   // Mirrors AntSeed's canonical formula. SQL pre-sorts by volume as a proxy
@@ -134,7 +144,7 @@ export default async function ProvidersPage({
         sort={sort}
         service={service}
         active7d={active7d}
-        services={facets.services}
+        serviceGroups={facets.serviceGroups}
         activeCount={activeCount}
         totalCount={totalCount}
       />

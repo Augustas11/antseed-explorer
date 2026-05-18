@@ -16,6 +16,7 @@ import {
   isNotNull,
   sql,
 } from "drizzle-orm";
+import { groupServices, type ServiceGroup } from "./services-canonical";
 
 // Public row shape kept identical to the SQLite era so the UI doesn't have to
 // change. Drizzle returns camelCase from the schema; we re-shape on the way out.
@@ -1348,7 +1349,10 @@ export type ProviderSortKey =
 
 export async function listProviders(opts: {
   sort?: ProviderSortKey;
-  service?: string;
+  // Raw service strings to match against pd.services (JSON-text array).
+  // Pass an array (not a canonical key) so callers can expand a canonical
+  // group into all of its aliases before querying.
+  serviceAliases?: string[];
   active7d?: boolean;
 } = {}): Promise<DirectoryProviderRow[]> {
   // Reputation is computed in JS post-fetch (see lib/reputation.ts), so the
@@ -1365,10 +1369,12 @@ export async function listProviders(opts: {
 
   // Build WHERE filters with parameterized bindings (NEVER sql.raw on user input).
   const filters = [sql`1=1`];
-  if (opts.service) {
+  if (opts.serviceAliases && opts.serviceAliases.length > 0) {
     // services is stored as a JSON text array, e.g. '["llm.chat.gpt-4o","..."]'
-    const needle = `%"${opts.service}"%`;
-    filters.push(sql`pd.services LIKE ${needle}`);
+    const aliasClauses = opts.serviceAliases.map(
+      (a) => sql`pd.services LIKE ${`%"${a}"%`}`,
+    );
+    filters.push(sql`(${sql.join(aliasClauses, sql` OR `)})`);
   }
   if (opts.active7d) {
     // Provider has ≥1 settled event in last 7 days
@@ -1430,11 +1436,13 @@ export async function listProviders(opts: {
   }));
 }
 
-// Facet values + counts for the /providers filter bar. Bundles distinct
-// services and total/active counts so the page only does one extra round-trip
-// beyond the main listProviders() call.
+// Facet values + counts for the /providers filter bar. Service strings are
+// grouped into canonical buckets (lib/services-canonical.ts) so the dropdown
+// doesn't list "Claude Opus 4.6", "claude-opus-4.6", and "claude-opus-4-6"
+// as three separate rows. Raw aliases are preserved on each group so the
+// filter query can expand a canonical pick into all matching raw strings.
 export async function listProviderFacets(): Promise<{
-  services: string[];
+  serviceGroups: ServiceGroup[];
   totalCount: number;
   activeCount: number;
 }> {
@@ -1454,14 +1462,14 @@ export async function listProviderFacets(): Promise<{
     `),
   ]);
 
-  const svc = new Set<string>();
+  const all: string[] = [];
   for (const r of facetRows.rows) {
     const list = parseJson<string[]>(r.services) ?? [];
-    for (const s of list) svc.add(s);
+    for (const s of list) all.push(s);
   }
   const c = countRows.rows[0] ?? { total: 0, active7d: 0 };
   return {
-    services: [...svc].sort(),
+    serviceGroups: groupServices(all),
     totalCount: Number(c.total ?? 0),
     activeCount: Number(c.active7d ?? 0),
   };

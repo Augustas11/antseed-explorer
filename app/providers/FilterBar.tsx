@@ -1,17 +1,19 @@
 "use client";
 
+import type { ServiceGroup } from "@/lib/services-canonical";
+
 export default function FilterBar({
   sort,
   service,
   active7d,
-  services,
+  serviceGroups,
   activeCount,
   totalCount,
 }: {
   sort: string;
   service: string;
   active7d: boolean;
-  services: string[];
+  serviceGroups: ServiceGroup[];
   activeCount: number;
   totalCount: number;
 }) {
@@ -31,9 +33,18 @@ export default function FilterBar({
           className="bg-panel border border-edge rounded-md px-2 py-1 text-xs"
         >
           <option value="">All services</option>
-          {services.map((s) => (
-            <option key={s} value={s}>
-              {s}
+          {serviceGroups.map((g) => (
+            <option
+              key={g.key}
+              value={g.key}
+              title={
+                g.aliases.length > 1
+                  ? `Matches: ${g.aliases.join(", ")}`
+                  : undefined
+              }
+            >
+              {g.display}
+              {g.aliases.length > 1 ? ` (${g.aliases.length})` : ""}
             </option>
           ))}
         </select>
