@@ -1,0 +1,98 @@
+"use client";
+
+export default function FilterBar({
+  sort,
+  service,
+  region,
+  active7d,
+  services,
+  regions,
+  activeCount,
+  totalCount,
+}: {
+  sort: string;
+  service: string;
+  region: string;
+  active7d: boolean;
+  services: string[];
+  regions: string[];
+  activeCount: number;
+  totalCount: number;
+}) {
+  return (
+    <form
+      method="get"
+      className="panel p-3 flex flex-wrap gap-3 items-center text-sm"
+    >
+      <input type="hidden" name="sort" value={sort} />
+
+      <label className="flex items-center gap-2">
+        <span className="text-muted text-xs">Service</span>
+        <select
+          name="service"
+          defaultValue={service}
+          onChange={(e) => e.currentTarget.form?.requestSubmit()}
+          className="bg-panel border border-edge rounded-md px-2 py-1 text-xs"
+        >
+          <option value="">All services</option>
+          {services.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="flex items-center gap-2">
+        <span className="text-muted text-xs">Region</span>
+        <select
+          name="region"
+          defaultValue={region}
+          onChange={(e) => e.currentTarget.form?.requestSubmit()}
+          className="bg-panel border border-edge rounded-md px-2 py-1 text-xs"
+        >
+          <option value="">All regions</option>
+          {regions.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          name="active7d"
+          value="1"
+          defaultChecked={active7d}
+          onChange={(e) => e.currentTarget.form?.requestSubmit()}
+        />
+        <span className="text-xs">
+          Active 7d
+          <span className="badge badge-muted ml-2">
+            {activeCount} of {totalCount}
+          </span>
+        </span>
+      </label>
+
+      {(service || region || active7d) && (
+        <a
+          href={`?sort=${sort}`}
+          className="text-xs text-muted hover:text-ink underline"
+        >
+          clear filters
+        </a>
+      )}
+
+      <noscript>
+        <button
+          type="submit"
+          className="px-3 py-1 text-xs rounded-md border border-edge bg-panel hover:bg-edge"
+        >
+          Apply
+        </button>
+      </noscript>
+    </form>
+  );
+}

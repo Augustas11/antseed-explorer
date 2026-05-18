@@ -1326,20 +1326,54 @@ export interface DirectoryProviderRow {
   ghostCount: number;
   closedCount: number;
   updatedAt: number | null;
+  // First on-chain settlement timestamp for this seller. Closest available
+  // proxy for "joined" — provider_directory has no registration_at column.
+  firstSettledTs: number | null;
+  trustScore: number | null;
   // Non-null when `address` is a seller delegation contract; the operator
   // EVM address derived from the libp2p peerId.
   operatorAddress: string | null;
 }
 
+export type ProviderSortKey =
+  | "volume"
+  | "sessions"
+  | "ghost"
+  | "joined"
+  | "reputation";
+
 export async function listProviders(opts: {
-  sort?: "volume" | "sessions" | "ghost";
+  sort?: ProviderSortKey;
+  service?: string;
+  region?: string;
+  active7d?: boolean;
 } = {}): Promise<DirectoryProviderRow[]> {
-  const sortColMap: Record<string, string> = {
+  const sortColMap: Record<ProviderSortKey, string> = {
     volume: "COALESCE(agg.total_volume, 0) DESC",
     sessions: "COALESCE(agg.session_count, 0) DESC",
     ghost: "CASE WHEN COALESCE(agg.closed_count,0)>0 THEN COALESCE(agg.ghost_count,0)::float/agg.closed_count ELSE 0 END DESC",
+    joined: "agg.first_settled_ts ASC NULLS LAST",
+    reputation: "pd.trust_score DESC NULLS LAST",
   };
-  const orderExpr = sortColMap[opts.sort ?? ""] ?? "COALESCE(agg.total_volume, 0) DESC";
+  const orderExpr = sortColMap[opts.sort ?? "volume"] ?? sortColMap.volume;
+
+  // Build WHERE filters with parameterized bindings (NEVER sql.raw on user input).
+  const filters = [sql`1=1`];
+  if (opts.service) {
+    // services is stored as a JSON text array, e.g. '["llm.chat.gpt-4o","..."]'
+    const needle = `%"${opts.service}"%`;
+    filters.push(sql`pd.services LIKE ${needle}`);
+  }
+  if (opts.region) {
+    filters.push(sql`pd.region = ${opts.region}`);
+  }
+  if (opts.active7d) {
+    // Provider has ≥1 settled event in last 7 days
+    filters.push(
+      sql`agg.last_settled_ts >= EXTRACT(EPOCH FROM NOW()) - 604800`,
+    );
+  }
+  const whereClause = sql.join(filters, sql` AND `);
 
   const rows = (await db.execute<any>(sql`
     SELECT
@@ -1349,11 +1383,13 @@ export async function listProviders(opts: {
       pd.services,
       pd.pricing,
       pd.operator_address,
+      pd.trust_score,
       pd.updated_at,
       COALESCE(agg.session_count, 0)::int   AS session_count,
       COALESCE(agg.total_volume, 0)::float  AS total_volume,
       COALESCE(agg.ghost_count, 0)::int     AS ghost_count,
-      COALESCE(agg.closed_count, 0)::int    AS closed_count
+      COALESCE(agg.closed_count, 0)::int    AS closed_count,
+      agg.first_settled_ts
     FROM provider_directory pd
     LEFT JOIN (
       SELECT
@@ -1361,11 +1397,14 @@ export async function listProviders(opts: {
         COUNT(DISTINCT CASE WHEN event_type='settled' THEN channel_id END)::int      AS session_count,
         COALESCE(SUM(CASE WHEN event_type='settled' THEN delta_usdc ELSE 0 END),0)::float AS total_volume,
         COUNT(DISTINCT CASE WHEN event_type='closed' AND COALESCE(settled_amount_usdc,0)=0 THEN channel_id END)::int AS ghost_count,
-        COUNT(DISTINCT CASE WHEN event_type='closed' THEN channel_id END)::int       AS closed_count
+        COUNT(DISTINCT CASE WHEN event_type='closed' THEN channel_id END)::int       AS closed_count,
+        MIN(timestamp) FILTER (WHERE event_type='settled')::bigint                  AS first_settled_ts,
+        MAX(timestamp) FILTER (WHERE event_type='settled')::bigint                  AS last_settled_ts
       FROM events
       WHERE seller_address IS NOT NULL
       GROUP BY seller_address
     ) agg ON agg.seller_address = pd.address
+    WHERE ${whereClause}
     ORDER BY ${sql.raw(orderExpr)}
   `)).rows;
 
@@ -1380,8 +1419,51 @@ export async function listProviders(opts: {
     ghostCount: Number(r.ghost_count ?? 0),
     closedCount: Number(r.closed_count ?? 0),
     updatedAt: r.updated_at != null ? Number(r.updated_at) : null,
+    firstSettledTs: r.first_settled_ts != null ? Number(r.first_settled_ts) : null,
+    trustScore: r.trust_score != null ? Number(r.trust_score) : null,
     operatorAddress: r.operator_address ?? null,
   }));
+}
+
+// Facet values + counts for the /providers filter bar. Bundles distinct
+// services/regions and total/active counts so the page only does one extra
+// round-trip beyond the main listProviders() call.
+export async function listProviderFacets(): Promise<{
+  services: string[];
+  regions: string[];
+  totalCount: number;
+  activeCount: number;
+}> {
+  const [facetRows, countRows] = await Promise.all([
+    db.execute<{ services: string | null; region: string | null }>(sql`
+      SELECT services, region FROM provider_directory
+    `),
+    db.execute<{ total: number; active7d: number }>(sql`
+      SELECT
+        (SELECT COUNT(*)::int FROM provider_directory) AS total,
+        (SELECT COUNT(DISTINCT e.seller_address)::int
+           FROM events e
+           INNER JOIN provider_directory pd ON pd.address = e.seller_address
+           WHERE e.event_type = 'settled'
+             AND e.timestamp >= EXTRACT(EPOCH FROM NOW()) - 604800
+        ) AS active7d
+    `),
+  ]);
+
+  const svc = new Set<string>();
+  const reg = new Set<string>();
+  for (const r of facetRows.rows) {
+    if (r.region) reg.add(r.region);
+    const list = parseJson<string[]>(r.services) ?? [];
+    for (const s of list) svc.add(s);
+  }
+  const c = countRows.rows[0] ?? { total: 0, active7d: 0 };
+  return {
+    services: [...svc].sort(),
+    regions: [...reg].sort(),
+    totalCount: Number(c.total ?? 0),
+    activeCount: Number(c.active7d ?? 0),
+  };
 }
 
 // ---------------------------------------------------------------------------
