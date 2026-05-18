@@ -1576,12 +1576,57 @@ export async function recomputeDailyDauRecent(n: number) {
 //   • URIUpdated    → event_type='identity_uri_updated'
 //   • MetadataSet   → event_type='identity_metadata_set'
 // The contract is the shared ERC-8004 registry on Base (predates the Antseed
-// deployment by ~2 months), so the first sync backfills ~6 months of history.
+// deployment by ~2 months), so the registry holds many non-Antseed agents.
+// We FILTER to only Antseed-relevant rows on insert: an owner address that
+// has touched the marketplace (channel/deposit events) or appears in the
+// provider directory, or any agentId we've already accepted via a prior
+// Registered. The full-firehose sweep used to ingest every agent on Base;
+// that data was unused and cost Neon storage + write bandwidth.
 // Schema reuse: agentId → channel_id (text), agentURI / new URI text →
 // raw_log (already stored), owner → buyer_address, updater → seller_address.
-// No new columns; if a downstream consumer needs the URI string surfaced
-// directly we can decode out of raw_log at query time.
+// Limitation: a seller whose Registered event predates their first channel
+// activity won't have their identity history captured by the forward sync.
+// Run scripts/_identity-backfill-owners.ts (or equivalent) to retroactively
+// pull historical Registered events for known sellers when needed.
 // ============================================================================
+
+// Loads the two sets used to decide whether an IdentityRegistry log is
+// Antseed-relevant. Cheap (two indexed SELECTs); called once per sync run.
+async function loadAntseedIdentitySets(): Promise<{
+  addrs: Set<string>;
+  agentIds: Set<string>;
+}> {
+  const [addrRows, identRows] = await Promise.all([
+    db.execute<{ addr: string }>(sql`
+      SELECT DISTINCT lower(addr) AS addr FROM (
+        SELECT buyer_address AS addr FROM events
+          WHERE buyer_address IS NOT NULL
+            AND event_type NOT LIKE 'identity_%'
+        UNION
+        SELECT seller_address AS addr FROM events
+          WHERE seller_address IS NOT NULL
+            AND event_type NOT LIKE 'identity_%'
+        UNION
+        SELECT address AS addr FROM provider_directory
+        UNION
+        SELECT operator_address AS addr FROM provider_directory
+          WHERE operator_address IS NOT NULL
+      ) t
+      WHERE addr IS NOT NULL
+    `),
+    db.execute<{ agent_id: string }>(sql`
+      SELECT DISTINCT channel_id AS agent_id
+      FROM events
+      WHERE event_type = 'identity_registered'
+        AND channel_id IS NOT NULL
+    `),
+  ]);
+  const addrs = new Set<string>();
+  for (const r of addrRows.rows) if (r.addr) addrs.add(r.addr);
+  const agentIds = new Set<string>();
+  for (const r of identRows.rows) if (r.agent_id) agentIds.add(r.agent_id);
+  return { addrs, agentIds };
+}
 
 const IDENTITY_CURSOR_KEY = "last_indexed_block_identity_registry";
 const IDENTITY_BATCH_KEY = "log_batch_size_identity_registry";
@@ -1643,6 +1688,10 @@ export async function syncIdentityRegistry(
   const startedAt = Date.now();
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
   const cursor = { from: fromBlockStart };
+  // Antseed-relevance sets, loaded once per run. agentIds is mutated as we
+  // accept new Registered rows so URIUpdated/MetadataSet later in the same
+  // run are kept without a re-query.
+  const { addrs, agentIds } = await loadAntseedIdentitySets();
 
   while (cursor.from <= head) {
     if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
@@ -1755,12 +1804,27 @@ export async function syncIdentityRegistry(
         };
       });
 
+      // Drop rows that don't pertain to an Antseed-relevant agent. Registered
+      // is the gate: owner must be a known Antseed address. URIUpdated and
+      // MetadataSet ride on the agentId being one we've already accepted.
+      const filtered = rows.filter((row) => {
+        if (row.eventType === "identity_registered") {
+          const owner = row.buyerAddress;
+          if (owner && addrs.has(owner) && row.channelId) {
+            agentIds.add(row.channelId);
+            return true;
+          }
+          return false;
+        }
+        return row.channelId != null && agentIds.has(row.channelId);
+      });
+
       // Chunk inserts to keep each Neon HTTP request small enough — a single
       // 10k-block batch can hold ~300 logs and the resulting parameter blob
       // exceeds Neon's transmit limit. 50 rows/insert ≈ 100KB payload.
       const CHUNK = 50;
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const chunk = rows.slice(i, i + CHUNK);
+      for (let i = 0; i < filtered.length; i += CHUNK) {
+        const chunk = filtered.slice(i, i + CHUNK);
         const result = await db
           .insert(eventsTbl)
           .values(chunk)
