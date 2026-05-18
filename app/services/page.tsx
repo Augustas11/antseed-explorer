@@ -34,7 +34,8 @@ export default async function ServicesPage() {
           Service Browser
         </h1>
         <p className="text-muted text-sm mt-1">
-          Distinct AI services advertised by providers on the AntSeed network.
+          AI models on the AntSeed network. Spelling variants of the same model
+          ("Claude Opus 4.6" / "claude-opus-4-6") are rolled up into one row.
         </p>
       </div>
 
@@ -47,7 +48,7 @@ export default async function ServicesPage() {
           <table className="tbl">
             <thead>
               <tr>
-                <th>Service name</th>
+                <th>Model</th>
                 <th>Providers</th>
                 <th>Input $/M (min – max)</th>
                 <th>Output $/M (min – max)</th>
@@ -58,7 +59,15 @@ export default async function ServicesPage() {
               {services.map((s) => (
                 <tr key={s.name}>
                   <td>
-                    <span className="font-mono text-ink">{s.name}</span>
+                    <span className="text-ink">{s.display}</span>
+                    {s.aliases.length > 1 && (
+                      <span
+                        className="badge badge-muted ml-2 text-[10px]"
+                        title={`Rolls up: ${s.aliases.join(", ")}`}
+                      >
+                        {s.aliases.length}× aliases
+                      </span>
+                    )}
                   </td>
                   <td>{fmtNum(s.provider_count)}</td>
                   <td className="text-muted text-xs">

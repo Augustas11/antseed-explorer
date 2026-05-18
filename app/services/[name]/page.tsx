@@ -12,10 +12,12 @@ export async function generateMetadata({
 }: {
   params: { name: string };
 }): Promise<Metadata> {
-  const name = decodeURIComponent(params.name);
+  const input = decodeURIComponent(params.name);
+  const service = await getService(input);
+  const title = service?.display ?? input;
   return {
-    title: `${name} — Service details | AntSeed Explorer`,
-    description: `Providers offering ${name} on the AntSeed P2P AI network.`,
+    title: `${title} — Service details | AntSeed Explorer`,
+    description: `Providers offering ${title} on the AntSeed P2P AI network.`,
   };
 }
 
@@ -24,23 +26,34 @@ export default async function ServiceDetailPage({
 }: {
   params: { name: string };
 }) {
-  const name = decodeURIComponent(params.name);
-  const service = await getService(name);
+  const input = decodeURIComponent(params.name);
+  const service = await getService(input);
   if (!service) notFound();
 
   return (
     <div className="space-y-6">
       <div>
         <div className="text-xs uppercase tracking-wider text-muted">
-          Service
+          Model
         </div>
-        <h1 className="text-2xl font-semibold tracking-tight mt-1 font-mono">
-          {service.name}
+        <h1 className="text-2xl font-semibold tracking-tight mt-1">
+          {service.display}
         </h1>
         <p className="text-muted text-sm mt-1">
           {fmtNum(service.provider_count)} provider
-          {service.provider_count !== 1 ? "s" : ""} offering this service.
+          {service.provider_count !== 1 ? "s" : ""} offering this model.
         </p>
+        {service.aliases.length > 1 && (
+          <p className="text-muted text-xs mt-2">
+            Advertised as:{" "}
+            {service.aliases.map((a, i) => (
+              <span key={a}>
+                {i > 0 && ", "}
+                <span className="font-mono">{a}</span>
+              </span>
+            ))}
+          </p>
+        )}
       </div>
 
       <section className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -79,6 +92,7 @@ export default async function ServiceDetailPage({
             <thead>
               <tr>
                 <th>Provider</th>
+                <th>Advertised as</th>
                 <th>Input $/M</th>
                 <th>Output $/M</th>
               </tr>
@@ -94,6 +108,14 @@ export default async function ServiceDetailPage({
                       {shortAddr(p.address)}
                     </Link>
                     <VerifiedLabel displayName={p.display_name} />
+                  </td>
+                  <td className="text-muted text-xs">
+                    {p.advertised_as.map((a, i) => (
+                      <span key={a}>
+                        {i > 0 && ", "}
+                        <span className="font-mono">{a}</span>
+                      </span>
+                    ))}
                   </td>
                   <td className="text-muted text-xs">
                     {p.pricing?.inputUsdPerMillion != null

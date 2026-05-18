@@ -16,7 +16,7 @@ import {
   isNotNull,
   sql,
 } from "drizzle-orm";
-import { groupServices, type ServiceGroup } from "./services-canonical";
+import { canonicalize, groupServices, type ServiceGroup } from "./services-canonical";
 
 // Public row shape kept identical to the SQLite era so the UI doesn't have to
 // change. Drizzle returns camelCase from the schema; we re-shape on the way out.
@@ -1112,7 +1112,11 @@ export async function getChannelEvents(
 // ---------------------------------------------------------------------------
 
 export interface ServiceRow {
+  // The canonical key (e.g. "claude-opus-4-6"). Used as the URL slug for
+  // /services/[name] so links survive raw-alias spelling changes upstream.
   name: string;
+  display: string;
+  aliases: string[];
   provider_count: number;
   providers: string[];
   min_price_in: number | null;
@@ -1126,96 +1130,145 @@ export interface ServiceProviderRow extends ServiceRow {
     address: string;
     display_name: string | null;
     pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
+    advertised_as: string[];
   }>;
 }
 
 type PricingMap = Record<string, { inputUsdPerMillion?: number; outputUsdPerMillion?: number }>;
 
+// Rolled-up service listing keyed by canonical model. Multiple raw service
+// strings ("Claude Opus 4.6" / "claude-opus-4-6") collapse into one row;
+// providers and prices are aggregated across all aliases.
 export async function listServices(): Promise<ServiceRow[]> {
   const allProviders = (await db.execute<any>(sql`
     SELECT address, display_name, services, pricing FROM provider_directory
   `)).rows;
 
-  // Build Map<serviceName, { providers: string[], prices: { in: number[], out: number[] } }>
-  const serviceMap = new Map<string, {
-    providers: string[];
+  // canonical key -> rollup buckets
+  type Bucket = {
+    display: string;
+    aliases: Set<string>;
+    providers: Set<string>;
     pricesIn: number[];
     pricesOut: number[];
-  }>();
+  };
+  const byKey = new Map<string, Bucket>();
 
   for (const provider of allProviders) {
     const services = parseJson<string[]>(provider.services) ?? [];
     const pricing = parseJson<PricingMap>(provider.pricing) ?? {};
     for (const svc of services) {
-      if (!serviceMap.has(svc)) {
-        serviceMap.set(svc, { providers: [], pricesIn: [], pricesOut: [] });
+      const { key, display } = canonicalize(svc);
+      let bucket = byKey.get(key);
+      if (!bucket) {
+        bucket = {
+          display,
+          aliases: new Set(),
+          providers: new Set(),
+          pricesIn: [],
+          pricesOut: [],
+        };
+        byKey.set(key, bucket);
       }
-      const entry = serviceMap.get(svc)!;
-      entry.providers.push(provider.address);
+      bucket.aliases.add(svc);
+      bucket.providers.add(provider.address);
       const svcPricing = pricing[svc];
-      if (svcPricing?.inputUsdPerMillion != null) entry.pricesIn.push(svcPricing.inputUsdPerMillion);
-      if (svcPricing?.outputUsdPerMillion != null) entry.pricesOut.push(svcPricing.outputUsdPerMillion);
+      if (svcPricing?.inputUsdPerMillion != null) bucket.pricesIn.push(svcPricing.inputUsdPerMillion);
+      if (svcPricing?.outputUsdPerMillion != null) bucket.pricesOut.push(svcPricing.outputUsdPerMillion);
     }
   }
 
   const result: ServiceRow[] = [];
-  for (const [name, { providers, pricesIn, pricesOut }] of serviceMap) {
+  for (const [key, b] of byKey) {
     result.push({
-      name,
-      provider_count: providers.length,
-      providers,
-      min_price_in: pricesIn.length > 0 ? Math.min(...pricesIn) : null,
-      max_price_in: pricesIn.length > 0 ? Math.max(...pricesIn) : null,
-      min_price_out: pricesOut.length > 0 ? Math.min(...pricesOut) : null,
-      max_price_out: pricesOut.length > 0 ? Math.max(...pricesOut) : null,
+      name: key,
+      display: b.display,
+      aliases: [...b.aliases].sort(),
+      provider_count: b.providers.size,
+      providers: [...b.providers],
+      min_price_in: b.pricesIn.length > 0 ? Math.min(...b.pricesIn) : null,
+      max_price_in: b.pricesIn.length > 0 ? Math.max(...b.pricesIn) : null,
+      min_price_out: b.pricesOut.length > 0 ? Math.min(...b.pricesOut) : null,
+      max_price_out: b.pricesOut.length > 0 ? Math.max(...b.pricesOut) : null,
     });
   }
 
-  // Sort by provider_count desc, then name asc
+  // Sort by provider_count desc, then display asc
   result.sort((a, b) =>
     b.provider_count !== a.provider_count
       ? b.provider_count - a.provider_count
-      : a.name.localeCompare(b.name),
+      : a.display.localeCompare(b.display),
   );
   return result;
 }
 
-export async function getService(name: string): Promise<ServiceProviderRow | null> {
+// Lookup a service by either canonical key or any raw alias.
+// Returns aggregated providers across all aliases of the canonical model.
+export async function getService(input: string): Promise<ServiceProviderRow | null> {
+  const { key: canonicalKey, display: canonicalDisplay } = canonicalize(input);
+
   const allProviders = (await db.execute<any>(sql`
     SELECT address, display_name, services, pricing FROM provider_directory
   `)).rows;
 
-  const providers: string[] = [];
+  // Dedup providers by address; collect every alias they advertise that maps
+  // to this canonical model so the detail page can show what they list it as.
+  type Detail = {
+    address: string;
+    display_name: string | null;
+    pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
+    advertised_as: string[];
+  };
+  const byAddress = new Map<string, Detail>();
+  const aliasesSeen = new Set<string>();
   const pricesIn: number[] = [];
   const pricesOut: number[] = [];
-  const providerDetails: ServiceProviderRow["provider_details"] = [];
 
   for (const provider of allProviders) {
     const services = parseJson<string[]>(provider.services) ?? [];
-    if (!services.includes(name)) continue;
     const pricing = parseJson<PricingMap>(provider.pricing) ?? {};
-    const svcPricing = pricing[name] ?? null;
-    providers.push(provider.address);
-    if (svcPricing?.inputUsdPerMillion != null) pricesIn.push(svcPricing.inputUsdPerMillion);
-    if (svcPricing?.outputUsdPerMillion != null) pricesOut.push(svcPricing.outputUsdPerMillion);
-    providerDetails.push({
-      address: provider.address,
-      display_name: provider.display_name ?? null,
-      pricing: svcPricing,
-    });
+    for (const svc of services) {
+      if (canonicalize(svc).key !== canonicalKey) continue;
+      aliasesSeen.add(svc);
+      const svcPricing = pricing[svc] ?? null;
+      if (svcPricing?.inputUsdPerMillion != null) pricesIn.push(svcPricing.inputUsdPerMillion);
+      if (svcPricing?.outputUsdPerMillion != null) pricesOut.push(svcPricing.outputUsdPerMillion);
+
+      const existing = byAddress.get(provider.address);
+      if (existing) {
+        existing.advertised_as.push(svc);
+        // Keep the cheapest price seen for this provider's display row
+        if (
+          svcPricing?.inputUsdPerMillion != null &&
+          (existing.pricing?.inputUsdPerMillion == null ||
+            svcPricing.inputUsdPerMillion < existing.pricing.inputUsdPerMillion)
+        ) {
+          existing.pricing = svcPricing;
+        }
+      } else {
+        byAddress.set(provider.address, {
+          address: provider.address,
+          display_name: provider.display_name ?? null,
+          pricing: svcPricing,
+          advertised_as: [svc],
+        });
+      }
+    }
   }
 
-  if (providers.length === 0) return null;
+  if (byAddress.size === 0) return null;
 
   return {
-    name,
-    provider_count: providers.length,
-    providers,
+    name: canonicalKey,
+    display: canonicalDisplay,
+    aliases: [...aliasesSeen].sort(),
+    provider_count: byAddress.size,
+    providers: [...byAddress.keys()],
     min_price_in: pricesIn.length > 0 ? Math.min(...pricesIn) : null,
     max_price_in: pricesIn.length > 0 ? Math.max(...pricesIn) : null,
     min_price_out: pricesOut.length > 0 ? Math.min(...pricesOut) : null,
     max_price_out: pricesOut.length > 0 ? Math.max(...pricesOut) : null,
-    provider_details: providerDetails,
+    provider_details: [...byAddress.values()],
   };
 }
 
