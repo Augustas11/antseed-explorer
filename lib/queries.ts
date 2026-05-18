@@ -1329,6 +1329,10 @@ export interface DirectoryProviderRow {
   // First on-chain settlement timestamp for this seller. Closest available
   // proxy for "joined" — provider_directory has no registration_at column.
   firstSettledTs: number | null;
+  lastSettledTs: number | null;
+  // Upstream-synced score from network.antseed.com (currently always null —
+  // the /stats endpoint doesn't expose it). We compute reputation locally
+  // via lib/reputation.ts using events-table aggregates.
   trustScore: number | null;
   // Non-null when `address` is a seller delegation contract; the operator
   // EVM address derived from the libp2p peerId.
@@ -1345,15 +1349,17 @@ export type ProviderSortKey =
 export async function listProviders(opts: {
   sort?: ProviderSortKey;
   service?: string;
-  region?: string;
   active7d?: boolean;
 } = {}): Promise<DirectoryProviderRow[]> {
+  // Reputation is computed in JS post-fetch (see lib/reputation.ts), so the
+  // SQL sort uses a coarse proxy that puts revenue-active sellers first.
+  // Fine ordering is then applied in app/providers/page.tsx.
   const sortColMap: Record<ProviderSortKey, string> = {
     volume: "COALESCE(agg.total_volume, 0) DESC",
     sessions: "COALESCE(agg.session_count, 0) DESC",
     ghost: "CASE WHEN COALESCE(agg.closed_count,0)>0 THEN COALESCE(agg.ghost_count,0)::float/agg.closed_count ELSE 0 END DESC",
     joined: "agg.first_settled_ts ASC NULLS LAST",
-    reputation: "pd.trust_score DESC NULLS LAST",
+    reputation: "COALESCE(agg.total_volume, 0) DESC",
   };
   const orderExpr = sortColMap[opts.sort ?? "volume"] ?? sortColMap.volume;
 
@@ -1363,9 +1369,6 @@ export async function listProviders(opts: {
     // services is stored as a JSON text array, e.g. '["llm.chat.gpt-4o","..."]'
     const needle = `%"${opts.service}"%`;
     filters.push(sql`pd.services LIKE ${needle}`);
-  }
-  if (opts.region) {
-    filters.push(sql`pd.region = ${opts.region}`);
   }
   if (opts.active7d) {
     // Provider has ≥1 settled event in last 7 days
@@ -1389,7 +1392,8 @@ export async function listProviders(opts: {
       COALESCE(agg.total_volume, 0)::float  AS total_volume,
       COALESCE(agg.ghost_count, 0)::int     AS ghost_count,
       COALESCE(agg.closed_count, 0)::int    AS closed_count,
-      agg.first_settled_ts
+      agg.first_settled_ts,
+      agg.last_settled_ts
     FROM provider_directory pd
     LEFT JOIN (
       SELECT
@@ -1420,23 +1424,23 @@ export async function listProviders(opts: {
     closedCount: Number(r.closed_count ?? 0),
     updatedAt: r.updated_at != null ? Number(r.updated_at) : null,
     firstSettledTs: r.first_settled_ts != null ? Number(r.first_settled_ts) : null,
+    lastSettledTs: r.last_settled_ts != null ? Number(r.last_settled_ts) : null,
     trustScore: r.trust_score != null ? Number(r.trust_score) : null,
     operatorAddress: r.operator_address ?? null,
   }));
 }
 
 // Facet values + counts for the /providers filter bar. Bundles distinct
-// services/regions and total/active counts so the page only does one extra
-// round-trip beyond the main listProviders() call.
+// services and total/active counts so the page only does one extra round-trip
+// beyond the main listProviders() call.
 export async function listProviderFacets(): Promise<{
   services: string[];
-  regions: string[];
   totalCount: number;
   activeCount: number;
 }> {
   const [facetRows, countRows] = await Promise.all([
-    db.execute<{ services: string | null; region: string | null }>(sql`
-      SELECT services, region FROM provider_directory
+    db.execute<{ services: string | null }>(sql`
+      SELECT services FROM provider_directory
     `),
     db.execute<{ total: number; active7d: number }>(sql`
       SELECT
@@ -1451,16 +1455,13 @@ export async function listProviderFacets(): Promise<{
   ]);
 
   const svc = new Set<string>();
-  const reg = new Set<string>();
   for (const r of facetRows.rows) {
-    if (r.region) reg.add(r.region);
     const list = parseJson<string[]>(r.services) ?? [];
     for (const s of list) svc.add(s);
   }
   const c = countRows.rows[0] ?? { total: 0, active7d: 0 };
   return {
     services: [...svc].sort(),
-    regions: [...reg].sort(),
     totalCount: Number(c.total ?? 0),
     activeCount: Number(c.active7d ?? 0),
   };

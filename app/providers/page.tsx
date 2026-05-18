@@ -7,6 +7,7 @@ import {
   type ProviderSortKey,
 } from "@/lib/queries";
 import { fmtUsd, fmtNum, fmtRelative, shortAddr } from "@/lib/format";
+import { computeTrust, reputationBadge, trustTooltip } from "@/lib/reputation";
 import FilterBar from "./FilterBar";
 
 export const dynamic = "force-dynamic";
@@ -37,12 +38,6 @@ function ghostRateClass(rate: number | null): string {
   return "text-green-500";
 }
 
-function reputationBadge(score: number | null): { cls: string; label: string } {
-  if (score != null && score >= 0.8) return { cls: "badge badge-good", label: "verified" };
-  if (score != null && score >= 0.5) return { cls: "badge", label: "active" };
-  return { cls: "badge badge-muted", label: "new" };
-}
-
 function fmtPrice(
   pricing: DirectoryProviderRow["pricing"],
   services: string[],
@@ -63,14 +58,12 @@ function SortLink({
   col,
   current,
   service,
-  region,
   active7d,
   children,
 }: {
   col: ProviderSortKey;
   current: ProviderSortKey;
   service: string;
-  region: string;
   active7d: boolean;
   children: React.ReactNode;
 }) {
@@ -78,7 +71,6 @@ function SortLink({
   const params = new URLSearchParams();
   params.set("sort", col);
   if (service) params.set("service", service);
-  if (region) params.set("region", region);
   if (active7d) params.set("active7d", "1");
   return (
     <a
@@ -96,7 +88,6 @@ export default async function ProvidersPage({
   searchParams: {
     sort?: string;
     service?: string;
-    region?: string;
     active7d?: string;
   };
 }) {
@@ -104,19 +95,30 @@ export default async function ProvidersPage({
     ? searchParams.sort
     : "volume") as ProviderSortKey;
   const service = searchParams.service ?? "";
-  const region = searchParams.region ?? "";
   const active7d = searchParams.active7d === "1";
 
-  const [providers, facets] = await Promise.all([
+  const [providersRaw, facets] = await Promise.all([
     listProviders({
       sort,
       service: service || undefined,
-      region: region || undefined,
       active7d,
     }),
     listProviderFacets(),
   ]);
   const { totalCount, activeCount } = facets;
+
+  // Compute trust score per row from on-chain events (lib/reputation.ts).
+  // Mirrors AntSeed's canonical formula. SQL pre-sorts by volume as a proxy
+  // when sort=reputation; the final ordering happens here.
+  const providers = providersRaw.map((p) => ({
+    ...p,
+    trust: computeTrust(p),
+  }));
+  if (sort === "reputation") {
+    providers.sort(
+      (a, b) => (b.trust?.score ?? -1) - (a.trust?.score ?? -1),
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -131,10 +133,8 @@ export default async function ProvidersPage({
       <FilterBar
         sort={sort}
         service={service}
-        region={region}
         active7d={active7d}
         services={facets.services}
-        regions={facets.regions}
         activeCount={activeCount}
         totalCount={totalCount}
       />
@@ -149,7 +149,6 @@ export default async function ProvidersPage({
             <thead>
               <tr>
                 <th>Provider</th>
-                <th>Region</th>
                 <th>Services</th>
                 <th>Price (input)</th>
                 <th className="text-right">
@@ -157,7 +156,6 @@ export default async function ProvidersPage({
                     col="sessions"
                     current={sort}
                     service={service}
-                    region={region}
                     active7d={active7d}
                   >
                     Sessions
@@ -168,7 +166,6 @@ export default async function ProvidersPage({
                     col="volume"
                     current={sort}
                     service={service}
-                    region={region}
                     active7d={active7d}
                   >
                     Volume
@@ -179,18 +176,16 @@ export default async function ProvidersPage({
                     col="ghost"
                     current={sort}
                     service={service}
-                    region={region}
                     active7d={active7d}
                   >
                     Ghost rate
                   </SortLink>
                 </th>
-                <th>
+                <th title="Computed from on-chain events using AntSeed's canonical formula (channels × volume × ticketBonus × recencyGate). Range 0–100.">
                   <SortLink
                     col="reputation"
                     current={sort}
                     service={service}
-                    region={region}
                     active7d={active7d}
                   >
                     Reputation
@@ -201,7 +196,6 @@ export default async function ProvidersPage({
                     col="joined"
                     current={sort}
                     service={service}
-                    region={region}
                     active7d={active7d}
                   >
                     Joined
@@ -213,7 +207,7 @@ export default async function ProvidersPage({
             <tbody>
               {providers.map((p) => {
                 const rate = ghostRate(p);
-                const rep = reputationBadge(p.trustScore);
+                const rep = reputationBadge(p.trust?.score ?? null);
                 return (
                   <tr key={p.address}>
                     <td>
@@ -229,7 +223,6 @@ export default async function ProvidersPage({
                         </div>
                       )}
                     </td>
-                    <td className="text-muted text-xs">{p.region ?? "—"}</td>
                     <td>
                       <div className="flex flex-wrap gap-1">
                         {p.services.slice(0, 3).map((svc) => (
@@ -268,13 +261,14 @@ export default async function ProvidersPage({
                     <td>
                       <span
                         className={`${rep.cls} text-[10px]`}
-                        title={
-                          p.trustScore != null
-                            ? `Trust score: ${p.trustScore.toFixed(2)}`
-                            : "No trust score yet"
-                        }
+                        title={trustTooltip(p.trust)}
                       >
                         {rep.label}
+                        {p.trust && (
+                          <span className="ml-1 font-mono text-muted">
+                            {p.trust.score.toFixed(0)}
+                          </span>
+                        )}
                       </span>
                     </td>
                     <td
@@ -298,9 +292,18 @@ export default async function ProvidersPage({
 
       <p className="text-xs text-muted">
         {providers.length} provider{providers.length !== 1 ? "s" : ""}
-        {(service || region || active7d) && ` (filtered from ${totalCount})`} ·{" "}
+        {(service || active7d) && ` (filtered from ${totalCount})`} ·{" "}
         ghost rate = channels closed with $0 settled / total closed channels ·{" "}
-        Joined = first on-chain settlement
+        Joined = first on-chain settlement ·{" "}
+        Reputation computed from on-chain events using{" "}
+        <a
+          href="https://github.com/antseed/antseed/blob/main/packages/node/src/reputation/on-chain-reputation.ts"
+          target="_blank"
+          rel="noreferrer"
+          className="underline hover:text-ink"
+        >
+          AntSeed's canonical formula
+        </a>
       </p>
     </div>
   );

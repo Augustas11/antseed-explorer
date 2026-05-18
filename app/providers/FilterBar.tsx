@@ -3,19 +3,15 @@
 export default function FilterBar({
   sort,
   service,
-  region,
   active7d,
   services,
-  regions,
   activeCount,
   totalCount,
 }: {
   sort: string;
   service: string;
-  region: string;
   active7d: boolean;
   services: string[];
-  regions: string[];
   activeCount: number;
   totalCount: number;
 }) {
@@ -43,23 +39,6 @@ export default function FilterBar({
         </select>
       </label>
 
-      <label className="flex items-center gap-2">
-        <span className="text-muted text-xs">Region</span>
-        <select
-          name="region"
-          defaultValue={region}
-          onChange={(e) => e.currentTarget.form?.requestSubmit()}
-          className="bg-panel border border-edge rounded-md px-2 py-1 text-xs"
-        >
-          <option value="">All regions</option>
-          {regions.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-      </label>
-
       <label className="flex items-center gap-2 cursor-pointer">
         <input
           type="checkbox"
@@ -76,7 +55,7 @@ export default function FilterBar({
         </span>
       </label>
 
-      {(service || region || active7d) && (
+      {(service || active7d) && (
         <a
           href={`?sort=${sort}`}
           className="text-xs text-muted hover:text-ink underline"
