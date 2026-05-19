@@ -1,10 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { publicClient } from "@/lib/chain";
+import { trackMcpUsage } from "@/lib/mcp-usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  trackMcpUsage(req, "gas");
   try {
     const fees = await publicClient.estimateFeesPerGas();
     const wei = fees.maxFeePerGas ?? fees.gasPrice ?? 0n;

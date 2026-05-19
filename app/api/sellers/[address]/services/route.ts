@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listProviders } from "@/lib/queries";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
+import { trackMcpUsage } from "@/lib/mcp-usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,7 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ address: string }> | { address: string } },
 ) {
+  trackMcpUsage(req, "sellers_services");
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
   if (!rl.allowed) {
     return NextResponse.json(

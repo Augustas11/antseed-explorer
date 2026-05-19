@@ -6,14 +6,16 @@ import {
   getBuyerMonthlyVolume,
   lookupProviders,
 } from "@/lib/queries";
+import { trackMcpUsage } from "@/lib/mcp-usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: { address: string } },
 ) {
+  trackMcpUsage(req, "buyers_detail");
   const profile = await getBuyer(params.address);
   if (!profile) {
     return NextResponse.json({ error: "buyer_not_found" }, { status: 404 });
