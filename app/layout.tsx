@@ -5,6 +5,7 @@ import SearchBar from "./components/SearchBar";
 import ThemeToggle from "./components/ThemeToggle";
 import MobileMenu from "./components/MobileMenu";
 import Providers from "./components/Providers";
+import { DOCS_HREF, NAV_ITEMS } from "./lib/nav-items";
 import { Analytics } from "@vercel/analytics/next";
 
 export const metadata: Metadata = {
@@ -31,15 +32,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   AntSeed <span className="text-accent">Demand</span> Explorer
                 </Link>
                 <nav className="hidden md:flex items-center gap-4 text-sm text-muted">
-                  <Link href="/buyers" className="hover:text-ink">Buyers</Link>
-                  <Link href="/holders" className="hover:text-ink">Holders</Link>
-                  <Link href="/channels" className="hover:text-ink">Channels</Link>
-                  <Link href="/services" className="hover:text-ink">Services</Link>
-                  <Link href="/providers" className="hover:text-ink">Providers</Link>
-                  <Link href="/mcp" className="hover:text-ink">MCP</Link>
-                  <Link href="/contracts" className="hover:text-ink">Contracts</Link>
+                  {NAV_ITEMS.map((item) => (
+                    <Link key={item.href} href={item.href} className="hover:text-ink">{item.label}</Link>
+                  ))}
                   <a
-                    href="https://antseed.com/docs/overview"
+                    href={DOCS_HREF}
                     target="_blank"
                     rel="noreferrer"
                     className="hover:text-ink"

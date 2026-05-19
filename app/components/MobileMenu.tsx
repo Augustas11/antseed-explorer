@@ -2,72 +2,66 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useRef } from "react";
+import { useEffect, useState } from "react";
+import { DOCS_HREF, NAV_ITEMS } from "../lib/nav-items";
 import SearchBar from "./SearchBar";
 import ThemeToggle from "./ThemeToggle";
 
-const NAV_ITEMS = [
-  { href: "/buyers", label: "Buyers" },
-  { href: "/holders", label: "Holders" },
-  { href: "/channels", label: "Channels" },
-  { href: "/services", label: "Services" },
-  { href: "/providers", label: "Providers" },
-  { href: "/mcp", label: "MCP" },
-  { href: "/contracts", label: "Contracts" },
-] as const;
-
 export default function MobileMenu() {
   const pathname = usePathname();
-  const checkboxRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
 
-  function closeMenu() {
-    if (checkboxRef.current) checkboxRef.current.checked = false;
-  }
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
 
   return (
     <div className="relative z-[90] shrink-0 md:hidden">
-      <input
-        ref={checkboxRef}
-        id="mobile-menu-toggle"
-        type="checkbox"
-        className="peer sr-only"
-        aria-label="Toggle menu"
-      />
-
-      <label
-        htmlFor="mobile-menu-toggle"
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
         aria-label="Open menu"
+        aria-expanded={open}
+        aria-controls="mobile-menu-panel"
         className="btn flex min-h-10 min-w-10 cursor-pointer items-center justify-center px-2.5 py-2"
       >
         <span className="sr-only">Menu</span>
         <span className="flex h-4 w-5 flex-col justify-between" aria-hidden="true">
-          <span className="h-px w-full bg-current transition-transform peer-checked:translate-y-[7.5px] peer-checked:rotate-45" />
-          <span className="h-px w-full bg-current transition-opacity peer-checked:opacity-0" />
-          <span className="h-px w-full bg-current transition-transform peer-checked:-translate-y-[7.5px] peer-checked:-rotate-45" />
+          <span className={`h-px w-full bg-current transition-transform ${open ? "translate-y-[7.5px] rotate-45" : ""}`} />
+          <span className={`h-px w-full bg-current transition-opacity ${open ? "opacity-0" : ""}`} />
+          <span className={`h-px w-full bg-current transition-transform ${open ? "-translate-y-[7.5px] -rotate-45" : ""}`} />
         </span>
-      </label>
+      </button>
 
-      <label
-        htmlFor="mobile-menu-toggle"
-        aria-label="Close menu backdrop"
-        className="pointer-events-none fixed inset-0 z-[70] cursor-default bg-bg/90 opacity-0 backdrop-blur-md transition-opacity duration-300 peer-checked:pointer-events-auto peer-checked:opacity-100"
+      <button
+        type="button"
+        aria-label="Close menu"
+        onClick={() => setOpen(false)}
+        className={`fixed inset-0 z-[70] cursor-default bg-bg/90 backdrop-blur-md transition-opacity duration-300 ${
+          open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+        }`}
       />
 
       <aside
+        id="mobile-menu-panel"
         aria-label="Mobile navigation"
-        className="fixed inset-y-0 right-0 z-[80] flex h-dvh w-screen translate-x-full flex-col border-l border-edge bg-bg shadow-2xl shadow-black/60 transition-transform duration-300 ease-out peer-checked:translate-x-0 sm:max-w-sm"
+        aria-hidden={!open}
+        className={`fixed inset-y-0 right-0 z-[80] flex h-dvh w-screen flex-col border-l border-edge bg-bg shadow-2xl shadow-black/60 transition-transform duration-300 ease-out sm:max-w-sm ${
+          open ? "translate-x-0" : "translate-x-full"
+        }`}
       >
         <div className="flex items-center justify-between gap-3 border-b border-edge p-4">
           <div>
             <div className="text-sm font-medium text-ink">Menu</div>
             <div className="text-xs text-muted">Navigate AntFeed</div>
           </div>
-          <label
-            htmlFor="mobile-menu-toggle"
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
             className="cursor-pointer rounded-md border border-edge px-2.5 py-1.5 text-xs text-muted hover:text-ink"
           >
             Close
-          </label>
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
@@ -82,7 +76,7 @@ export default function MobileMenu() {
                 <Link
                   key={item.href}
                   href={item.href}
-                  onClick={closeMenu}
+                  onClick={() => setOpen(false)}
                   className={`rounded-lg border px-3 py-3 text-sm transition-colors ${
                     active
                       ? "border-accent/40 bg-accent/10 text-accent"
@@ -94,7 +88,7 @@ export default function MobileMenu() {
               );
             })}
             <a
-              href="https://antseed.com/docs/overview"
+              href={DOCS_HREF}
               target="_blank"
               rel="noreferrer"
               className="rounded-lg border border-edge bg-bg/30 px-3 py-3 text-sm text-muted hover:text-ink"
