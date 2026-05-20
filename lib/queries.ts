@@ -358,12 +358,12 @@ export async function getHeroStats(): Promise<HeroStats> {
   // seller-provided opaque bytes (cumulative or null depending on seller
   // convention) and is not used here.
   //
-  // Paying Users: distinct over the union of (a) addresses that paid USDC
-  // into a channel and (b) addresses currently holding $ANTS (balance > 0),
-  // excluding protocol contracts. Recent/prior windows reflect transaction
-  // activity for USDC payers; $ANTS holders are treated as active-by-balance
-  // (no per-transfer timestamp without indexing more state). bothCount is
-  // the intersection so the UI can show disjoint segments that sum to total.
+  // Paying Users: distinct over the union of (a) addresses that sent USDC via
+  // a Deposited event (tx.from, not event.buyer — deposit() accepts a caller-
+  // supplied buyer param so args.buyer ≠ real payer) and (b) addresses
+  // currently holding $ANTS (liquid or staked), excluding protocol contracts.
+  // Recent/prior windows reflect deposit activity; $ANTS holders are treated
+  // as active-by-balance. bothCount is the intersection for UI segmentation.
   const r = await db.execute<any>(sql`
     WITH settled AS (
       SELECT timestamp, delta_usdc
@@ -389,7 +389,7 @@ export async function getHeroStats(): Promise<HeroStats> {
              bool_or(timestamp > ${sql.raw(day30)}) AS active_recent,
              bool_or(timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS active_prior
       FROM events
-      WHERE event_type IN ('settled','topup')
+      WHERE event_type = 'deposited'
         AND buyer_address IS NOT NULL
         AND timestamp IS NOT NULL
         AND timestamp > 0
@@ -483,10 +483,19 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
     ),
     rev AS (
       SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
-             COALESCE(SUM(delta_usdc),0)::float AS revenue,
-             COUNT(DISTINCT buyer_address)::int AS paying_users
+             COALESCE(SUM(delta_usdc),0)::float AS revenue
       FROM events
       WHERE event_type IN ('settled','topup')
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp > extract(epoch from now())::bigint - 30 * 86400
+      GROUP BY day
+    ),
+    payers AS (
+      SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
+             COUNT(DISTINCT buyer_address)::int AS paying_users
+      FROM events
+      WHERE event_type = 'deposited'
         AND buyer_address IS NOT NULL
         AND timestamp IS NOT NULL
         AND timestamp > 0
@@ -505,13 +514,14 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
         AND timestamp > extract(epoch from now())::bigint - 30 * 86400
       GROUP BY day
     )
-    SELECT to_char(d, 'YYYY-MM-DD')           AS day,
-           COALESCE(rev.revenue, 0)::float    AS revenue,
-           COALESCE(tok.tokens, 0)::bigint    AS tokens,
-           COALESCE(rev.paying_users, 0)::int AS paying_users
+    SELECT to_char(d, 'YYYY-MM-DD')              AS day,
+           COALESCE(rev.revenue, 0)::float       AS revenue,
+           COALESCE(tok.tokens, 0)::bigint       AS tokens,
+           COALESCE(payers.paying_users, 0)::int AS paying_users
     FROM days
-    LEFT JOIN rev ON rev.day = to_char(d, 'YYYY-MM-DD')
-    LEFT JOIN tok ON tok.day = to_char(d, 'YYYY-MM-DD')
+    LEFT JOIN rev    ON rev.day    = to_char(d, 'YYYY-MM-DD')
+    LEFT JOIN payers ON payers.day = to_char(d, 'YYYY-MM-DD')
+    LEFT JOIN tok    ON tok.day    = to_char(d, 'YYYY-MM-DD')
     ORDER BY d ASC
   `);
   return rows.rows.map((r: any) => ({
