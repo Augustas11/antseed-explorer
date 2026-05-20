@@ -1409,15 +1409,42 @@ export async function syncAntseedDeposits(
         }
       }
 
+      // For Deposited events, the event's `buyer` field is a caller-supplied
+      // parameter (deposit(address buyer, uint256 amount)) and can differ from
+      // the actual payer wallet. tx.from is the real payer. Fetch it per unique
+      // tx hash; most batches have only a handful of deposits so the extra RPC
+      // calls are acceptable. WithdrawalExecuted keeps args.buyer (msg.sender).
+      const depositedTxHashes = [
+        ...new Set(
+          (logs as any[])
+            .filter((l) => mapEventType(l.eventName) === "deposited")
+            .map((l) => l.transactionHash)
+            .filter(Boolean),
+        ),
+      ] as `0x${string}`[];
+      const txFromMap = new Map<string, string>();
+      for (const hash of depositedTxHashes) {
+        try {
+          const tx = await publicClient.getTransaction({ hash });
+          txFromMap.set(hash, tx.from.toLowerCase());
+        } catch {
+          // Non-fatal — fall back to args.buyer for this tx.
+        }
+      }
+
       const rows = (logs as any[]).map((log) => {
         const args = log.args || {};
         const eventType = mapEventType(log.eventName);
+        const isDeposited = eventType === "deposited";
+        const buyerAddress = isDeposited
+          ? (txFromMap.get(log.transactionHash) ?? (args.buyer as string | undefined)?.toLowerCase() ?? null)
+          : (args.buyer as string | undefined)?.toLowerCase() ?? null;
         return {
           txHash: log.transactionHash,
           logIndex: log.logIndex,
           blockNumber: Number(log.blockNumber),
           eventType: (eventType ?? "deposited") as EventType,
-          buyerAddress: (args.buyer as string | undefined)?.toLowerCase() ?? null,
+          buyerAddress,
           sellerAddress: null,
           channelId: null,
           // amount is escrow-USDC (6 decimals) — store as USDC float for
@@ -1425,7 +1452,7 @@ export async function syncAntseedDeposits(
           // DAU, but recording the amount is cheap and lets LTV land later
           // without a re-index.
           maxAmountUsdc:
-            eventType === "deposited" && args.amount != null
+            isDeposited && args.amount != null
               ? Number(args.amount) / USDC_DECIMALS
               : null,
           deltaUsdc: null,
@@ -1447,10 +1474,15 @@ export async function syncAntseedDeposits(
       });
 
       if (rows.length > 0) {
+        // Use DO UPDATE so that re-syncing historical blocks (after cursor reset)
+        // overwrites the old args.buyer value with the correct tx.from.
         const result = await db
           .insert(eventsTbl)
           .values(rows)
-          .onConflictDoNothing()
+          .onConflictDoUpdate({
+            target: [eventsTbl.txHash, eventsTbl.logIndex],
+            set: { buyerAddress: sql`EXCLUDED.buyer_address` },
+          })
           .returning({ id: eventsTbl.id });
         recordsAdded += result.length;
       }
