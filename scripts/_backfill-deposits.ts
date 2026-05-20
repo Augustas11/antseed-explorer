@@ -1,11 +1,13 @@
 // One-shot historical backfill for AntseedDeposits events on Base.
 // Patterned 1:1 on scripts/_backfill-channels.ts. Bypasses the production
 // sync lock so the running cron can keep going. Idempotent via
-// onConflictDoNothing on (tx_hash, log_index).
+// onConflictDoUpdate on (tx_hash, log_index) — overwrites buyer_address with
+// tx.from (the real payer wallet) rather than the event's buyer param.
 //
-// Why: The cron path runs Deposits with a small per-tick deadline; to land
-// the full 36+ days of history quickly we hit Base RPC directly with 9000-
-// block batches. Required to populate daily_dau for the parity check.
+// Why: deposit(address buyer, uint256 amount) accepts a caller-supplied buyer
+// so event.buyer ≠ actual payer. The cron path runs deposits with a tight
+// deadline and serial getTransaction calls — this script runs unbounded with
+// parallel tx fetches to land the full history quickly and correctly.
 //
 // Run:
 //   RPC_URL=https://mainnet.base.org npx tsx scripts/_backfill-deposits.ts
@@ -13,6 +15,7 @@
 import "dotenv/config";
 import { createPublicClient, http, type Log } from "viem";
 import { base } from "viem/chains";
+import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
 import { events as eventsTbl } from "../lib/schema";
 import {
@@ -102,12 +105,41 @@ async function main() {
       }
     }
 
+    // Fetch tx.from in parallel for all Deposited events in this batch.
+    // deposit(address buyer, uint256 amount) lets the caller specify a
+    // different buyer — tx.from is the real payer.
+    const depositedHashes = [
+      ...new Set(
+        (logs as any[])
+          .filter((l) => mapEventType(l.eventName) === "deposited")
+          .map((l) => l.transactionHash as `0x${string}`)
+          .filter(Boolean),
+      ),
+    ];
+    const txFromMap = new Map<string, string>();
+    if (depositedHashes.length > 0) {
+      const results = await Promise.allSettled(
+        depositedHashes.map((hash) => client.getTransaction({ hash })),
+      );
+      for (let i = 0; i < depositedHashes.length; i++) {
+        const r = results[i];
+        if (r.status === "fulfilled") {
+          txFromMap.set(depositedHashes[i], r.value.from.toLowerCase());
+        } else {
+          console.warn("[backfill-deposits] getTransaction failed for", depositedHashes[i], r.reason?.message?.slice(0, 100));
+        }
+      }
+    }
+
     const rows: any[] = [];
     for (const log of logs as any[]) {
       const eventType = mapEventType(log.eventName);
       if (!eventType) continue;
       const args = log.args || {};
-      const buyer = (args.buyer as string | undefined)?.toLowerCase() ?? null;
+      const isDeposited = eventType === "deposited";
+      const buyer = isDeposited
+        ? (txFromMap.get(log.transactionHash) ?? (args.buyer as string | undefined)?.toLowerCase() ?? null)
+        : (args.buyer as string | undefined)?.toLowerCase() ?? null;
       const amount = args.amount != null ? Number(args.amount) / USDC_DECIMALS : null;
       rows.push({
         txHash: log.transactionHash,
@@ -117,7 +149,7 @@ async function main() {
         buyerAddress: buyer,
         sellerAddress: null,
         channelId: null,
-        maxAmountUsdc: eventType === "deposited" ? amount : null,
+        maxAmountUsdc: isDeposited ? amount : null,
         deltaUsdc: null,
         refundUsdc: eventType === "withdrawal_executed" ? amount : null,
         settledAmountUsdc: null,
@@ -134,7 +166,13 @@ async function main() {
     }
 
     if (rows.length > 0) {
-      const result = await db.insert(eventsTbl).values(rows).onConflictDoNothing().returning({ id: eventsTbl.id });
+      // onConflictDoUpdate so re-runs overwrite old args.buyer with correct tx.from.
+      const result = await db.insert(eventsTbl).values(rows)
+        .onConflictDoUpdate({
+          target: [eventsTbl.txHash, eventsTbl.logIndex],
+          set: { buyerAddress: sql`EXCLUDED.buyer_address` },
+        })
+        .returning({ id: eventsTbl.id });
       totalAdded += result.length;
     }
 

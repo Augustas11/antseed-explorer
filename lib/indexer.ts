@@ -1584,9 +1584,10 @@ export async function syncAntseedDeposits(
 
       // For Deposited events, the event's `buyer` field is a caller-supplied
       // parameter (deposit(address buyer, uint256 amount)) and can differ from
-      // the actual payer wallet. tx.from is the real payer. Fetch it per unique
-      // tx hash; most batches have only a handful of deposits so the extra RPC
-      // calls are acceptable. WithdrawalExecuted keeps args.buyer (msg.sender).
+      // the actual payer wallet. tx.from is the real payer. Fetch in parallel;
+      // steady-state batches have 0-2 deposits so this is fast. Rate-limit
+      // failures are logged (not silently swallowed) and fall back to args.buyer.
+      // WithdrawalExecuted keeps args.buyer (msg.sender calls withdraw for self).
       const depositedTxHashes = [
         ...new Set(
           (logs as any[])
@@ -1596,12 +1597,17 @@ export async function syncAntseedDeposits(
         ),
       ] as `0x${string}`[];
       const txFromMap = new Map<string, string>();
-      for (const hash of depositedTxHashes) {
-        try {
-          const tx = await publicClient.getTransaction({ hash });
-          txFromMap.set(hash, tx.from.toLowerCase());
-        } catch {
-          // Non-fatal — fall back to args.buyer for this tx.
+      if (depositedTxHashes.length > 0) {
+        const results = await Promise.allSettled(
+          depositedTxHashes.map((hash) => publicClient.getTransaction({ hash })),
+        );
+        for (let i = 0; i < depositedTxHashes.length; i++) {
+          const r = results[i];
+          if (r.status === "fulfilled") {
+            txFromMap.set(depositedTxHashes[i], r.value.from.toLowerCase());
+          } else {
+            console.warn("[indexer] getTransaction failed for deposit", depositedTxHashes[i], (r.reason as any)?.message?.slice(0, 80));
+          }
         }
       }
 
