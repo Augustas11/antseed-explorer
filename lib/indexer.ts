@@ -1664,6 +1664,20 @@ export async function syncAntseedDeposits(
           })
           .returning({ id: eventsTbl.id });
         recordsAdded += result.length;
+
+        // Ensure every depositor has a buyer_profile row so they appear on
+        // /buyers even if they never opened a channel. Profiles land with 0
+        // sessions / $0 settled and sort to the bottom of the qualified view.
+        const depositors = [
+          ...new Set(
+            rows
+              .filter((r) => r.eventType === "deposited" && r.buyerAddress)
+              .map((r) => r.buyerAddress as string),
+          ),
+        ];
+        if (depositors.length > 0) {
+          await recomputeBuyers(depositors);
+        }
       }
     }
 
