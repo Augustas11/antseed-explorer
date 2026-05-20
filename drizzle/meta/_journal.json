@@ -50,6 +50,13 @@
       "when": 1779302400000,
       "tag": "0006_provider_operator_address",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779494400000,
+      "tag": "0007_add_staked_balance",
+      "breakpoints": true
     }
   ]
 }
