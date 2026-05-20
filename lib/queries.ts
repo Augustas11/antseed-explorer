@@ -285,7 +285,7 @@ export async function getNetworkStats() {
       (SELECT COALESCE(SUM(ghost_sessions),0)::int FROM buyer_profiles) AS total_ghosts,
       (SELECT COUNT(*)::int FROM events WHERE event_type = 'metadata_recorded') AS metadata_records,
       (SELECT COUNT(*)::int FROM events WHERE event_type = 'ants_claim') AS ants_claims,
-      (SELECT COUNT(*)::int FROM ants_holders WHERE balance > 0) AS ants_holders_nonzero,
+      (SELECT COUNT(*)::int FROM ants_holders WHERE balance + staked_balance > 0) AS ants_holders_nonzero,
       (SELECT value FROM indexer_state WHERE key = 'last_indexed_block') AS last_indexed_block,
       (SELECT value FROM indexer_state WHERE key = 'last_head_block') AS last_head_block,
       (SELECT value FROM indexer_state WHERE key = 'last_sync_ts') AS last_sync_ts,
@@ -398,7 +398,7 @@ export async function getHeroStats(): Promise<HeroStats> {
     ant_holders_clean AS (
       SELECT address AS addr
       FROM ants_holders
-      WHERE balance > 0
+      WHERE balance + staked_balance > 0
         AND address NOT IN (${sql.raw(excludeSql)})
     ),
     paying AS (
@@ -1551,6 +1551,8 @@ export interface HolderRow {
   address: string;
   balance_wei: string;
   balance_ants: number;
+  staked_balance_wei: string;
+  staked_balance_ants: number;
   pct_supply: number;
   first_seen_block: number | null;
   last_seen_block: number | null;
@@ -1568,27 +1570,29 @@ export async function listHolders(opts: {
 
   const r = await db.execute<any>(sql`
     WITH circulating AS (
-      SELECT COALESCE(SUM(balance), 0) AS total
+      SELECT COALESCE(SUM(balance + staked_balance), 0) AS total
       FROM ants_holders
-      WHERE balance > 0
+      WHERE balance + staked_balance > 0
         AND address NOT IN (${sql.raw(excludeSql)})
     )
     SELECT
       address,
-      balance::text                       AS balance_wei,
-      (balance / 1e18)::float             AS balance_ants,
+      balance::text                            AS balance_wei,
+      (balance / 1e18)::float                  AS balance_ants,
+      staked_balance::text                     AS staked_balance_wei,
+      (staked_balance / 1e18)::float           AS staked_balance_ants,
       CASE
         WHEN (SELECT total FROM circulating) > 0
-        THEN (balance * 100.0 / (SELECT total FROM circulating))::float
+        THEN ((balance + staked_balance) * 100.0 / (SELECT total FROM circulating))::float
         ELSE 0
-      END                                  AS pct_supply,
+      END                                       AS pct_supply,
       first_seen_block,
       last_seen_block,
       updated_at
     FROM ants_holders
-    WHERE balance > 0
+    WHERE balance + staked_balance > 0
       AND address NOT IN (${sql.raw(excludeSql)})
-    ORDER BY balance DESC
+    ORDER BY (balance + staked_balance) DESC
     LIMIT ${sql.raw(String(limit))}
     OFFSET ${sql.raw(String(offset))}
   `);
@@ -1597,6 +1601,8 @@ export async function listHolders(opts: {
     address: x.address,
     balance_wei: String(x.balance_wei ?? "0"),
     balance_ants: Number(x.balance_ants ?? 0),
+    staked_balance_wei: String(x.staked_balance_wei ?? "0"),
+    staked_balance_ants: Number(x.staked_balance_ants ?? 0),
     pct_supply: Number(x.pct_supply ?? 0),
     first_seen_block:
       x.first_seen_block != null ? Number(x.first_seen_block) : null,
@@ -1612,7 +1618,7 @@ export async function countHolders(): Promise<number> {
   const r = await db.execute<{ n: number }>(sql`
     SELECT COUNT(*)::int AS n
     FROM ants_holders
-    WHERE balance > 0
+    WHERE balance + staked_balance > 0
       AND address NOT IN (${sql.raw(excludeSql)})
   `);
   return Number(r.rows[0]?.n ?? 0);

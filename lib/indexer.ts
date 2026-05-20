@@ -7,11 +7,13 @@ import {
   ANTS_TOKEN_DEPLOYMENT_BLOCK,
   EMISSIONS_DEPLOYMENT_BLOCK,
   ANTSEED_DEPOSITS_DEPLOYMENT_BLOCK,
+  ANTSEED_STAKING_DEPLOYMENT_BLOCK,
   IDENTITY_REGISTRY_DEPLOYMENT_BLOCK,
   channelsAbi,
   antseedStatsAbi,
   antsTokenAbi,
   emissionsAbi,
+  stakingAbi,
   depositsAbi,
   identityRegistryAbi,
   type EventType,
@@ -127,12 +129,21 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
     }
 
     const elapsedAfterEmissions = Date.now() - syncStart;
-    // Split remaining tail budget across deposits + identity. Deposits has
-    // very low event density; identity is doing a full backfill from
-    // 41_663_783 (Feb 2026) on first sync so it benefits from the larger
-    // half once deposits has caught up.
-    const tailRemainingMs = Math.max(4_000, cronBudgetMs - elapsedAfterEmissions - 2_000);
-    const depositsDeadline = Math.max(2_000, Math.floor(tailRemainingMs / 2));
+    // Split remaining tail budget across staking + deposits + identity.
+    // Staking has very low density (sellers stake infrequently); deposits
+    // similarly sparse; identity is doing a full backfill from 41_663_783
+    // on first sync so it benefits from the larger slice once the others catch up.
+    const tailRemainingMs = Math.max(6_000, cronBudgetMs - elapsedAfterEmissions - 2_000);
+    const stakingDeadline = Math.max(2_000, Math.floor(tailRemainingMs / 3));
+    try {
+      await syncStaking({ deadlineMs: stakingDeadline });
+    } catch (e) {
+      console.warn("[indexer] staking sync failed:", (e as Error)?.message || e);
+    }
+
+    const elapsedAfterStaking = Date.now() - syncStart;
+    const tailAfterStakingMs = Math.max(4_000, cronBudgetMs - elapsedAfterStaking - 2_000);
+    const depositsDeadline = Math.max(2_000, Math.floor(tailAfterStakingMs / 2));
     try {
       await syncAntseedDeposits({ deadlineMs: depositsDeadline });
     } catch (e) {
@@ -1271,6 +1282,168 @@ export async function syncEmissions(
     fromBlock: fromBlockStart.toString(),
     toBlock: head.toString(),
     claimsProcessed,
+  };
+}
+
+// ============================================================================
+// AntseedStaking.Staked / Unstaked — seller-side staking events.
+// Updates staked_balance in ants_holders so that staked ANTS count toward the
+// "$ANT holders" headcount even though liquid balance is 0 while staked.
+// Staked: +amount. Unstaked: -amount (slashed portion already gone from their
+// stake; we reduce by the full amount that left the staking contract).
+// ============================================================================
+
+const STAKING_CURSOR_KEY = "last_indexed_block_staking";
+const STAKING_BATCH_KEY = "log_batch_size_staking";
+const STAKING_BATCH_INITIAL = 50_000n;
+const STAKING_BATCH_MAX = 100_000n;
+
+interface StakingSyncResult {
+  ok: boolean;
+  fromBlock: string;
+  toBlock: string;
+  eventsProcessed: number;
+  error?: string;
+}
+
+export async function syncStaking(
+  opts: { deadlineMs?: number } = {},
+): Promise<StakingSyncResult> {
+  const last = await getState(STAKING_CURSOR_KEY);
+  const lastIndexed = BigInt(
+    last || (ANTSEED_STAKING_DEPLOYMENT_BLOCK - 1n).toString(),
+  );
+
+  let head: bigint;
+  try {
+    head = await publicClient.getBlockNumber();
+  } catch (e: any) {
+    return {
+      ok: false,
+      fromBlock: "?",
+      toBlock: "?",
+      eventsProcessed: 0,
+      error: e?.message || String(e),
+    };
+  }
+
+  const fromBlockStart = lastIndexed + 1n;
+  if (fromBlockStart > head) {
+    return {
+      ok: true,
+      fromBlock: fromBlockStart.toString(),
+      toBlock: head.toString(),
+      eventsProcessed: 0,
+    };
+  }
+
+  const persistedBatch = await getState(STAKING_BATCH_KEY);
+  let batchSize = persistedBatch ? BigInt(persistedBatch) : STAKING_BATCH_INITIAL;
+  if (batchSize > STAKING_BATCH_MAX) batchSize = STAKING_BATCH_MAX;
+  let consecutiveSuccesses = 0;
+  let eventsProcessed = 0;
+  const startedAt = Date.now();
+  const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
+  const cursor = { from: fromBlockStart };
+
+  while (cursor.from <= head) {
+    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
+      return {
+        ok: true,
+        fromBlock: fromBlockStart.toString(),
+        toBlock: cursor.from.toString(),
+        eventsProcessed,
+        error: "deadline_partial",
+      };
+    }
+
+    const to =
+      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
+
+    let logs: Log[];
+    let rateLimitRetries = 0;
+    while (true) {
+      try {
+        logs = await publicClient.getLogs({
+          address: CONTRACTS.AntseedStaking as `0x${string}`,
+          events: stakingAbi as any,
+          fromBlock: cursor.from,
+          toBlock: to,
+        });
+        break;
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        if (isRangeError(msg) && batchSize > 1n) {
+          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
+          if (batchSize < 1n) batchSize = 1n;
+          await setState(STAKING_BATCH_KEY, batchSize.toString());
+          consecutiveSuccesses = 0;
+          break;
+        }
+        if (isRateLimitError(msg) && rateLimitRetries < 3) {
+          rateLimitRetries++;
+          await sleep(1500 * rateLimitRetries);
+          continue;
+        }
+        return {
+          ok: false,
+          fromBlock: cursor.from.toString(),
+          toBlock: to.toString(),
+          eventsProcessed,
+          error: msg,
+        };
+      }
+    }
+    if (!logs!) continue;
+
+    if (logs.length > 0) {
+      // Coalesce net staked_balance delta per address across this batch.
+      const deltas = new Map<string, bigint>();
+      for (const log of logs as any[]) {
+        const args = log.args || {};
+        const addr = (args.seller as string | undefined)?.toLowerCase();
+        if (!addr) continue;
+        const amount = BigInt(args.amount ?? 0n);
+        const prev = deltas.get(addr) ?? 0n;
+        if (log.eventName === "Staked") {
+          deltas.set(addr, prev + amount);
+        } else if (log.eventName === "Unstaked") {
+          deltas.set(addr, prev - amount);
+        }
+      }
+      eventsProcessed += logs.length;
+
+      const now = Math.floor(Date.now() / 1000);
+      for (const [addr, delta] of deltas) {
+        if (delta === 0n) continue;
+        const deltaStr = delta.toString();
+        await db.execute(sql`
+          INSERT INTO ants_holders (address, balance, staked_balance, updated_at)
+          VALUES (${addr}, '0', ${sql.raw(`'${deltaStr}'::numeric`)}, ${now})
+          ON CONFLICT (address) DO UPDATE SET
+            staked_balance = GREATEST('0'::numeric, ants_holders.staked_balance + ${sql.raw(`'${deltaStr}'::numeric`)}),
+            updated_at = ${now}
+        `);
+      }
+    }
+
+    await setState(STAKING_CURSOR_KEY, to.toString());
+    consecutiveSuccesses += 1;
+    if (consecutiveSuccesses >= 5 && batchSize < STAKING_BATCH_MAX) {
+      batchSize =
+        batchSize * 2n > STAKING_BATCH_MAX ? STAKING_BATCH_MAX : batchSize * 2n;
+      await setState(STAKING_BATCH_KEY, batchSize.toString());
+      consecutiveSuccesses = 0;
+    }
+    cursor.from = to + 1n;
+    await sleep(150);
+  }
+
+  return {
+    ok: true,
+    fromBlock: fromBlockStart.toString(),
+    toBlock: head.toString(),
+    eventsProcessed,
   };
 }
 

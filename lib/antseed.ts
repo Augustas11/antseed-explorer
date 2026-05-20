@@ -24,6 +24,7 @@ export const CHANNELS_DEPLOYMENT_BLOCK = 44_469_557n;
 export const ANTSEED_STATS_DEPLOYMENT_BLOCK = 44_469_557n;
 export const ANTS_TOKEN_DEPLOYMENT_BLOCK = 44_469_557n;
 export const EMISSIONS_DEPLOYMENT_BLOCK = 45_937_736n;
+export const ANTSEED_STAKING_DEPLOYMENT_BLOCK = 44_469_557n;
 // Verified via viem getCode bisection against Base RPC: 0x0F7a...9fD2 has
 // no code at block 44_469_556 and has code at 44_469_557, so AntseedDeposits
 // was deployed in the same batch as AntseedChannels (2026-04-09 09:54:21 UTC).
@@ -194,6 +195,31 @@ export const antsTokenAbi = [
       { indexed: true, name: "from", type: "address" },
       { indexed: true, name: "to", type: "address" },
       { indexed: false, name: "value", type: "uint256" },
+    ],
+  },
+] as const;
+
+// AntseedStaking — seller-side staking contract. Staked tokens leave the
+// seller's liquid balance (showing as balance=0 in ants_holders) but remain
+// economically held by the seller. Both events are needed to maintain the
+// staked_balance column so "holds $ANTS" counts stakers correctly.
+export const stakingAbi = [
+  {
+    type: "event",
+    name: "Staked",
+    inputs: [
+      { indexed: true, name: "seller", type: "address" },
+      { indexed: true, name: "agentId", type: "uint256" },
+      { indexed: false, name: "amount", type: "uint256" },
+    ],
+  },
+  {
+    type: "event",
+    name: "Unstaked",
+    inputs: [
+      { indexed: true, name: "seller", type: "address" },
+      { indexed: false, name: "amount", type: "uint256" },
+      { indexed: false, name: "slashed", type: "uint256" },
     ],
   },
 ] as const;

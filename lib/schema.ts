@@ -120,14 +120,14 @@ export const dailyDau = pgTable("daily_dau", {
 });
 
 // Live $ANT balance per address. Maintained incrementally by the indexer
-// from Transfer events on the ANTS token. Balance is stored as raw
-// uint256-scale wei (numeric arbitrary-precision); an address counts as a
-// holder when balance > 0.
+// from Transfer events (balance) and Staked/Unstaked events (staked_balance).
+// An address counts as a holder when balance + staked_balance > 0.
 export const antsHolders = pgTable(
   "ants_holders",
   {
     address: text("address").primaryKey(),
     balance: numeric("balance", { precision: 78, scale: 0 }).notNull().default("0"),
+    stakedBalance: numeric("staked_balance", { precision: 78, scale: 0 }).notNull().default("0"),
     firstSeenBlock: bigint("first_seen_block", { mode: "number" }),
     lastSeenBlock: bigint("last_seen_block", { mode: "number" }),
     updatedAt: bigint("updated_at", { mode: "number" }),

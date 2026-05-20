@@ -29,8 +29,8 @@ export default async function HoldersPage({
         <h1 className="text-2xl font-semibold tracking-tight">$ANTS holders</h1>
         <p className="text-muted text-sm mt-1">
           {total > 0
-            ? `${fmtNum(total)} addresses currently holding $ANTS. Protocol contracts excluded; %share is of indexed circulating balance.`
-            : "Backfill in progress — Transfer event index is still walking forward from the token deploy block. Numbers will populate as the cron catches up."}
+            ? `${fmtNum(total)} addresses holding $ANTS (liquid or staked). Protocol contracts excluded; %share is of indexed circulating supply.`
+            : "Backfill in progress — Transfer and Staking event indexes are still walking forward from deploy blocks. Numbers will populate as the cron catches up."}
         </p>
       </div>
 
@@ -45,7 +45,8 @@ export default async function HoldersPage({
               <tr>
                 <th>#</th>
                 <th>Address</th>
-                <th className="text-right">$ANTS</th>
+                <th className="text-right">$ANTS (liquid)</th>
+                <th className="text-right">Staked</th>
                 <th className="text-right">% supply</th>
               </tr>
             </thead>
@@ -63,6 +64,9 @@ export default async function HoldersPage({
                   </td>
                   <td className="text-right tabular-nums">
                     {fmtCompact(h.balance_ants)}
+                  </td>
+                  <td className="text-right tabular-nums text-muted">
+                    {h.staked_balance_ants > 0 ? fmtCompact(h.staked_balance_ants) : "—"}
                   </td>
                   <td className="text-right tabular-nums text-muted">
                     {h.pct_supply.toFixed(2)}%
