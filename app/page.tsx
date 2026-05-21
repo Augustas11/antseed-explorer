@@ -126,17 +126,20 @@ export default async function HomePage({
           sublabel={
             <>
               {fmtNum(hero.usdcPayers)} paid USDC ·{" "}
-              <Link
-                href="/holders"
+              {fmtNum(hero.antsClaimers)} claimed $ANTS
+              {" · "}
+              <a
+                href="https://diem.antseed.com/"
+                target="_blank"
+                rel="noreferrer"
                 className="text-accent hover:underline underline-offset-2"
               >
-                {fmtNum(hero.antHolders)} hold $ANTS
-              </Link>
-              {hero.bothCount > 0 ? ` · ${fmtNum(hero.bothCount)} both` : ""}
+                {fmtNum(hero.diemPoolUsers)} in DIEM
+              </a>
             </>
           }
           delta={pctDelta(hero.recentPayingUsers, hero.priorPayingUsers)}
-          tooltip="Distinct addresses that either paid USDC into a channel or currently hold $ANTS (excluding protocol contracts). Headline = USDC payers + $ANTS holders − overlap."
+          tooltip="Distinct addresses that paid USDC, claimed $ANTS, or are active in the DIEM pool. Current $ANTS holders are not counted unless they also match one of those sources."
           sparkline={<Sparkline data={usersSpark} color="#f5b656" />}
         />
       </section>

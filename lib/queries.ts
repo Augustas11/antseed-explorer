@@ -17,6 +17,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { canonicalize, groupServices, type ServiceGroup } from "./services-canonical";
+import { getActiveDiemPoolUsers } from "./diem";
 
 // Public row shape kept identical to the SQLite era so the UI doesn't have to
 // change. Drizzle returns camelCase from the schema; we re-shape on the way out.
@@ -323,16 +324,15 @@ export interface HeroStats {
   totalTokensOutput: number;
   recentTokens: number;
   priorTokens: number;
-  // Paying Users — distinct addresses that either paid USDC into a channel
-  // or hold $ANTS (live balance > 0, excluding protocol contracts).
+  // Paying Users — distinct addresses that paid USDC, claimed $ANTS, or are
+  // active in the Diem provider-capacity pool.
   totalPayingUsers: number;
   recentPayingUsers: number;
   priorPayingUsers: number;
   // Sub-counts so the UI can attribute the headline to its sources.
-  // totalPayingUsers = usdcPayers + antHolders - bothCount.
   usdcPayers: number;
-  antHolders: number;
-  bothCount: number;
+  antsClaimers: number;
+  diemPoolUsers: number;
 }
 
 export async function getHeroStats(): Promise<HeroStats> {
@@ -342,11 +342,10 @@ export async function getHeroStats(): Promise<HeroStats> {
   const day30 = String(now - 30 * 86400);
   const day60 = String(now - 60 * 86400);
 
-  // Inline non-user exclusion list as a SQL value-list so the whole hero
-  // payload — including the holders union — stays a single round-trip.
-  // ANTS_NON_USER_ADDRESSES is a fixed const, not user input.
-  const { ANTS_NON_USER_ADDRESSES } = await import("./antseed");
-  const excludeSql = ANTS_NON_USER_ADDRESSES.map((a) => `'${a}'`).join(",");
+  const diemPool = await getActiveDiemPoolUsers();
+  const diemPoolUsersSql = diemPool.addresses.length
+    ? diemPool.addresses.map((a) => `('${a}')`).join(",")
+    : "";
 
   // Revenue: SUM(delta_usdc) per ChannelSettled event — delta is the
   // per-batch amount actually moved.
@@ -360,10 +359,10 @@ export async function getHeroStats(): Promise<HeroStats> {
   //
   // Paying Users: distinct over the union of (a) addresses that sent USDC via
   // a Deposited event (tx.from, not event.buyer — deposit() accepts a caller-
-  // supplied buyer param so args.buyer ≠ real payer) and (b) addresses
-  // currently holding $ANTS (liquid or staked), excluding protocol contracts.
-  // Recent/prior windows reflect deposit activity; $ANTS holders are treated
-  // as active-by-balance. bothCount is the intersection for UI segmentation.
+  // supplied buyer param so args.buyer ≠ real payer), (b) addresses that
+  // claimed $ANTS, and (c) wallets currently active in the Diem provider-
+  // capacity pool. Diem exposes live stakerCount; when DIEM_ENUMERATE_USERS=1
+  // and the RPC supports historical logs, we also de-dupe exact DIEM addresses.
   const r = await db.execute<any>(sql`
     WITH settled AS (
       SELECT timestamp, delta_usdc
@@ -395,11 +394,25 @@ export async function getHeroStats(): Promise<HeroStats> {
         AND timestamp > 0
       GROUP BY buyer_address
     ),
-    ant_holders_clean AS (
-      SELECT address AS addr
-      FROM ants_holders
-      WHERE balance + staked_balance > 0
-        AND address NOT IN (${sql.raw(excludeSql)})
+    ants_claimers AS (
+      SELECT buyer_address AS addr,
+             bool_or(timestamp > ${sql.raw(day30)}) AS active_recent,
+             bool_or(timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS active_prior
+      FROM events
+      WHERE event_type = 'ants_claim'
+        AND buyer_address IS NOT NULL
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+      GROUP BY buyer_address
+    ),
+    diem_pool_users AS (
+      ${
+        diemPool.exactAddresses && diemPoolUsersSql
+          ? sql.raw(`SELECT addr FROM (VALUES ${diemPoolUsersSql}) AS v(addr)`)
+          : sql.raw(
+              `SELECT ('diem_pool_user_' || n)::text AS addr FROM generate_series(1, ${diemPool.count}) AS n`,
+            )
+      }
     ),
     paying AS (
       SELECT addr,
@@ -408,7 +421,9 @@ export async function getHeroStats(): Promise<HeroStats> {
       FROM (
         SELECT addr, active_recent, active_prior FROM usdc_payers
         UNION ALL
-        SELECT addr, TRUE AS active_recent, FALSE AS active_prior FROM ant_holders_clean
+        SELECT addr, active_recent, active_prior FROM ants_claimers
+        UNION ALL
+        SELECT addr, TRUE AS active_recent, FALSE AS active_prior FROM diem_pool_users
       ) u
       GROUP BY addr
     )
@@ -427,12 +442,8 @@ export async function getHeroStats(): Promise<HeroStats> {
       (SELECT COUNT(*)::int                             FROM paying WHERE active_recent) AS recent_paying_users,
       (SELECT COUNT(*)::int                             FROM paying WHERE active_prior)  AS prior_paying_users,
       (SELECT COUNT(*)::int                             FROM usdc_payers) AS usdc_payers,
-      (SELECT COUNT(*)::int                             FROM ant_holders_clean) AS ant_holders,
-      (SELECT COUNT(*)::int FROM (
-        SELECT addr FROM usdc_payers
-        INTERSECT
-        SELECT addr FROM ant_holders_clean
-      ) i) AS both_count
+      (SELECT COUNT(*)::int                             FROM ants_claimers) AS ants_claimers,
+      (SELECT COUNT(*)::int                             FROM diem_pool_users) AS diem_pool_users
   `);
 
   const x = r.rows[0] ?? {};
@@ -449,8 +460,8 @@ export async function getHeroStats(): Promise<HeroStats> {
     recentPayingUsers: Number(x.recent_paying_users ?? 0),
     priorPayingUsers: Number(x.prior_paying_users ?? 0),
     usdcPayers: Number(x.usdc_payers ?? 0),
-    antHolders: Number(x.ant_holders ?? 0),
-    bothCount: Number(x.both_count ?? 0),
+    antsClaimers: Number(x.ants_claimers ?? 0),
+    diemPoolUsers: Number(x.diem_pool_users ?? 0),
   };
 }
 
@@ -473,6 +484,8 @@ export interface HeroSparklinePoint {
 // charts, just shape signal. Tokens come from MetadataRecorded events
 // (canonical, matches the hero card source).
 export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
+  const diemPool = await getActiveDiemPoolUsers();
+  const diemPoolCount = diemPool.count;
   const rows = await db.execute<any>(sql`
     WITH days AS (
       SELECT generate_series(
@@ -491,15 +504,19 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
         AND timestamp > extract(epoch from now())::bigint - 30 * 86400
       GROUP BY day
     ),
-    payers AS (
+    paying_events AS (
       SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
-             COUNT(DISTINCT buyer_address)::int AS paying_users
+             buyer_address AS addr
       FROM events
-      WHERE event_type = 'deposited'
+      WHERE event_type IN ('deposited', 'ants_claim')
         AND buyer_address IS NOT NULL
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp > extract(epoch from now())::bigint - 30 * 86400
+    ),
+    payers AS (
+      SELECT day, COUNT(DISTINCT addr)::int AS paying_users
+      FROM paying_events
       GROUP BY day
     ),
     tok AS (
@@ -517,7 +534,14 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
     SELECT to_char(d, 'YYYY-MM-DD')              AS day,
            COALESCE(rev.revenue, 0)::float       AS revenue,
            COALESCE(tok.tokens, 0)::bigint       AS tokens,
-           COALESCE(payers.paying_users, 0)::int AS paying_users
+           (
+             COALESCE(payers.paying_users, 0)::int
+             + CASE
+                 WHEN d = date_trunc('day', to_timestamp(extract(epoch from now())::bigint))::date
+                 THEN ${sql.raw(String(diemPoolCount))}
+                 ELSE 0
+               END
+           )::int AS paying_users
     FROM days
     LEFT JOIN rev    ON rev.day    = to_char(d, 'YYYY-MM-DD')
     LEFT JOIN payers ON payers.day = to_char(d, 'YYYY-MM-DD')
