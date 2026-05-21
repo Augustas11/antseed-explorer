@@ -22,7 +22,6 @@ import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./d
 import { events as eventsTbl, buyerProfiles, providerDirectory } from "./schema";
 import { sql } from "drizzle-orm";
 import { calculateTrustScore } from "./score";
-import { emit } from "./emitter";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 
@@ -363,20 +362,6 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         .onConflictDoNothing()
         .returning({ id: eventsTbl.id });
       eventsAdded += result.length;
-      if (result.length > 0) {
-        for (const row of rows) {
-          emit({
-            type: row.eventType,
-            txHash: row.txHash,
-            blockNumber: row.blockNumber,
-            buyerAddress: row.buyerAddress,
-            sellerAddress: row.sellerAddress,
-            channelId: row.channelId,
-            deltaUsdc: row.deltaUsdc,
-            timestamp: row.timestamp,
-          });
-        }
-      }
     }
 
     await setState("last_indexed_block", to.toString());
