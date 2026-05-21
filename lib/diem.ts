@@ -40,13 +40,28 @@ export async function getActiveDiemPoolUsers(): Promise<DiemPoolUserSnapshot> {
     return activeStakersCache.snapshot;
   }
 
-  const stakerCount = Number(
-    await publicClient.readContract({
-      address: DIEM_STAKING_PROXY,
-      abi: diemStakingAbi,
-      functionName: "stakerCount",
-    }),
-  );
+  // SSR is on the hot path here; the home page renders every request and
+  // base.drpc.org has gone unresponsive in the past (~8s timeout + 1 retry =
+  // up to 16s before this returns), which pushes past Vercel's function
+  // timeout and takes the whole homepage down. Treat RPC failure as a soft
+  // miss instead.
+  let stakerCount: number;
+  try {
+    stakerCount = Number(
+      await publicClient.readContract({
+        address: DIEM_STAKING_PROXY,
+        abi: diemStakingAbi,
+        functionName: "stakerCount",
+      }),
+    );
+  } catch (e: any) {
+    console.warn("[diem] stakerCount RPC failed; using fallback", e?.message ?? e);
+    if (activeStakersCache) return activeStakersCache.snapshot;
+    const snapshot = { addresses: [], count: 0, exactAddresses: false };
+    // Re-try in ~60s rather than the full 10min TTL so a flapping RPC recovers fast.
+    activeStakersCache = { at: now - (CACHE_TTL_MS - 60_000), snapshot };
+    return snapshot;
+  }
 
   if (!ENUMERATE_POOL_USERS) {
     const snapshot = {
