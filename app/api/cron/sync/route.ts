@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sync, refreshProviderDirectory } from "@/lib/indexer";
+import { refreshDiemPoolSnapshot } from "@/lib/diem";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +33,13 @@ export async function GET(req: NextRequest) {
     // 50s deadline leaves 10s headroom under Vercel Pro's 60s cap.
     const result = await sync({ force: true, deadlineMs: 50_000 });
     await refreshProviderDirectory();
-    return NextResponse.json(result);
+    // Persist the DIEM pool snapshot so the SSR home page never has to do a
+    // Base RPC for stakerCount. Errors are swallowed inside the refresher.
+    const diem = await refreshDiemPoolSnapshot();
+    return NextResponse.json({
+      ...result,
+      diem: diem ? { count: diem.count, exactAddresses: diem.exactAddresses } : null,
+    });
   } catch (e: any) {
     // DrizzleQueryError stores the real Postgres/Neon error in e.cause
     const cause = e?.cause;

@@ -35,8 +35,6 @@ export default async function HomePage({
   searchParams: { range?: string };
 }) {
   // No page-load sync on Vercel — cron handles indexing.
-  // Serialized — Promise.all of multiple Neon HTTP queries occasionally
-  // returns empty rows on cold-start serverless invocations.
   const range = searchParams.range || "30d";
   const rangeLabel =
     range === "24h"
@@ -47,30 +45,39 @@ export default async function HomePage({
       ? "all time"
       : "last 30d";
 
-  const stats = await getNetworkStats();
-  const hero = await getHeroStats();
-  const sparks = await getHeroSparklines();
+  // Parallel fanout: all queries are independent. Older versions of this file
+  // serialized due to a Neon HTTP cold-start bug, but the heavy contributor to
+  // SSR latency (Base RPC inside getHeroStats / getHeroSparklines) now reads
+  // from a DB-cached snapshot in lib/diem.ts, so the remaining queries are
+  // pure Neon HTTP and run fine concurrently.
+  const dailyP =
+    range === "24h"
+      ? getHourlyVolume(24)
+      : range === "7d"
+      ? getDailyVolume(7)
+      : range === "all"
+      ? getDailyVolume(9999)
+      : getDailyVolume(30);
+  const tokensP =
+    range === "24h"
+      ? getHourlyTokens(24)
+      : range === "7d"
+      ? getDailyTokens(7)
+      : range === "all"
+      ? getDailyTokens(9999)
+      : getDailyTokens(30);
+  const [stats, hero, sparks, daily, tokens, recent, top] = await Promise.all([
+    getNetworkStats(),
+    getHeroStats(),
+    getHeroSparklines(),
+    dailyP,
+    tokensP,
+    getRecentEvents(20),
+    listBuyers({ limit: 10, sort: "score" }),
+  ]);
   const revenueSpark = sparks.map((p) => ({ x: p.day, y: p.revenue }));
   const tokensSpark = sparks.map((p) => ({ x: p.day, y: p.tokens }));
   const usersSpark = sparks.map((p) => ({ x: p.day, y: p.paying_users }));
-  const daily =
-    range === "24h"
-      ? await getHourlyVolume(24)
-      : range === "7d"
-      ? await getDailyVolume(7)
-      : range === "all"
-      ? await getDailyVolume(9999)
-      : await getDailyVolume(30);
-  const tokens =
-    range === "24h"
-      ? await getHourlyTokens(24)
-      : range === "7d"
-      ? await getDailyTokens(7)
-      : range === "all"
-      ? await getDailyTokens(9999)
-      : await getDailyTokens(30);
-  const recent = await getRecentEvents(20);
-  const top = await listBuyers({ limit: 10, sort: "score" });
 
   const isMock = !!process.env.SEED_MODE;
 

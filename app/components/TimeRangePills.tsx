@@ -27,6 +27,7 @@ export default function TimeRangePills({
           <Link
             key={value}
             href={`${basePath}?${params.toString()}`}
+            prefetch={false}
             className={`pill text-xs ${
               isActive
                 ? "bg-accent/20 text-accent border-accent/40"

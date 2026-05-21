@@ -1,5 +1,6 @@
 import { parseAbi, parseAbiItem } from "viem";
 import { publicClient } from "./chain";
+import { getState, setState } from "./db";
 
 export const DIEM_TOKEN = "0xf4d97f2da56e8c3098f3a8d538db630a2606a024";
 export const DIEM_STAKING_PROXY =
@@ -8,6 +9,11 @@ export const DIEM_STAKING_DEPLOYMENT_BLOCK = 45_265_606n;
 
 const LOG_BATCH_SIZE = 9_000n;
 const CACHE_TTL_MS = 10 * 60_000;
+// DB-cached snapshot is acceptable up to this age on the SSR hot path. Cron
+// refreshes every 5min, so 30min covers a few missed ticks before we'd rather
+// fall back to live RPC than serve stale numbers.
+const DB_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
+const DIEM_SNAPSHOT_KEY = "diem_pool_snapshot";
 const ENUMERATE_POOL_USERS = process.env.DIEM_ENUMERATE_USERS === "1";
 
 const diemStakingAbi = parseAbi([
@@ -28,23 +34,56 @@ let activeStakersCache:
   | { at: number; snapshot: DiemPoolUserSnapshot }
   | null = null;
 
+// Coalesce concurrent callers within one process onto a single inflight
+// promise so we never do two RPCs in parallel for the same snapshot.
+let inflight: Promise<DiemPoolUserSnapshot> | null = null;
+
 function topicToAddress(topic: `0x${string}` | undefined): string | null {
   if (!topic || topic.length !== 66) return null;
   const addr = `0x${topic.slice(-40)}`.toLowerCase();
   return /^0x[0-9a-f]{40}$/.test(addr) ? addr : null;
 }
 
-export async function getActiveDiemPoolUsers(): Promise<DiemPoolUserSnapshot> {
-  const now = Date.now();
-  if (activeStakersCache && now - activeStakersCache.at < CACHE_TTL_MS) {
-    return activeStakersCache.snapshot;
-  }
+interface PersistedDiemSnapshot {
+  at: number;
+  snapshot: DiemPoolUserSnapshot;
+}
 
-  // SSR is on the hot path here; the home page renders every request and
-  // base.drpc.org has gone unresponsive in the past (~8s timeout + 1 retry =
-  // up to 16s before this returns), which pushes past Vercel's function
-  // timeout and takes the whole homepage down. Treat RPC failure as a soft
-  // miss instead.
+async function readDbSnapshot(): Promise<PersistedDiemSnapshot | null> {
+  try {
+    const raw = await getState(DIEM_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedDiemSnapshot;
+    if (
+      typeof parsed?.at !== "number" ||
+      !parsed.snapshot ||
+      typeof parsed.snapshot.count !== "number" ||
+      !Array.isArray(parsed.snapshot.addresses)
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch (e: any) {
+    console.warn("[diem] failed to read DB snapshot", e?.message ?? e);
+    return null;
+  }
+}
+
+async function writeDbSnapshot(snapshot: DiemPoolUserSnapshot, at: number) {
+  try {
+    await setState(
+      DIEM_SNAPSHOT_KEY,
+      JSON.stringify({ at, snapshot } satisfies PersistedDiemSnapshot),
+    );
+  } catch (e: any) {
+    console.warn("[diem] failed to persist DB snapshot", e?.message ?? e);
+  }
+}
+
+// Live RPC path — only used by the cron refresher and as a one-time bootstrap
+// when the DB snapshot is missing. Never called on the SSR hot path once the
+// snapshot exists.
+async function fetchLiveSnapshot(): Promise<DiemPoolUserSnapshot | null> {
   let stakerCount: number;
   try {
     stakerCount = Number(
@@ -55,22 +94,12 @@ export async function getActiveDiemPoolUsers(): Promise<DiemPoolUserSnapshot> {
       }),
     );
   } catch (e: any) {
-    console.warn("[diem] stakerCount RPC failed; using fallback", e?.message ?? e);
-    if (activeStakersCache) return activeStakersCache.snapshot;
-    const snapshot = { addresses: [], count: 0, exactAddresses: false };
-    // Re-try in ~60s rather than the full 10min TTL so a flapping RPC recovers fast.
-    activeStakersCache = { at: now - (CACHE_TTL_MS - 60_000), snapshot };
-    return snapshot;
+    console.warn("[diem] stakerCount RPC failed", e?.message ?? e);
+    return null;
   }
 
   if (!ENUMERATE_POOL_USERS) {
-    const snapshot = {
-      addresses: [],
-      count: stakerCount,
-      exactAddresses: false,
-    };
-    activeStakersCache = { at: now, snapshot };
-    return snapshot;
+    return { addresses: [], count: stakerCount, exactAddresses: false };
   }
 
   try {
@@ -122,25 +151,80 @@ export async function getActiveDiemPoolUsers(): Promise<DiemPoolUserSnapshot> {
       });
     }
 
-    const snapshot = {
+    return {
       addresses: active,
       count: active.length,
       exactAddresses: true,
     };
-    activeStakersCache = { at: now, snapshot };
-    return snapshot;
   } catch (e: any) {
     console.warn(
       "[diem] failed to enumerate pool users; using stakerCount",
       e?.message ?? e,
     );
-    const snapshot = {
+    return { addresses: [], count: stakerCount, exactAddresses: false };
+  }
+}
+
+// Refresh the persisted DIEM snapshot. Called from the 5-min cron so the SSR
+// hot path never has to do an RPC. Safe to call ad-hoc; idempotent.
+export async function refreshDiemPoolSnapshot(): Promise<DiemPoolUserSnapshot | null> {
+  const snapshot = await fetchLiveSnapshot();
+  if (!snapshot) return null;
+  const now = Date.now();
+  await writeDbSnapshot(snapshot, now);
+  activeStakersCache = { at: now, snapshot };
+  return snapshot;
+}
+
+export async function getActiveDiemPoolUsers(): Promise<DiemPoolUserSnapshot> {
+  const now = Date.now();
+  if (activeStakersCache && now - activeStakersCache.at < CACHE_TTL_MS) {
+    return activeStakersCache.snapshot;
+  }
+  if (inflight) return inflight;
+
+  inflight = (async () => {
+    // Hot-path read: persisted snapshot from indexer_state, refreshed every
+    // 5min by /api/cron/sync. One fast Neon HTTP query, no Base RPC.
+    const persisted = await readDbSnapshot();
+    if (persisted && now - persisted.at < DB_SNAPSHOT_MAX_AGE_MS) {
+      activeStakersCache = { at: now, snapshot: persisted.snapshot };
+      return persisted.snapshot;
+    }
+
+    // Bootstrap or stale path: try a live RPC. Treat RPC failure as a soft
+    // miss — base.drpc.org has gone unresponsive in the past (~8s timeout +
+    // 1 retry = up to 16s) and we'd rather show stale-but-served numbers
+    // than crash the homepage.
+    const live = await fetchLiveSnapshot();
+    if (live) {
+      await writeDbSnapshot(live, now);
+      activeStakersCache = { at: now, snapshot: live };
+      return live;
+    }
+
+    if (persisted) {
+      // RPC down but we have an older DB snapshot — serve it rather than zero.
+      activeStakersCache = { at: now, snapshot: persisted.snapshot };
+      return persisted.snapshot;
+    }
+    if (activeStakersCache) return activeStakersCache.snapshot;
+
+    const empty: DiemPoolUserSnapshot = {
       addresses: [],
-      count: stakerCount,
+      count: 0,
       exactAddresses: false,
     };
-    activeStakersCache = { at: now, snapshot };
-    return snapshot;
+    // Short-TTL the empty result so a flapping RPC recovers in ~60s rather
+    // than the full 10min cache window.
+    activeStakersCache = { at: now - (CACHE_TTL_MS - 60_000), snapshot: empty };
+    return empty;
+  })();
+
+  try {
+    return await inflight;
+  } finally {
+    inflight = null;
   }
 }
 
