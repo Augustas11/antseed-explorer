@@ -1,20 +1,11 @@
 import { ImageResponse } from "next/og";
-import { getNetworkStats } from "@/lib/queries";
 
 export const runtime = "nodejs";
-export const revalidate = 3600;
 export const alt = "AntSeed Demand Explorer — on-chain buyer intelligence";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
-export default async function HomeOG() {
-  let stats: Awaited<ReturnType<typeof getNetworkStats>> | null = null;
-  try {
-    stats = await getNetworkStats();
-  } catch {
-    // Render a static fallback if DB is unreachable; never block sharing.
-  }
-
+export default function HomeOG() {
   return new ImageResponse(
     (
       <div
@@ -51,10 +42,10 @@ export default async function HomeOG() {
           Indexed buyer activity from the AntSeed P2P AI services network on Base.
         </div>
 
-        <div style={{ display: "flex", gap: 60, marginTop: "auto" }}>
-          <Stat label="Buyers indexed" value={fmtNum(stats?.totalBuyers)} />
-          <Stat label="USDC settled" value={fmtUsd(stats?.totalVolumeUsdc)} />
-          <Stat label="Sessions" value={fmtNum(stats?.totalSessions)} />
+        <div style={{ display: "flex", gap: 18, marginTop: "auto" }}>
+          <Pill label="Base events" />
+          <Pill label="USDC settlement" />
+          <Pill label="Buyer demand" />
         </div>
 
         <div
@@ -78,26 +69,20 @@ export default async function HomeOG() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Pill({ label }: { label: string }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column" }}>
-      <div style={{ fontSize: 18, color: "#8a8f9c", textTransform: "uppercase", letterSpacing: 1.2 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 56, fontWeight: 700, color: "#e7e9ee", marginTop: 4 }}>
-        {value}
-      </div>
+    <div
+      style={{
+        display: "flex",
+        borderRadius: 999,
+        border: "1px solid #263041",
+        background: "#111622",
+        color: "#d6d9e0",
+        fontSize: 22,
+        padding: "14px 22px",
+      }}
+    >
+      {label}
     </div>
   );
-}
-
-function fmtNum(n: number | null | undefined): string {
-  if (n == null) return "—";
-  return n.toLocaleString();
-}
-
-function fmtUsd(n: number | null | undefined): string {
-  if (n == null) return "$0";
-  if (n >= 1000) return `$${Math.round(n).toLocaleString()}`;
-  return `$${n.toFixed(0)}`;
 }

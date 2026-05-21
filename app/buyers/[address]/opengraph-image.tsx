@@ -2,7 +2,7 @@ import { ImageResponse } from "next/og";
 import { getBuyer } from "@/lib/queries";
 import { calculateTrustScore } from "@/lib/score";
 
-export const runtime = "edge";
+export const runtime = "nodejs";
 export const revalidate = 3600;
 export const alt = "Buyer profile — AntSeed Demand Explorer";
 export const size = { width: 1200, height: 630 };
