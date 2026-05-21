@@ -146,7 +146,7 @@ export default async function HomePage({
             </>
           }
           delta={pctDelta(hero.recentPayingUsers, hero.priorPayingUsers)}
-          tooltip="Distinct addresses that paid USDC, claimed $ANTS, or are active in the DIEM pool. Current $ANTS holders are not counted unless they also match one of those sources."
+          tooltip="Unique wallets across three groups: deposited USDC, claimed $ANTS, or active in the DIEM pool. The three sub-counts can overlap — a wallet that did two of those things is counted once in the total but once in each sub-count."
           sparkline={<Sparkline data={usersSpark} color="#f5b656" />}
         />
       </section>
