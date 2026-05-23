@@ -179,8 +179,6 @@ export const BuyerHealthZ = z
   })
   .passthrough();
 
-const SERVICE_NAME_RE = /^[A-Za-z0-9_.\-:/]+$/;
-
 export const ServicePricingZ = z
   .object({
     inputUsdPerMillion: z.number().finite().nonnegative().optional(),
@@ -193,7 +191,7 @@ export const DirectoryProviderRowZ = z
     address: ETH_ADDRESS,
     displayName: z.string().max(200).nullable(),
     region: z.string().max(64).nullable(),
-    services: z.array(z.string().max(64).regex(SERVICE_NAME_RE)).max(500),
+    services: z.array(z.string().max(64)).max(500),
     pricing: z.record(z.string().max(64), ServicePricingZ),
     sessionCount: z.number().int().nonnegative(),
     totalVolumeUsdc: z.number().finite().nonnegative(),
@@ -215,7 +213,7 @@ export const SellerServicesResponseZ = z
     address: ETH_ADDRESS,
     displayName: z.string().max(200).nullable(),
     region: z.string().max(64).nullable(),
-    services: z.array(z.string().max(64).regex(SERVICE_NAME_RE)).max(500),
+    services: z.array(z.string().max(64)).max(500),
     pricing: z.record(z.string().max(64), ServicePricingZ),
     updatedAt: z.number().int().nullable(),
   })

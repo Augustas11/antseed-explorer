@@ -300,6 +300,19 @@ describe("list_providers tool", () => {
     const explorer = makeExplorer(vi.fn() as unknown as typeof fetch);
     await expect(listProviders({ sort: "nope" }, { explorer })).rejects.toMatchObject({ name: "ZodError" });
   });
+
+  it("accepts services with spaces (display-name style)", async () => {
+    const row = {
+      ...PROVIDER_ROW,
+      services: ["Claude Sonnet 4.6", "GPT 5.4", "kimi-k2.6 FREE 100K TOKENS"],
+      pricing: {},
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([row], 1));
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const out = await listProviders({ sort: "score" }, { explorer });
+    expect(out.providers).toHaveLength(1);
+    expect(out.providers[0]!.services).toContain("Claude Sonnet 4.6");
+  });
 });
 
 describe("get_pricing tool", () => {
@@ -355,6 +368,19 @@ describe("get_pricing tool", () => {
     const result = await getPricing({ peerId: ADDR_A, service: "mystery-svc" }, { explorer });
     expect(result.status).toBe("PRICE_NOT_PUBLISHED");
     expect(result.inputUsdPerMillion).toBeNull();
+  });
+
+  it("accepts seller services response containing display-name services with spaces", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      sellerServicesResponse({
+        services: ["Claude Sonnet 4.6", "gpt-5.4"],
+        pricing: { "gpt-5.4": { inputUsdPerMillion: 0.21, outputUsdPerMillion: 0.84 } },
+      } as Partial<typeof PROVIDER_ROW>),
+    );
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const result = await getPricing({ peerId: ADDR_A, service: "gpt-5.4" }, { explorer });
+    expect(result.status).toBe("INDEXED");
+    expect(result.inputUsdPerMillion).toBe(0.21);
   });
 
   it("INVALID_INPUT on non-hex peerId", async () => {
