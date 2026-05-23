@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import {
   getDailyTokens,
   getDailyVolume,
@@ -28,6 +29,39 @@ import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
+
+const SITE_URL = "https://www.antfeed.org";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const title = "AntSeed Demand Explorer";
+  const description = "On-chain buyer intelligence for the AntSeed P2P AI network";
+
+  const stats = await getNetworkStats().catch(() => null);
+  const imageUrl = stats ? homeOgImageUrl(stats) : `${SITE_URL}/og/home`;
+  const image = {
+    url: imageUrl,
+    width: 1200,
+    height: 630,
+    alt: "AntSeed Demand Explorer — latest on-chain buyer intelligence metrics",
+  };
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "website",
+      images: [image],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description,
+      images: [imageUrl],
+    },
+  };
+}
 
 export default async function HomePage({
   searchParams,
@@ -257,4 +291,17 @@ export default async function HomePage({
       </section>
     </div>
   );
+}
+
+function homeOgImageUrl(stats: Awaited<ReturnType<typeof getNetworkStats>>): string {
+  const params = new URLSearchParams({
+    buyers: String(stats.totalBuyers),
+    usdc: String(stats.totalVolumeUsdc),
+    sessions: String(stats.totalSessions),
+    v: String(
+      stats.lastSyncTs ??
+        `${stats.totalBuyers}-${stats.totalVolumeUsdc}-${stats.totalSessions}`,
+    ),
+  });
+  return `${SITE_URL}/og/home?${params.toString()}`;
 }
