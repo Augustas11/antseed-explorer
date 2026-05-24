@@ -2,6 +2,12 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.5 — 2026-05-24
+
+### Fixed
+
+- **`npx -y @antfeed/mcp` failing with `command not found`.** The `prepare` script ran `tsc` on consumer install (no devDeps available), silently failing and preventing the bin symlink. Changed to `prepublishOnly` so it only runs during development.
+
 ## 0.2.4 — 2026-05-24
 
 ### Fixed
