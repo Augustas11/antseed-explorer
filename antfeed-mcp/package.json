@@ -1,6 +1,6 @@
 {
   "name": "@antfeed/mcp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "mcpName": "io.github.Augustas11/antfeed-mcp",
   "description": "Model Context Protocol server for the AntFeed Explorer — discover and transact on the AntSeed P2P AI network from any MCP-compatible agent.",
   "type": "module",

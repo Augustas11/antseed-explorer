@@ -3,7 +3,7 @@
   "name": "io.github.Augustas11/antfeed-mcp",
   "title": "AntFeed",
   "description": "Discover and transact on the AntSeed P2P AI network from any MCP-compatible agent.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "websiteUrl": "https://antfeed.org/mcp",
   "repository": {
     "url": "https://github.com/Augustas11/antseed-explorer",
@@ -15,7 +15,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@antfeed/mcp",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "transport": {
         "type": "stdio"
       },

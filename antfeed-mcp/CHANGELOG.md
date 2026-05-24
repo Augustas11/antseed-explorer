@@ -2,6 +2,12 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.4 — 2026-05-24
+
+### Fixed
+
+- **`list_providers` and `lookup` failing with `EXPLORER_BAD_RESPONSE`.** The default `explorerUrl` pointed at `https://antfeed.org`, which 307-redirects to `https://www.antfeed.org`. Some fetch environments parsed the redirect body instead of following, breaking both provider tools. Default is now the canonical `https://www.antfeed.org` URL, and all fetch calls explicitly set `redirect: "follow"` as defense-in-depth.
+
 ## 0.2.3 — 2026-05-17
 
 ### Added
