@@ -23,7 +23,7 @@
         {
           "name": "ANTFEED_EXPLORER_URL",
           "description": "Base URL for the AntFeed Explorer REST API.",
-          "default": "https://antfeed.org",
+          "default": "https://www.antfeed.org",
           "isRequired": false,
           "isSecret": false
         },

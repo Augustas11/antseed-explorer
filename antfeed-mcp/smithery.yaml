@@ -14,7 +14,7 @@ startCommand:
         type: string
         title: Explorer URL
         description: Base URL for the AntFeed Explorer REST API.
-        default: https://antfeed.org
+        default: https://www.antfeed.org
       buyerUrl:
         type: string
         title: Local buyer URL

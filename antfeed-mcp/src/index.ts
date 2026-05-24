@@ -86,7 +86,7 @@ function readConfig(): RuntimeConfig {
   }
 
   const explorerUrl = validateHttpUrl(
-    asString(fileConfig.explorerUrl) ?? process.env.ANTFEED_EXPLORER_URL ?? "https://antfeed.org",
+    asString(fileConfig.explorerUrl) ?? process.env.ANTFEED_EXPLORER_URL ?? "https://www.antfeed.org",
     "ANTFEED_EXPLORER_URL",
   );
   const buyerUrl = validateHttpUrl(

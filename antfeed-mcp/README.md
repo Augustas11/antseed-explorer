@@ -17,7 +17,7 @@ Add the following block to `~/.claude.json` (Claude Code), `claude_desktop_confi
       "command": "npx",
       "args": ["-y", "@antfeed/mcp"],
       "env": {
-        "ANTFEED_EXPLORER_URL": "https://antfeed.org",
+        "ANTFEED_EXPLORER_URL": "https://www.antfeed.org",
         "ANTSEED_BUYER_URL": "http://localhost:8377"
       }
     }
@@ -79,7 +79,7 @@ All values are optional. Resolution order: `--config file.json` → environment 
 
 | Variable                  | Default                  | Purpose                                                                 |
 | ------------------------- | ------------------------ | ----------------------------------------------------------------------- |
-| `ANTFEED_EXPLORER_URL`    | `https://antfeed.org`    | Base URL for the AntFeed Explorer REST API.                             |
+| `ANTFEED_EXPLORER_URL`    | `https://www.antfeed.org` | Base URL for the AntFeed Explorer REST API.                             |
 | `ANTSEED_BUYER_URL`       | `http://localhost:8377`  | Local AntSeed CLI buyer RPC. Use `http://localhost:8378` for AntStation Desktop. |
 | `ANTFEED_MCP_TIMEOUT_MS`  | `8000`                   | Per-request timeout for explorer and buyer calls.                       |
 | `ANTFEED_MCP_LOG_LEVEL`   | `info`                   | One of `debug`, `info`, `warn`, `error`. Logs go to `stderr` (stdout is reserved for MCP stdio). |

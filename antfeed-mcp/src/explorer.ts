@@ -140,6 +140,7 @@ export class ExplorerClient {
     try {
       res = await this.fetchImpl(url, {
         signal: controller.signal,
+        redirect: "follow",
         headers: { Accept: "application/json", "User-Agent": this.userAgent },
       });
     } catch (err) {
@@ -220,6 +221,7 @@ export class ExplorerClient {
     try {
       res = await this.fetchImpl(url, {
         signal: controller.signal,
+        redirect: "follow",
         headers: { Accept: "application/json", "User-Agent": this.userAgent },
       });
     } catch (err) {
@@ -329,6 +331,7 @@ export class ExplorerClient {
     try {
       const res = await this.fetchImpl(url, {
         signal: controller.signal,
+        redirect: "follow",
         headers: { Accept: "application/json", "User-Agent": this.userAgent },
       });
       if (res.status === 429) throw new ExplorerError("RATE_LIMITED", `Explorer rate limit hit on ${pathOf(url)}`);
