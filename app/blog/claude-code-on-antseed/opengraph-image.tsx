@@ -81,7 +81,7 @@ export default function BlogOG() {
             fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
             fontSize: 24,
             color: "#7cf2c8",
-            width: "fit-content",
+            alignSelf: "flex-start",
           }}
         >
           export ANTHROPIC_BASE_URL=http://localhost:8377
