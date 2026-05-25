@@ -37,6 +37,48 @@ const CURL_EXAMPLE = `curl http://localhost:8377/v1/messages \\
     "messages": [{"role": "user", "content": "Hello from AntSeed"}]
   }'`;
 
+/* ── Real terminal captures from a running buyer ────────── */
+const TERMINAL_BALANCE = `$ antseed buyer balance
+Wallet: 0xDDB6...c61442
+
+USDC Balance (wallet): 6.003914 USDC
+
+Deposits Account:
+  Available:           1.0 USDC
+  Reserved:            0.0 USDC`;
+
+const TERMINAL_STATUS = `$ antseed buyer status
+ Metric                 Value
+ Connection state       connected
+ Proxy port             8377
+ Pinned peer            80d1e7b9b6eb...46288cd
+ Deposits available     0.0 USDC
+ Deposits reserved      1.0 USDC
+ Active channels        1
+ Wallet address         0xDDB6...c61442`;
+
+const TERMINAL_RESPONSE = `$ curl localhost:8377/v1/chat/completions \\
+    -H "content-type: application/json" \\
+    -d '{"model":"deepseek-chat","max_tokens":100, \\
+         "messages":[{"role":"user","content":"Write a haiku about P2P networks."}]}'
+
+{
+  "id": "chatcmpl-RAmS8CoJYaJIdOQzG4kiStcG",
+  "model": "deepseek-chat",
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": "Nodes hum in the dark,\\nShared paths weave through silent streams—\\nTrust blooms, link by link."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {
+    "prompt_tokens": 18,
+    "completion_tokens": 23,
+    "estimated_cost": 0.0000036
+  }
+}`;
+
 export default function BlogPost() {
   return (
     <article className="space-y-10 max-w-3xl">
@@ -166,8 +208,11 @@ export default function BlogPost() {
           </p>
           <p className="text-sm text-muted">
             Check your balance anytime with{" "}
-            <code className="font-mono text-xs">antseed buyer balance</code>.
+            <code className="font-mono text-xs">antseed buyer balance</code>:
           </p>
+          <div className="bg-bg border border-edge rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed text-muted">
+            <pre>{TERMINAL_BALANCE}</pre>
+          </div>
         </div>
 
         {/* Step 4 */}
@@ -228,9 +273,13 @@ export default function BlogPost() {
           <CopyButton text={CURL_EXAMPLE} label="Copy" />
         </div>
         <p className="text-sm text-muted">
-          You should get a standard Anthropic Messages API response. No API key
-          header needed &mdash; the buyer handles auth via your on-chain identity.
+          You should get a standard API response. No API key header needed
+          &mdash; the buyer handles auth via your on-chain identity.
         </p>
+        <p className="text-xs text-muted mt-2">Example response from a live buyer:</p>
+        <div className="bg-bg border border-edge rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed text-muted mt-2">
+          <pre>{TERMINAL_RESPONSE}</pre>
+        </div>
       </section>
 
       {/* ── What just happened ──────────────────────────────── */}
@@ -268,8 +317,11 @@ export default function BlogPost() {
         <p className="text-sm text-muted leading-relaxed">
           If a provider fails mid-request, the router switches to the next-best
           candidate. Because the API is stateless, this is invisible to your
-          harness.
+          harness. Here&rsquo;s what the buyer looks like with an active session:
         </p>
+        <div className="bg-bg border border-edge rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed text-muted">
+          <pre>{TERMINAL_STATUS}</pre>
+        </div>
 
         <div className="panel p-5 text-xs font-mono text-muted leading-relaxed">
           <pre>{`Claude Code / Aider / any harness
