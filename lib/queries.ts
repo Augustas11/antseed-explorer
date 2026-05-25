@@ -618,19 +618,26 @@ export async function getDailyVolume(days = 30) {
     daily_active_users: number;
     new_users: number;
   }>(sql`
-    SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
-           COUNT(*)::int AS sessions,
-           COALESCE(SUM(delta_usdc),0)::float AS volume,
-           COUNT(DISTINCT buyer_address)::int AS active_buyers,
-           COALESCE(MAX(dd.dau), 0)::int AS daily_active_users,
-           COALESCE(MAX(dd.new_users), 0)::int AS new_users
-    FROM events
-    LEFT JOIN daily_dau dd ON dd.day = DATE(to_timestamp(timestamp))
-    WHERE event_type='settled'
-      AND timestamp IS NOT NULL
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
-    GROUP BY day
-    ORDER BY day ASC
+    WITH vol AS (
+      SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
+             COUNT(*)::int AS sessions,
+             COALESCE(SUM(delta_usdc),0)::float AS volume,
+             COUNT(DISTINCT buyer_address)::int AS active_buyers
+      FROM events
+      WHERE event_type='settled'
+        AND timestamp IS NOT NULL
+        AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+      GROUP BY 1
+    )
+    SELECT v.day,
+           v.sessions,
+           v.volume,
+           v.active_buyers,
+           COALESCE(dd.dau, 0)::int      AS daily_active_users,
+           COALESCE(dd.new_users, 0)::int AS new_users
+    FROM vol v
+    LEFT JOIN daily_dau dd ON dd.day = v.day::date
+    ORDER BY v.day ASC
   `);
   return rows.rows;
 }
