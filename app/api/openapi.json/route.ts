@@ -362,6 +362,8 @@ const spec = {
                           sessions: { type: "integer" },
                           volume: { type: "number" },
                           active_buyers: { type: "integer" },
+                          daily_active_users: { type: "integer", description: "Total unique wallets with any on-chain activity that day" },
+                          new_users: { type: "integer", description: "Wallets appearing for the first time that day" },
                         },
                       },
                     },

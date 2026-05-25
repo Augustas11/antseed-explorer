@@ -615,12 +615,17 @@ export async function getDailyVolume(days = 30) {
     sessions: number;
     volume: number;
     active_buyers: number;
+    daily_active_users: number;
+    new_users: number;
   }>(sql`
     SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
            COUNT(*)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS volume,
-           COUNT(DISTINCT buyer_address)::int AS active_buyers
+           COUNT(DISTINCT buyer_address)::int AS active_buyers,
+           COALESCE(MAX(dd.dau), 0)::int AS daily_active_users,
+           COALESCE(MAX(dd.new_users), 0)::int AS new_users
     FROM events
+    LEFT JOIN daily_dau dd ON dd.day = DATE(to_timestamp(timestamp))
     WHERE event_type='settled'
       AND timestamp IS NOT NULL
       AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
