@@ -43,6 +43,8 @@ export default function BlogOG() {
         {/* Title */}
         <div
           style={{
+            display: "flex",
+            flexWrap: "wrap",
             fontSize: 60,
             fontWeight: 700,
             marginTop: 52,
@@ -51,7 +53,7 @@ export default function BlogOG() {
             maxWidth: 960,
           }}
         >
-          Route Claude Code through the{" "}
+          <span>Route Claude Code through the&nbsp;</span>
           <span style={{ color: "#7cf2c8" }}>AntSeed P2P network</span>
         </div>
 
