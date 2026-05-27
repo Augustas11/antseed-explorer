@@ -507,7 +507,7 @@ export async function recomputeBuyer(address: string) {
     )
     SELECT
       (SELECT COUNT(DISTINCT channel_id)::int FROM base WHERE event_type='settled') AS settled_sessions,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float FROM base WHERE event_type='settled') AS total_settled,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float FROM base WHERE event_type='settled' AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)) AS total_settled,
       (SELECT MIN(block_number)::bigint FROM base) AS first_block,
       (SELECT MAX(block_number)::bigint FROM base) AS last_block,
       (SELECT MIN(timestamp)::bigint FROM base) AS first_ts,
@@ -573,7 +573,7 @@ export async function recomputeBuyer(address: string) {
 export async function reconcileDrift() {
   const r = await db.execute<{ delta: number }>(sql`
     SELECT
-      ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled')
+      ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled' AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0))
        - (SELECT COALESCE(SUM(total_settled_usdc),0) FROM buyer_profiles))::float AS delta
   `);
   if (Math.abs(r.rows[0]?.delta ?? 0) < 0.01) return;
