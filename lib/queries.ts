@@ -371,6 +371,7 @@ export async function getHeroStats(): Promise<HeroStats> {
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp < 32503680000
+        AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)
     ),
     tok AS (
       SELECT
@@ -502,6 +503,7 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp > extract(epoch from now())::bigint - 30 * 86400
+        AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)
       GROUP BY day
     ),
     paying_events AS (
@@ -627,6 +629,7 @@ export async function getDailyVolume(days = 30) {
       WHERE event_type='settled'
         AND timestamp IS NOT NULL
         AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+        AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)
       GROUP BY 1
     )
     SELECT v.day,
