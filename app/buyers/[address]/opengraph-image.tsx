@@ -13,7 +13,29 @@ export default async function BuyerOG({
 }: {
   params: { address: string };
 }) {
-  if (!/^0x[0-9a-f]{40}$/i.test(params.address)) {
+  try {
+    return await renderBuyerOG(params.address);
+  } catch {
+    return new ImageResponse(
+      (
+        <div
+          style={{
+            width: "100%", height: "100%", display: "flex",
+            justifyContent: "center", alignItems: "center",
+            background: "#0a0b10", color: "#7cf2c8",
+            fontSize: 32, fontFamily: "system-ui, sans-serif",
+          }}
+        >
+          AntSeed Demand Explorer
+        </div>
+      ),
+      { ...size },
+    );
+  }
+}
+
+async function renderBuyerOG(address: string) {
+  if (!/^0x[0-9a-f]{40}$/i.test(address)) {
     return new ImageResponse(
       (
         <div
@@ -31,7 +53,7 @@ export default async function BuyerOG({
     );
   }
 
-  const buyer = await getBuyer(params.address).catch(() => null);
+  const buyer = await getBuyer(address).catch(() => null);
 
   if (!buyer) {
     return new ImageResponse(
@@ -53,7 +75,7 @@ export default async function BuyerOG({
           <div style={{ color: "#7cf2c8", fontSize: 32 }}>AntSeed Demand Explorer</div>
           <div style={{ marginTop: 24 }}>Buyer not indexed</div>
           <div style={{ marginTop: 12, fontSize: 22, fontFamily: "monospace" }}>
-            {shortAddr(params.address)}
+            {shortAddr(address)}
           </div>
         </div>
       ),
