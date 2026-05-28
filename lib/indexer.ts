@@ -380,7 +380,14 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     console.warn("[indexer] unknown event types skipped:", [...unknownEventNames].join(", "));
   }
   await recomputeBuyers([...buyersTouched]);
-  await reconcileDrift();
+  // Cap the reconcile pass so it can't eat the whole tick — it's resumable
+  // and converges across cron runs, and the auxiliary syncs in sync() still
+  // need budget after runSync returns. Skip entirely if we're already over
+  // the channels deadline (a busy backfill tick); the next tick reconciles.
+  const reconcileBudget = SOFT_DEADLINE_MS - (Date.now() - startedAt) - 5_000;
+  if (reconcileBudget >= 2_000) {
+    await reconcileDrift({ deadlineMs: Math.min(15_000, reconcileBudget) });
+  }
   await setState("last_sync_ts", Date.now().toString());
   await setState("last_head_block", head.toString());
 
@@ -588,18 +595,54 @@ export async function recomputeBuyer(address: string) {
 // Tolerance is $0.01 (1 cent) — JS double summation of many USDC values
 // can drift well above 0.0001, which used to fire this on every pass and
 // trigger a full table recompute for no real divergence.
-export async function reconcileDrift() {
-  const r = await db.execute<{ delta: number }>(sql`
-    SELECT
-      ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled' AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0))
-       - (SELECT COALESCE(SUM(total_settled_usdc),0) FROM buyer_profiles))::float AS delta
-  `);
-  if (Math.abs(r.rows[0]?.delta ?? 0) < 0.01) return;
+//
+// Deadline-aware and resumable: a full sweep can outlast a single cron tick
+// once the buyer table is large, so we walk addresses in a stable order and
+// persist a cursor after each chunk. When the deadline hits we return cleanly
+// (leaving budget for the auxiliary syncs that run after this) and the next
+// tick picks up where we left off. The drift gate is only checked when no
+// sweep is in progress, so a sweep always runs to completion across ticks
+// rather than restarting and stranding the cursor mid-table.
+const RECONCILE_CURSOR_KEY = "reconcile_drift_cursor";
+
+export async function reconcileDrift(opts: { deadlineMs?: number } = {}) {
+  const startedAt = Date.now();
+  const deadlineMs = opts.deadlineMs ?? Infinity;
+
+  const cursor = await getState(RECONCILE_CURSOR_KEY);
+  const inProgress = cursor != null && cursor !== "";
+
+  if (!inProgress) {
+    const r = await db.execute<{ delta: number }>(sql`
+      SELECT
+        ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled' AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0))
+         - (SELECT COALESCE(SUM(total_settled_usdc),0) FROM buyer_profiles))::float AS delta
+    `);
+    if (Math.abs(r.rows[0]?.delta ?? 0) < 0.01) return;
+  }
+
+  // Stable ordering so the persisted cursor resumes from the right place.
+  // Addresses-only payload stays small even at tens of thousands of buyers.
+  const after = inProgress ? cursor! : "";
   const buyers = await db
     .selectDistinct({ a: eventsTbl.buyerAddress })
     .from(eventsTbl)
-    .where(sql`${eventsTbl.buyerAddress} IS NOT NULL`);
-  await recomputeBuyers(buyers.flatMap((b) => (b.a ? [b.a] : [])));
+    .where(sql`${eventsTbl.buyerAddress} IS NOT NULL AND ${eventsTbl.buyerAddress} > ${after}`)
+    .orderBy(eventsTbl.buyerAddress);
+  const addresses = buyers.flatMap((b) => (b.a ? [b.a] : []));
+
+  // Process in ordered chunks so the cursor always marks a contiguous
+  // completed prefix; recomputeBuyers bounds concurrency within each chunk.
+  const CHUNK = RECOMPUTE_CONCURRENCY * 4;
+  for (let i = 0; i < addresses.length; i += CHUNK) {
+    if (Date.now() - startedAt > deadlineMs) return; // cursor already at last completed chunk
+    const chunk = addresses.slice(i, i + CHUNK);
+    await recomputeBuyers(chunk);
+    await setState(RECONCILE_CURSOR_KEY, chunk[chunk.length - 1]);
+  }
+
+  // Sweep finished — clear the cursor so the next run re-checks drift afresh.
+  await setState(RECONCILE_CURSOR_KEY, "");
 }
 
 // ============================================================================
