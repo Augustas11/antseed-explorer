@@ -5,10 +5,19 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+function authorized(req: NextRequest): boolean {
+  const expected = process.env.SYNC_SECRET || process.env.CRON_SECRET;
+  if (!expected) return process.env.NODE_ENV !== "production";
+  return req.headers.get("authorization") === `Bearer ${expected}`;
+}
+
 // POST-only. The Sync button issues a same-origin POST; the indexer's 60s
 // debounce caps how often a real getLogs pass actually fires. We also reject
 // cross-origin Origin headers so the route can't be casually weaponized.
 export async function POST(req: NextRequest) {
+  if (!authorized(req)) {
+    return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
   const origin = req.headers.get("origin");
   if (origin) {
     const host = req.headers.get("host");

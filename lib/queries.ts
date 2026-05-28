@@ -19,6 +19,36 @@ import {
 import { canonicalize, groupServices, type ServiceGroup } from "./services-canonical";
 import { getActiveDiemPoolUsers } from "./diem";
 
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const CHANNEL_EVENT_TYPES_SQL =
+  "'reserved','settled','closed','topup','withdrawn','close_requested'";
+
+function cleanPositiveInt(value: unknown, fallback: number, max: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(n)));
+}
+
+function cleanNonNegativeInt(value: unknown, fallback = 0, max = 100_000): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(max, Math.floor(n)));
+}
+
+function cleanScore(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
+
+function cleanDirection(value: unknown, fallback: "asc" | "desc"): "asc" | "desc" {
+  return value === "asc" || value === "desc" ? value : fallback;
+}
+
+export function isExplorerAddress(value: string): boolean {
+  return ADDRESS_RE.test(value);
+}
+
 // Public row shape kept identical to the SQLite era so the UI doesn't have to
 // change. Drizzle returns camelCase from the schema; we re-shape on the way out.
 
@@ -59,9 +89,9 @@ export async function listBuyers(opts: {
   minScore?: number;
   sort?: "score" | "volume" | "sessions" | "first_seen" | "unique_sellers" | "ghosts";
 } = {}): Promise<BuyerRow[]> {
-  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
-  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
-  const minScore = Math.max(0, Math.min(100, Number.isFinite(opts.minScore ?? 0) ? (opts.minScore ?? 0) : 0));
+  const limit = cleanPositiveInt(opts.limit, 25, 100);
+  const offset = cleanNonNegativeInt(opts.offset);
+  const minScore = cleanScore(opts.minScore);
   const orderCol =
     opts.sort === "volume" ? "total_settled_usdc DESC"
     : opts.sort === "sessions" ? "total_sessions DESC"
@@ -104,7 +134,7 @@ export async function countBuyers(opts: {
   qualifiedOnly?: boolean;
   minScore?: number;
 } = {}): Promise<number> {
-  const minScore = Math.max(0, Math.min(100, Number.isFinite(opts.minScore ?? 0) ? (opts.minScore ?? 0) : 0));
+  const minScore = cleanScore(opts.minScore);
   const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
   const r = await db.execute<{ n: number }>(sql`
     SELECT COUNT(*)::int AS n FROM buyer_profiles
@@ -115,6 +145,7 @@ export async function countBuyers(opts: {
 }
 
 export async function getBuyer(address: string): Promise<BuyerRow | null> {
+  if (!isExplorerAddress(address)) return null;
   const r = await db.execute<any>(sql`
     SELECT * FROM buyer_profiles WHERE address = ${address.toLowerCase()} LIMIT 1
   `);
@@ -137,6 +168,8 @@ export async function getBuyer(address: string): Promise<BuyerRow | null> {
 }
 
 export async function getBuyerSessions(address: string, limit = 25) {
+  if (!isExplorerAddress(address)) return [];
+  const safeLimit = cleanPositiveInt(limit, 25, 100);
   const r = await db.execute<any>(sql`
     SELECT tx_hash, log_index, block_number, event_type, buyer_address, seller_address,
            channel_id, delta_usdc, settled_amount_usdc, input_tokens, output_tokens,
@@ -144,7 +177,7 @@ export async function getBuyerSessions(address: string, limit = 25) {
     FROM events
     WHERE buyer_address = ${address.toLowerCase()}
     ORDER BY block_number DESC, log_index DESC
-    LIMIT ${sql.raw(String(limit))}
+    LIMIT ${sql.raw(String(safeLimit))}
   `);
   return r.rows.map((e: any) => ({
     tx_hash: e.tx_hash,
@@ -164,6 +197,7 @@ export async function getBuyerSessions(address: string, limit = 25) {
 }
 
 export async function getBuyerMonthlyVolume(address: string) {
+  if (!isExplorerAddress(address)) return [];
   const rows = await db.execute<{
     month: string;
     sessions: number;
@@ -183,7 +217,8 @@ export async function getBuyerMonthlyVolume(address: string) {
 }
 
 export async function getBuyerDailyVolume(address: string, days = 30) {
-  const d = Math.max(1, Math.floor(days));
+  if (!isExplorerAddress(address)) return [];
+  const d = cleanPositiveInt(days, 30, 10_000);
   const rows = await db.execute<{
     bucket: string;
     sessions: number;
@@ -204,7 +239,8 @@ export async function getBuyerDailyVolume(address: string, days = 30) {
 }
 
 export async function getBuyerHourlyVolume(address: string, hours = 24) {
-  const h = Math.max(1, Math.floor(hours));
+  if (!isExplorerAddress(address)) return [];
+  const h = cleanPositiveInt(hours, 24, 24 * 365);
   const rows = await db.execute<{
     bucket: string;
     sessions: number;
@@ -237,6 +273,8 @@ export async function getBuyerSellerSummary(
   address: string,
   limit = 10,
 ): Promise<BuyerSellerSummary[]> {
+  if (!isExplorerAddress(address)) return [];
+  const safeLimit = cleanPositiveInt(limit, 10, 100);
   const rows = await db.execute<BuyerSellerSummary>(sql`
     SELECT seller_address,
            COUNT(*)::int AS sessions,
@@ -249,7 +287,7 @@ export async function getBuyerSellerSummary(
       AND event_type = 'settled'
     GROUP BY seller_address
     ORDER BY total_usdc DESC
-    LIMIT ${limit}
+    LIMIT ${sql.raw(String(safeLimit))}
   `);
   // bigint -> number for JSON friendliness in the UI
   return rows.rows.map((r: any) => ({
@@ -561,7 +599,7 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
 // Daily/hourly token throughput from the canonical AntseedStats events.
 // Per-call deltas, so SUM is the right shape; matches Dune's daily card.
 export async function getDailyTokens(days = 30): Promise<TokenBucket[]> {
-  const d = Math.max(1, Math.floor(days));
+  const d = cleanPositiveInt(days, 30, 10_000);
   const rows = await db.execute<any>(sql`
     SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
            COALESCE(SUM(input_tokens),0)::bigint  AS in_tokens,
@@ -584,7 +622,7 @@ export async function getDailyTokens(days = 30): Promise<TokenBucket[]> {
 }
 
 export async function getHourlyTokens(hours = 24): Promise<TokenBucket[]> {
-  const h = Math.max(1, Math.floor(hours));
+  const h = cleanPositiveInt(hours, 24, 24 * 365);
   const rows = await db.execute<any>(sql`
     SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD HH24:00') AS day,
            COALESCE(SUM(input_tokens),0)::bigint  AS in_tokens,
@@ -611,7 +649,7 @@ export async function getDailyVolume(days = 30) {
   // returns empty rows for arithmetic on bigint columns when the param is a
   // plain JS number; raw inlining works reliably. `days` is internal, not
   // user input, so this is safe.
-  const d = Math.max(1, Math.floor(days));
+  const d = cleanPositiveInt(days, 30, 10_000);
   const rows = await db.execute<{
     day: string;
     sessions: number;
@@ -759,6 +797,7 @@ function parseJson<T>(s: string | null | undefined): T | null {
 export async function lookupAddress(
   addr: string,
 ): Promise<{ type: "buyer" | "seller"; address: string } | null> {
+  if (!isExplorerAddress(addr)) return null;
   const normalized = addr.toLowerCase();
 
   const buyerR = await db.execute<{ address: string }>(sql`
@@ -769,7 +808,10 @@ export async function lookupAddress(
   }
 
   const sellerR = await db.execute<{ seller_address: string }>(sql`
-    SELECT seller_address FROM events WHERE seller_address = ${normalized} LIMIT 1
+    SELECT seller_address FROM events
+    WHERE seller_address = ${normalized}
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+    LIMIT 1
   `);
   if (sellerR.rows.length > 0) {
     return { type: "seller", address: normalized };
@@ -814,8 +856,8 @@ export async function listSellers(opts: {
   sort?: "volume" | "sessions" | "buyers" | "ghosts" | "first_seen";
   dir?: "asc" | "desc";
 } = {}): Promise<SellerRow[]> {
-  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
-  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const limit = cleanPositiveInt(opts.limit, 25, 100);
+  const offset = cleanNonNegativeInt(opts.offset);
   const sortColMap: Record<string, string> = {
     volume: "total_earned_usdc",
     sessions: "total_sessions",
@@ -825,7 +867,7 @@ export async function listSellers(opts: {
   };
   const sortCol = sortColMap[opts.sort ?? ""] ?? "total_earned_usdc";
   // first_seen defaults to asc; everything else defaults to desc
-  const dir = opts.dir ?? (opts.sort === "first_seen" ? "asc" : "desc");
+  const dir = cleanDirection(opts.dir, opts.sort === "first_seen" ? "asc" : "desc");
   const orderExpr = `${sortCol} ${dir.toUpperCase()}`;
 
   const r = await db.execute<any>(sql`
@@ -841,6 +883,7 @@ export async function listSellers(opts: {
       MAX(block_number)                                                      AS last_seen_block
     FROM events
     WHERE seller_address IS NOT NULL
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
     GROUP BY seller_address
     ORDER BY ${sql.raw(orderExpr)}
     LIMIT ${sql.raw(String(limit))}
@@ -854,11 +897,13 @@ export async function countSellers(): Promise<number> {
     SELECT COUNT(DISTINCT seller_address)::int AS n
     FROM events
     WHERE seller_address IS NOT NULL
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
 
 export async function getSeller(address: string): Promise<SellerRow | null> {
+  if (!isExplorerAddress(address)) return null;
   const r = await db.execute<any>(sql`
     SELECT
       seller_address                                                         AS address,
@@ -872,6 +917,7 @@ export async function getSeller(address: string): Promise<SellerRow | null> {
       MAX(block_number)                                                      AS last_seen_block
     FROM events
     WHERE seller_address = ${address.toLowerCase()}
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
     GROUP BY seller_address
   `);
   const row = r.rows[0];
@@ -880,7 +926,8 @@ export async function getSeller(address: string): Promise<SellerRow | null> {
 }
 
 export async function getSellerDailyVolume(address: string, days = 30) {
-  const d = Math.max(1, Math.floor(days));
+  if (!isExplorerAddress(address)) return [];
+  const d = cleanPositiveInt(days, 30, 10_000);
   const rows = await db.execute<{
     bucket: string;
     sessions: number;
@@ -901,7 +948,8 @@ export async function getSellerDailyVolume(address: string, days = 30) {
 }
 
 export async function getSellerHourlyVolume(address: string, hours = 24) {
-  const h = Math.max(1, Math.floor(hours));
+  if (!isExplorerAddress(address)) return [];
+  const h = cleanPositiveInt(hours, 24, 24 * 365);
   const rows = await db.execute<{
     bucket: string;
     sessions: number;
@@ -925,6 +973,8 @@ export async function getSellerBuyerSummary(
   address: string,
   limit = 10,
 ): Promise<{ buyer_address: string; sessions: number; total_usdc: number }[]> {
+  if (!isExplorerAddress(address)) return [];
+  const safeLimit = cleanPositiveInt(limit, 10, 100);
   const rows = await db.execute<{
     buyer_address: string;
     sessions: number;
@@ -938,7 +988,7 @@ export async function getSellerBuyerSummary(
       AND event_type = 'settled'
     GROUP BY buyer_address
     ORDER BY total_usdc DESC
-    LIMIT ${limit}
+    LIMIT ${sql.raw(String(safeLimit))}
   `);
   return rows.rows;
 }
@@ -950,7 +1000,7 @@ export async function getSellerBuyerSummary(
 export async function getHourlyVolume(hours = 24): Promise<
   { day: string; sessions: number; volume: number; active_buyers: number }[]
 > {
-  const h = Math.max(1, Math.floor(hours));
+  const h = cleanPositiveInt(hours, 24, 24 * 365);
   const rows = await db.execute<{
     day: string;
     sessions: number;
@@ -989,12 +1039,13 @@ export interface RecentEventRow {
 }
 
 export async function getRecentEvents(limit = 20): Promise<RecentEventRow[]> {
+  const safeLimit = cleanPositiveInt(limit, 20, 100);
   const r = await db.execute<any>(sql`
     SELECT tx_hash, log_index, block_number, event_type, buyer_address, seller_address,
            channel_id, delta_usdc, settled_amount_usdc, timestamp
     FROM events
     ORDER BY block_number DESC, log_index DESC
-    LIMIT ${sql.raw(String(limit))}
+    LIMIT ${sql.raw(String(safeLimit))}
   `);
   return r.rows.map((e: any) => ({
     tx_hash: e.tx_hash,
@@ -1054,8 +1105,8 @@ export async function listChannels(opts: {
   sort?: "amount" | "settled" | "events" | "opened" | "last_activity";
   dir?: "asc" | "desc";
 } = {}): Promise<ChannelRow[]> {
-  const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 25)));
-  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const limit = cleanPositiveInt(opts.limit, 25, 100);
+  const offset = cleanNonNegativeInt(opts.offset);
   const sortColMap: Record<string, string> = {
     amount: "max_amount_usdc",
     settled: "settled_amount_usdc",
@@ -1064,7 +1115,7 @@ export async function listChannels(opts: {
     last_activity: "last_ts",
   };
   const sortCol = sortColMap[opts.sort ?? ""] ?? "opened_ts";
-  const dir = opts.dir ?? "desc";
+  const dir = cleanDirection(opts.dir, "desc");
   const orderExpr = `${sortCol} ${dir.toUpperCase()}`;
 
   const r = await db.execute<any>(sql`
@@ -1079,11 +1130,12 @@ export async function listChannels(opts: {
       MAX(max_amount_usdc)          AS max_amount_usdc,
       MAX(settled_amount_usdc)      AS settled_amount_usdc,
       COALESCE(SUM(delta_usdc), 0)  AS total_delta_usdc,
-      bool_or(event_type = 'Closed')   AS closed,
-      bool_or(event_type = 'Reserved') AS reserved,
+      bool_or(event_type = 'closed')   AS closed,
+      bool_or(event_type = 'reserved') AS reserved,
       COUNT(*)::int                 AS event_count
     FROM events
     WHERE channel_id IS NOT NULL
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
     GROUP BY channel_id
     ORDER BY ${sql.raw(orderExpr)}
     LIMIT ${sql.raw(String(limit))}
@@ -1097,11 +1149,13 @@ export async function countChannels(): Promise<number> {
     SELECT COUNT(DISTINCT channel_id)::int AS n
     FROM events
     WHERE channel_id IS NOT NULL
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
 
 export async function getChannel(id: string): Promise<ChannelRow | null> {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(id)) return null;
   const r = await db.execute<any>(sql`
     SELECT
       channel_id,
@@ -1114,11 +1168,12 @@ export async function getChannel(id: string): Promise<ChannelRow | null> {
       MAX(max_amount_usdc)          AS max_amount_usdc,
       MAX(settled_amount_usdc)      AS settled_amount_usdc,
       COALESCE(SUM(delta_usdc), 0)  AS total_delta_usdc,
-      bool_or(event_type = 'Closed')   AS closed,
-      bool_or(event_type = 'Reserved') AS reserved,
+      bool_or(event_type = 'closed')   AS closed,
+      bool_or(event_type = 'reserved') AS reserved,
       COUNT(*)::int                 AS event_count
     FROM events
     WHERE channel_id = ${id}
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
     GROUP BY channel_id
   `);
   const row = r.rows[0];
@@ -1130,14 +1185,17 @@ export async function getChannelEvents(
   channelId: string,
   limit = 100,
 ) {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(channelId)) return [];
+  const safeLimit = cleanPositiveInt(limit, 100, 200);
   const r = await db.execute<any>(sql`
     SELECT tx_hash, log_index, block_number, event_type, buyer_address, seller_address,
            channel_id, delta_usdc, settled_amount_usdc, input_tokens, output_tokens,
            request_count, timestamp
     FROM events
     WHERE channel_id = ${channelId}
+      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
     ORDER BY block_number ASC, log_index ASC
-    LIMIT ${sql.raw(String(limit))}
+    LIMIT ${sql.raw(String(safeLimit))}
   `);
   return r.rows.map((e: any) => ({
     tx_hash: e.tx_hash,
@@ -1602,8 +1660,8 @@ export async function listHolders(opts: {
   limit?: number;
   offset?: number;
 } = {}): Promise<HolderRow[]> {
-  const limit = Math.max(1, Math.min(200, Math.floor(opts.limit ?? 50)));
-  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
+  const limit = cleanPositiveInt(opts.limit, 50, 200);
+  const offset = cleanNonNegativeInt(opts.offset);
   const { ANTS_NON_USER_ADDRESSES } = await import("./antseed");
   const excludeSql = ANTS_NON_USER_ADDRESSES.map((a) => `'${a}'`).join(",");
 

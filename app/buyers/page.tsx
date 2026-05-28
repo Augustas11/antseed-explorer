@@ -25,18 +25,31 @@ const sortLabels: Record<string, string> = {
   score: "trust score",
 };
 
+const SORTS = new Set(Object.keys(sortLabels));
+
+function pageParam(value: string | undefined): number {
+  const n = Number(value ?? 1);
+  return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
+}
+
+function scoreParam(value: string | undefined): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+}
+
 export default async function BuyersPage({
   searchParams,
 }: {
   searchParams: SP;
 }) {
-  const page = Math.max(1, Number(searchParams.page || 1));
+  const page = pageParam(searchParams.page);
   const limit = 25;
   const offset = (page - 1) * limit;
   const qualifiedOnly = searchParams.qualified === "1";
-  const minScore = Number(searchParams.minScore) || 0;
-  const sort = (searchParams.sort || "volume") as any;
-  const dir = (searchParams.dir || "desc") as "asc" | "desc";
+  const minScore = scoreParam(searchParams.minScore);
+  const sortParam = searchParams.sort || "volume";
+  const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
+  const dir = searchParams.dir === "asc" ? "asc" : "desc";
 
   const [rows, total] = await Promise.all([
     listBuyers({ limit, offset, qualifiedOnly, minScore, sort }),

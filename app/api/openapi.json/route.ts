@@ -9,7 +9,7 @@ const spec = {
     title: "AntSeed Explorer API",
     version: "1.0.0",
     description:
-      "REST API for the AntSeed Channels protocol on Base. Indexes buyer/seller payment channel events and computes trust scores.\n\n**Rate limits:** 60 req/min unauthenticated · 300 req/min with `X-Api-Key` header. Exceeded limits return `429` with a `Retry-After` header.\n\nGenerate a key at [/keys](/keys).",
+      "REST API for the AntSeed Channels protocol on Base. Indexes buyer/seller payment channel events and computes trust scores.\n\n**Rate limits:** 60 req/min unauthenticated · 300 req/min with `X-Api-Key` header. Exceeded limits return `429` with a `Retry-After` header. API key creation is operator-gated.",
     contact: { url: "https://www.antfeed.org" },
     license: { name: "MIT" },
   },
@@ -411,7 +411,7 @@ const spec = {
     "/api/sync": {
       post: {
         summary: "Trigger index sync",
-        description: "Triggers a manual indexer sync (honours 60s debounce). Same-origin requests only.",
+        description: "Triggers a manual indexer sync (honours 60s debounce). Requires `Authorization: Bearer <SYNC_SECRET|CRON_SECRET>`.",
         operationId: "triggerSync",
         responses: {
           "200": {
@@ -433,6 +433,7 @@ const spec = {
               },
             },
           },
+          "401": { description: "Missing or invalid sync secret" },
           "403": { description: "Cross-origin request rejected" },
         },
       },

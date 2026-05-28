@@ -13,6 +13,13 @@ interface SP {
   dir?: string;
 }
 
+const SORTS = new Set(["amount", "settled", "events", "opened", "last_activity"]);
+
+function pageParam(value: string | undefined): number {
+  const n = Number(value ?? 1);
+  return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
+}
+
 function statePillClass(state: "Open" | "Settled" | "Created") {
   if (state === "Open") return "text-accent";
   if (state === "Settled") return "text-muted";
@@ -24,16 +31,17 @@ export default async function ChannelsPage({
 }: {
   searchParams: SP;
 }) {
-  const page = Math.max(1, Number(searchParams.page || 1));
+  const page = pageParam(searchParams.page);
   const limit = 25;
   const offset = (page - 1) * limit;
-  const sort = (searchParams.sort || "opened") as
+  const sortParam = searchParams.sort || "opened";
+  const sort = (SORTS.has(sortParam) ? sortParam : "opened") as
     | "amount"
     | "settled"
     | "events"
     | "opened"
     | "last_activity";
-  const dir = (searchParams.dir || "desc") as "asc" | "desc";
+  const dir = searchParams.dir === "asc" ? "asc" : "desc";
 
   const [rows, total] = await Promise.all([
     listChannels({ limit, offset, sort, dir }),

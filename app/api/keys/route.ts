@@ -8,7 +8,17 @@ import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function authorized(req: NextRequest): boolean {
+  const expected = process.env.API_KEYS_ADMIN_SECRET || process.env.CRON_SECRET;
+  if (!expected) return process.env.NODE_ENV !== "production";
+  return req.headers.get("authorization") === `Bearer ${expected}`;
+}
+
 export async function GET(req: NextRequest) {
+  if (!authorized(req)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   const rl = await checkRateLimit(getClientIp(req), null);
   if (!rl.allowed) {
     return NextResponse.json(
@@ -32,6 +42,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!authorized(req)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   // Use IP bucket only — never grant key-tier rate limit on key minting itself.
   const rl = await checkRateLimit(getClientIp(req), null);
   if (!rl.allowed) {

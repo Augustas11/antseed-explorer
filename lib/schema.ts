@@ -136,3 +136,22 @@ export const antsHolders = pgTable(
     ixBalance: index("ants_holders_balance_idx").on(t.balance),
   }),
 );
+
+export const antsHolderDeltas = pgTable(
+  "ants_holder_deltas",
+  {
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    address: text("address").notNull(),
+    deltaKind: text("delta_kind").notNull(),
+    balanceDelta: numeric("balance_delta", { precision: 78, scale: 0 }).notNull().default("0"),
+    stakedDelta: numeric("staked_delta", { precision: 78, scale: 0 }).notNull().default("0"),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    updatedAt: bigint("updated_at", { mode: "number" }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.txHash, t.logIndex, t.address, t.deltaKind] }),
+    ixAddress: index("ants_holder_deltas_address_idx").on(t.address),
+    ixBlock: index("ants_holder_deltas_block_idx").on(t.blockNumber),
+  }),
+);

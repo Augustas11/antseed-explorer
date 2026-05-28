@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getBuyer } from "@/lib/queries";
+import { getBuyer, isExplorerAddress } from "@/lib/queries";
 import { calculateTrustScore } from "@/lib/score";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { trackMcpUsage } from "@/lib/mcp-usage";
@@ -30,6 +30,9 @@ export async function GET(
       { error: "rate_limit_exceeded" },
       { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
     );
+  }
+  if (!isExplorerAddress(params.address)) {
+    return NextResponse.json({ error: "invalid_address" }, { status: 400, headers: RESPONSE_HEADERS });
   }
 
   const profile = await getBuyer(params.address);

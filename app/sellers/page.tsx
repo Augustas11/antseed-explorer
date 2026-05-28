@@ -13,16 +13,24 @@ interface SP {
   dir?: string;
 }
 
+const SORTS = new Set(["volume", "sessions", "buyers", "ghosts", "first_seen"]);
+
+function pageParam(value: string | undefined): number {
+  const n = Number(value ?? 1);
+  return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
+}
+
 export default async function SellersPage({
   searchParams,
 }: {
   searchParams: SP;
 }) {
-  const page = Math.max(1, Number(searchParams.page || 1));
+  const page = pageParam(searchParams.page);
   const limit = 25;
   const offset = (page - 1) * limit;
-  const sort = (searchParams.sort || "volume") as any;
-  const dir = (searchParams.dir || "desc") as "asc" | "desc";
+  const sortParam = searchParams.sort || "volume";
+  const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
+  const dir = searchParams.dir === "asc" ? "asc" : "desc";
 
   const [rows, total] = await Promise.all([
     listSellers({ limit, offset, sort, dir }),
@@ -54,7 +62,7 @@ export default async function SellersPage({
           </p>
         </div>
         <a
-          href={`/api/sellers?format=csv&sort=${sort}`}
+          href={`/api/sellers?format=csv&sort=${sort}&dir=${dir}`}
           className="btn text-xs"
           download
         >

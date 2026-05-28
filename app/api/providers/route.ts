@@ -9,6 +9,12 @@ export const dynamic = "force-dynamic";
 const ALLOWED_SORTS = ["volume", "sessions", "ghost"] as const;
 type Sort = (typeof ALLOWED_SORTS)[number];
 
+function intParam(value: string | null, fallback: number, min: number, max: number): number {
+  const n = Number(value ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
 export async function GET(req: NextRequest) {
   trackMcpUsage(req, "providers");
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
@@ -20,8 +26,8 @@ export async function GET(req: NextRequest) {
   }
 
   const u = new URL(req.url);
-  const limit = Math.min(1000, Math.max(1, Number(u.searchParams.get("limit") || 100)));
-  const offset = Math.max(0, Number(u.searchParams.get("offset") || 0));
+  const limit = intParam(u.searchParams.get("limit"), 100, 1, 1000);
+  const offset = intParam(u.searchParams.get("offset"), 0, 0, 100_000);
   const sortParam = u.searchParams.get("sort") || "volume";
   const sort: Sort = (ALLOWED_SORTS as readonly string[]).includes(sortParam)
     ? (sortParam as Sort)

@@ -5,6 +5,20 @@ import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const SORTS = new Set(["score", "volume", "sessions", "first_seen", "unique_sellers", "ghosts"]);
+
+function intParam(value: string | null, fallback: number, min: number, max: number): number {
+  const n = Number(value ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function scoreParam(value: string | null): number {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
+
 function csvLine(fields: (string | number | null | undefined)[]): string {
   return fields
     .map((f) => {
@@ -26,11 +40,12 @@ export async function GET(req: NextRequest) {
   }
 
   const u = new URL(req.url);
-  const limit = Math.min(1000, Number(u.searchParams.get("limit") || 100));
-  const offset = Number(u.searchParams.get("offset") || 0);
+  const limit = intParam(u.searchParams.get("limit"), 100, 1, 1000);
+  const offset = intParam(u.searchParams.get("offset"), 0, 0, 100_000);
   const qualifiedOnly = u.searchParams.get("qualified") === "1";
-  const minScore = Number(u.searchParams.get("minScore") || 0);
-  const sort = (u.searchParams.get("sort") || "volume") as any;
+  const minScore = scoreParam(u.searchParams.get("minScore"));
+  const sortParam = u.searchParams.get("sort") || "volume";
+  const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
   const format = u.searchParams.get("format");
 
   const [rows, total] = await Promise.all([

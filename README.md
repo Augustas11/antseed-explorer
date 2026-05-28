@@ -101,7 +101,7 @@ GET  /api/stats                      Network aggregates + 30d daily series
 GET  /api/buyers?limit=&offset=&qualified=&minScore=&sort=
 GET  /api/buyers/{address}           Full profile + sessions + top sellers
 GET  /api/score/{address}            Trust score JSON
-POST /api/sync?force=1               Manual indexer pass
+POST /api/sync?force=1               Manual indexer pass (Bearer sync secret required)
 ```
 
 `/api/score/{address}` example:

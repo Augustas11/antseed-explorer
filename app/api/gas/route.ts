@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { publicClient } from "@/lib/chain";
 import { trackMcpUsage } from "@/lib/mcp-usage";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   trackMcpUsage(req, "gas");
+  const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+
   try {
     const fees = await publicClient.estimateFeesPerGas();
     const wei = fees.maxFeePerGas ?? fees.gasPrice ?? 0n;

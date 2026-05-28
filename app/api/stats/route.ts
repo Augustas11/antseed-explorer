@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getNetworkStats, getDailyVolume, getProfileDrift } from "@/lib/queries";
 import { trackMcpUsage } from "@/lib/mcp-usage";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 // Aggregates change at most every minute (when the indexer pulses).
@@ -13,6 +14,14 @@ const RESPONSE_HEADERS = {
 
 export async function GET(req: NextRequest) {
   trackMcpUsage(req, "stats");
+  const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+
   // Serialized — Promise.all of many Neon HTTP requests from a cold Vercel
   // serverless instance occasionally returned empty rows. Sequential calls
   // are still <500ms total and 100% reliable.

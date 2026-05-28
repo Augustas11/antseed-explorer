@@ -4,20 +4,30 @@ import { useState } from "react";
 
 export default function KeysPage() {
   const [label, setLabel] = useState("");
+  const [adminSecret, setAdminSecret] = useState("");
   const [newKey, setNewKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
   async function generate() {
     setLoading(true);
     setNewKey(null);
+    setError(null);
     try {
       const res = await fetch("/api/keys", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(adminSecret ? { Authorization: `Bearer ${adminSecret}` } : {}),
+        },
         body: JSON.stringify({ label: label.trim() || null }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || `HTTP ${res.status}`);
+        return;
+      }
       setNewKey(data.key);
       setLabel("");
     } finally {
@@ -37,7 +47,7 @@ export default function KeysPage() {
       <div>
         <h1 className="text-2xl font-semibold">API Keys</h1>
         <p className="text-muted text-sm mt-1">
-          Generate a key to unlock 300 req/min (vs 60 req/min unauthenticated).
+          Operators can generate keys to unlock 300 req/min (vs 60 req/min unauthenticated).
           Pass it as the <code className="font-mono text-xs">X-Api-Key</code>{" "}
           header on any{" "}
           <a href="/docs" className="text-accent hover:underline">
@@ -59,9 +69,19 @@ export default function KeysPage() {
               placeholder="e.g. my-app"
               maxLength={80}
               className="w-full bg-panel border border-edge rounded px-3 py-2 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent"
-            />
-          </div>
-          <button
+              />
+            </div>
+            <div className="flex-1 min-w-0 space-y-1">
+              <label className="text-xs text-muted">Admin secret</label>
+              <input
+                type="password"
+                value={adminSecret}
+                onChange={(e) => setAdminSecret(e.target.value)}
+                placeholder="Required in production"
+                className="w-full bg-panel border border-edge rounded px-3 py-2 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent"
+              />
+            </div>
+            <button
             onClick={generate}
             disabled={loading}
             className="btn shrink-0"
@@ -69,6 +89,10 @@ export default function KeysPage() {
             {loading ? "Generating…" : "Generate key"}
           </button>
         </div>
+
+        {error && (
+          <p className="text-xs text-warn">Key generation failed: {error}</p>
+        )}
 
         {newKey && (
           <div className="rounded border border-edge bg-bg p-4 space-y-2">

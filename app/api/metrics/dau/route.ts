@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { sql } from "drizzle-orm";
 import { trackMcpUsage } from "@/lib/mcp-usage";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +36,14 @@ function defaultTo(): string {
 
 export async function GET(req: NextRequest) {
   trackMcpUsage(req, "dau");
+  const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+
   const u = new URL(req.url);
   const fromRaw = u.searchParams.get("from");
   const toRaw = u.searchParams.get("to");

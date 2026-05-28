@@ -10,13 +10,22 @@ export default function SyncButton() {
   async function run() {
     setStatus("Syncing…");
     try {
-      const res = await fetch("/api/sync?force=1", { method: "POST" });
+      let secret = window.localStorage.getItem("antfeed_sync_secret") || "";
+      if (!secret) {
+        secret = window.prompt("Sync secret")?.trim() || "";
+        if (secret) window.localStorage.setItem("antfeed_sync_secret", secret);
+      }
+      const res = await fetch("/api/sync", {
+        method: "POST",
+        headers: secret ? { Authorization: `Bearer ${secret}` } : undefined,
+      });
       if (!res.ok && res.headers.get("content-type")?.includes("application/json") === false) {
         setStatus(`error: HTTP ${res.status}`);
         return;
       }
       const json = await res.json();
       if (!json.ok) {
+        if (res.status === 401) window.localStorage.removeItem("antfeed_sync_secret");
         setStatus(`error: ${json.error?.slice(0, 60) || "failed"}`);
         return;
       }

@@ -19,7 +19,7 @@ import {
   type EventType,
 } from "./antseed";
 import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./db";
-import { events as eventsTbl, buyerProfiles, providerDirectory } from "./schema";
+import { events as eventsTbl, buyerProfiles, providerDirectory, antsHolderDeltas } from "./schema";
 import { sql } from "drizzle-orm";
 import { calculateTrustScore } from "./score";
 
@@ -30,6 +30,7 @@ const SYNC_DEBOUNCE_MS = 60_000;
 const USDC_DECIMALS = 1_000_000;
 const PROVIDER_REFRESH_MS = 60 * 60 * 1000; // 1h
 const PROVIDER_FETCH_TIMEOUT_MS = 5_000;
+const PENDING_BUYERS_KEY = "buyers_recompute_pending";
 
 const channelsAddress = (process.env.CHANNELS_ADDRESS ||
   CONTRACTS.AntseedChannels) as `0x${string}`;
@@ -54,17 +55,54 @@ export async function shouldSync(): Promise<boolean> {
   return Date.now() - Number(last) > SYNC_DEBOUNCE_MS;
 }
 
+async function getPendingBuyers(): Promise<string[]> {
+  const raw = await getState(PENDING_BUYERS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((a): a is string => typeof a === "string" && /^0x[0-9a-f]{40}$/.test(a))
+      .map((a) => a.toLowerCase());
+  } catch {
+    return [];
+  }
+}
+
+async function addPendingBuyers(addresses: Iterable<string>) {
+  const next = new Set(await getPendingBuyers());
+  for (const a of addresses) {
+    const lc = a.toLowerCase();
+    if (/^0x[0-9a-f]{40}$/.test(lc)) next.add(lc);
+  }
+  await setState(PENDING_BUYERS_KEY, JSON.stringify([...next]));
+}
+
+async function recomputePendingBuyers(extra: Iterable<string> = []) {
+  const addresses = new Set(await getPendingBuyers());
+  for (const a of extra) {
+    const lc = a.toLowerCase();
+    if (/^0x[0-9a-f]{40}$/.test(lc)) addresses.add(lc);
+  }
+  if (addresses.size === 0) return;
+  await recomputeBuyers([...addresses]);
+  await setState(PENDING_BUYERS_KEY, "[]");
+}
+
 export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}): Promise<SyncResult> {
   if (!opts.force && !(await shouldSync())) {
-    const last = await getState("last_indexed_block");
-    return {
-      ok: true,
-      fromBlock: last || "0",
-      toBlock: last || "0",
-      eventsAdded: 0,
-      buyersTouched: 0,
-      skipped: "debounced",
-    };
+    const pending = await getPendingBuyers();
+    if (pending.length === 0) {
+      const last = await getState("last_indexed_block");
+      return {
+        ok: true,
+        fromBlock: last || "0",
+        toBlock: last || "0",
+        eventsAdded: 0,
+        buyersTouched: 0,
+        skipped: "debounced",
+      };
+    }
   }
 
   // Concurrency lock — cron + manual sync can fire simultaneously, and Neon
@@ -86,79 +124,41 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
   const syncStart = Date.now();
   try {
     const channels = await runSync(opts);
-    // Auxiliary syncs share the rest of the cron budget. Stats is heaviest
-    // (full backfill in progress), so it gets the largest slice; ANTS and
-    // Emissions are smaller and fast — give them a guaranteed minimum even
-    // when stats is still chewing through history. Each wrapped so any one
-    // failing cannot block the others or poison the channels result.
     const cronBudgetMs = opts.deadlineMs ?? 50_000;
-    const reserveForAntsAndEmissions = 12_000; // 6s each, headroom for slow ticks
-    const elapsedMs = Date.now() - syncStart;
-    const statsDeadline = Math.max(
-      5_000,
-      cronBudgetMs - elapsedMs - reserveForAntsAndEmissions - 3_000,
-    );
-    try {
-      await syncAntseedStats({ deadlineMs: statsDeadline });
-    } catch (e) {
-      console.warn("[indexer] antseed_stats sync failed:", (e as Error)?.message || e);
-    }
+    const remaining = (headroomMs = 3_000) =>
+      cronBudgetMs - (Date.now() - syncStart) - headroomMs;
+    const runAux = async <T extends { ok: boolean; error?: string }>(
+      label: string,
+      minMs: number,
+      deadlineMs: number,
+      fn: (opts: { deadlineMs: number }) => Promise<T>,
+    ) => {
+      if (deadlineMs < minMs) {
+        console.warn(`[indexer] ${label} sync skipped: insufficient budget`);
+        return;
+      }
+      try {
+        const r = await fn({ deadlineMs });
+        if (!r.ok) console.warn(`[indexer] ${label} sync failed:`, r.error || "unknown");
+      } catch (e) {
+        console.warn(`[indexer] ${label} sync failed:`, (e as Error)?.message || e);
+      }
+    };
 
-    const elapsedAfterStats = Date.now() - syncStart;
-    const antsDeadline = Math.max(
-      3_000,
-      Math.floor((cronBudgetMs - elapsedAfterStats - 3_000) / 2),
-    );
-    try {
-      await syncAntsToken({ deadlineMs: antsDeadline });
-    } catch (e) {
-      console.warn("[indexer] ants_token sync failed:", (e as Error)?.message || e);
-    }
+    await runAux("antseed_stats", 5_000, remaining(15_000), syncAntseedStats);
+    await runAux("ants_token", 3_000, Math.floor(remaining(9_000) / 2), syncAntsToken);
+    await runAux("emissions", 2_000, Math.floor(remaining(7_000) / 3), syncEmissions);
+    await runAux("staking", 2_000, Math.floor(remaining(5_000) / 2), syncStaking);
+    await runAux("antseed_deposits", 2_000, Math.floor(remaining(4_000) / 2), syncAntseedDeposits);
 
-    const elapsedAfterAnts = Date.now() - syncStart;
-    // Split remaining budget across emissions + deposits. Deposits has very
-    // low event density (couple per day) so 5s is plenty in steady state;
-    // backfill is handled by a one-shot script.
-    const tailBudgetMs = Math.max(4_000, cronBudgetMs - elapsedAfterAnts - 3_000);
-    const emissionsDeadline = Math.max(2_000, Math.floor(tailBudgetMs / 2));
-    try {
-      await syncEmissions({ deadlineMs: emissionsDeadline });
-    } catch (e) {
-      console.warn("[indexer] emissions sync failed:", (e as Error)?.message || e);
+    // Provider directory must refresh before identity filtering, otherwise a
+    // newly discovered provider can have historical identity rows skipped.
+    if (remaining(8_000) >= PROVIDER_FETCH_TIMEOUT_MS) {
+      await refreshProviderDirectory();
+    } else {
+      console.warn("[indexer] provider directory refresh skipped: insufficient budget");
     }
-
-    const elapsedAfterEmissions = Date.now() - syncStart;
-    // Split remaining tail budget across staking + deposits + identity.
-    // Staking has very low density (sellers stake infrequently); deposits
-    // similarly sparse; identity is doing a full backfill from 41_663_783
-    // on first sync so it benefits from the larger slice once the others catch up.
-    const tailRemainingMs = Math.max(6_000, cronBudgetMs - elapsedAfterEmissions - 2_000);
-    const stakingDeadline = Math.max(2_000, Math.floor(tailRemainingMs / 3));
-    try {
-      await syncStaking({ deadlineMs: stakingDeadline });
-    } catch (e) {
-      console.warn("[indexer] staking sync failed:", (e as Error)?.message || e);
-    }
-
-    const elapsedAfterStaking = Date.now() - syncStart;
-    const tailAfterStakingMs = Math.max(4_000, cronBudgetMs - elapsedAfterStaking - 2_000);
-    const depositsDeadline = Math.max(2_000, Math.floor(tailAfterStakingMs / 2));
-    try {
-      await syncAntseedDeposits({ deadlineMs: depositsDeadline });
-    } catch (e) {
-      console.warn("[indexer] antseed_deposits sync failed:", (e as Error)?.message || e);
-    }
-
-    const elapsedAfterDeposits = Date.now() - syncStart;
-    const identityDeadline = Math.max(
-      2_000,
-      cronBudgetMs - elapsedAfterDeposits - 2_000,
-    );
-    try {
-      await syncIdentityRegistry({ deadlineMs: identityDeadline });
-    } catch (e) {
-      console.warn("[indexer] identity_registry sync failed:", (e as Error)?.message || e);
-    }
+    await runAux("identity_registry", 2_000, remaining(3_000), syncIdentityRegistry);
 
     // Daily DAU pre-aggregate refresh. The closed-day buckets are immutable;
     // we just need to keep "today" and "yesterday" warm. Backfill of older
@@ -200,6 +200,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
 
   let fromBlock = lastIndexed + 1n;
   if (fromBlock > head) {
+    await recomputePendingBuyers();
     await setState("last_sync_ts", Date.now().toString());
     return {
       ok: true,
@@ -224,7 +225,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
 
   while (cursor.from <= head) {
     if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      await recomputeBuyers([...buyersTouched]);
+      await recomputePendingBuyers(buyersTouched);
       await setState("last_sync_ts", Date.now().toString());
       return {
         ok: true,
@@ -306,6 +307,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     }
 
     const rows: any[] = [];
+    const batchBuyers = new Set<string>();
     for (const log of logs as any[]) {
       const eventType = mapEventType(log.eventName);
       if (!eventType) {
@@ -352,7 +354,10 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         timestamp: ts,
         rawLog: JSON.stringify(serializableLog(log)),
       });
-      if (buyer) buyersTouched.add(buyer);
+      if (buyer) {
+        buyersTouched.add(buyer);
+        batchBuyers.add(buyer);
+      }
     }
 
     if (rows.length > 0) {
@@ -362,6 +367,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         .onConflictDoNothing()
         .returning({ id: eventsTbl.id });
       eventsAdded += result.length;
+      await addPendingBuyers(batchBuyers);
     }
 
     await setState("last_indexed_block", to.toString());
@@ -379,7 +385,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
   if (unknownEventNames.size > 0) {
     console.warn("[indexer] unknown event types skipped:", [...unknownEventNames].join(", "));
   }
-  await recomputeBuyers([...buyersTouched]);
+  await recomputePendingBuyers(buyersTouched);
   // Cap the reconcile pass so it can't eat the whole tick — it's resumable
   // and converges across cron runs, and the auxiliary syncs in sync() still
   // need budget after runSync returns. Skip entirely if we're already over
@@ -444,6 +450,41 @@ function isRateLimitError(msg: string): boolean {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function recomputeAntsHolderRows(addresses: Iterable<string>) {
+  const safe = [...new Set([...addresses].map((a) => a.toLowerCase()))]
+    .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
+    .map((a) => `'${a}'`)
+    .join(",");
+  if (!safe) return;
+  const now = Date.now();
+  await db.execute(sql`
+    INSERT INTO ants_holders (
+      address,
+      balance,
+      staked_balance,
+      first_seen_block,
+      last_seen_block,
+      updated_at
+    )
+    SELECT
+      address,
+      GREATEST(COALESCE(SUM(balance_delta), 0), 0),
+      GREATEST(COALESCE(SUM(staked_delta), 0), 0),
+      MIN(block_number)::bigint,
+      MAX(block_number)::bigint,
+      ${now}
+    FROM ants_holder_deltas
+    WHERE address IN (${sql.raw(safe)})
+    GROUP BY address
+    ON CONFLICT (address) DO UPDATE SET
+      balance = EXCLUDED.balance,
+      staked_balance = EXCLUDED.staked_balance,
+      first_seen_block = EXCLUDED.first_seen_block,
+      last_seen_block = EXCLUDED.last_seen_block,
+      updated_at = EXCLUDED.updated_at
+  `);
+}
 
 export function mapEventType(name: string | undefined): EventType | null {
   switch (name) {
@@ -1067,11 +1108,16 @@ export async function syncAntsToken(
     }
     if (!logs!) continue;
 
-    // Coalesce deltas inside the batch — many transfers can touch the
-    // same address (DEX routers, hot wallets); one UPDATE per net change
-    // is much cheaper than one per log.
-    const deltas = new Map<string, bigint>();
-    const blockMap = new Map<string, { first: number; last: number }>();
+    const ledgerRows = new Map<string, {
+      txHash: string;
+      logIndex: number;
+      address: string;
+      deltaKind: string;
+      balanceDelta: bigint;
+      stakedDelta: bigint;
+      blockNumber: number;
+      updatedAt: number;
+    }>();
     for (const log of logs as any[]) {
       const args = log.args || {};
       const from = (args.from as string | undefined)?.toLowerCase();
@@ -1079,46 +1125,46 @@ export async function syncAntsToken(
       const value = args.value as bigint | undefined;
       if (!from || !toAddr || value == null) continue;
       const bn = Number(log.blockNumber);
+      const addDelta = (address: string, delta: bigint) => {
+        const key = `${log.transactionHash}:${log.logIndex}:${address}:balance`;
+        const existing = ledgerRows.get(key);
+        if (existing) {
+          existing.balanceDelta += delta;
+        } else {
+          ledgerRows.set(key, {
+            txHash: log.transactionHash,
+            logIndex: Number(log.logIndex),
+            address,
+            deltaKind: "balance",
+            balanceDelta: delta,
+            stakedDelta: 0n,
+            blockNumber: bn,
+            updatedAt: Date.now(),
+          });
+        }
+      };
 
       if (from !== ZERO_ADDR) {
-        deltas.set(from, (deltas.get(from) ?? 0n) - value);
-        const e = blockMap.get(from);
-        if (e) {
-          e.last = Math.max(e.last, bn);
-          e.first = Math.min(e.first, bn);
-        } else {
-          blockMap.set(from, { first: bn, last: bn });
-        }
+        addDelta(from, -value);
         holdersTouched.add(from);
       }
       if (toAddr !== ZERO_ADDR) {
-        deltas.set(toAddr, (deltas.get(toAddr) ?? 0n) + value);
-        const e = blockMap.get(toAddr);
-        if (e) {
-          e.last = Math.max(e.last, bn);
-          e.first = Math.min(e.first, bn);
-        } else {
-          blockMap.set(toAddr, { first: bn, last: bn });
-        }
+        addDelta(toAddr, value);
         holdersTouched.add(toAddr);
       }
       transfersProcessed++;
     }
 
-    const now = Date.now();
-    for (const [addr, delta] of deltas) {
-      if (delta === 0n) continue;
-      const meta = blockMap.get(addr)!;
-      const deltaStr = delta.toString();
-      await db.execute(sql`
-        INSERT INTO ants_holders (address, balance, first_seen_block, last_seen_block, updated_at)
-        VALUES (${addr}, ${sql.raw(`'${deltaStr}'::numeric`)}, ${meta.first}, ${meta.last}, ${now})
-        ON CONFLICT (address) DO UPDATE SET
-          balance = ants_holders.balance + ${sql.raw(`'${deltaStr}'::numeric`)},
-          first_seen_block = LEAST(COALESCE(ants_holders.first_seen_block, ${meta.first}), ${meta.first}),
-          last_seen_block = GREATEST(COALESCE(ants_holders.last_seen_block, ${meta.last}), ${meta.last}),
-          updated_at = ${now}
-      `);
+    const rows = [...ledgerRows.values()]
+      .filter((r) => r.balanceDelta !== 0n || r.stakedDelta !== 0n)
+      .map((r) => ({
+        ...r,
+        balanceDelta: r.balanceDelta.toString(),
+        stakedDelta: r.stakedDelta.toString(),
+      }));
+    if (rows.length > 0) {
+      await db.insert(antsHolderDeltas).values(rows).onConflictDoNothing();
+      await recomputeAntsHolderRows(holdersTouched);
     }
 
     await setState(ANTS_CURSOR_KEY, to.toString());
@@ -1443,33 +1489,52 @@ export async function syncStaking(
     if (!logs!) continue;
 
     if (logs.length > 0) {
-      // Coalesce net staked_balance delta per address across this batch.
-      const deltas = new Map<string, bigint>();
+      const ledgerRows = new Map<string, {
+        txHash: string;
+        logIndex: number;
+        address: string;
+        deltaKind: string;
+        balanceDelta: bigint;
+        stakedDelta: bigint;
+        blockNumber: number;
+        updatedAt: number;
+      }>();
+      const holdersTouched = new Set<string>();
       for (const log of logs as any[]) {
         const args = log.args || {};
         const addr = (args.seller as string | undefined)?.toLowerCase();
         if (!addr) continue;
         const amount = BigInt(args.amount ?? 0n);
-        const prev = deltas.get(addr) ?? 0n;
+        let delta = 0n;
         if (log.eventName === "Staked") {
-          deltas.set(addr, prev + amount);
+          delta = amount;
         } else if (log.eventName === "Unstaked") {
-          deltas.set(addr, prev - amount);
+          delta = -amount;
         }
+        if (delta === 0n) continue;
+        const key = `${log.transactionHash}:${log.logIndex}:${addr}:staked`;
+        ledgerRows.set(key, {
+          txHash: log.transactionHash,
+          logIndex: Number(log.logIndex),
+          address: addr,
+          deltaKind: "staked",
+          balanceDelta: 0n,
+          stakedDelta: delta,
+          blockNumber: Number(log.blockNumber),
+          updatedAt: Date.now(),
+        });
+        holdersTouched.add(addr);
       }
       eventsProcessed += logs.length;
 
-      const now = Math.floor(Date.now() / 1000);
-      for (const [addr, delta] of deltas) {
-        if (delta === 0n) continue;
-        const deltaStr = delta.toString();
-        await db.execute(sql`
-          INSERT INTO ants_holders (address, balance, staked_balance, updated_at)
-          VALUES (${addr}, '0', ${sql.raw(`'${deltaStr}'::numeric`)}, ${now})
-          ON CONFLICT (address) DO UPDATE SET
-            staked_balance = GREATEST('0'::numeric, ants_holders.staked_balance + ${sql.raw(`'${deltaStr}'::numeric`)}),
-            updated_at = ${now}
-        `);
+      const rows = [...ledgerRows.values()].map((r) => ({
+        ...r,
+        balanceDelta: r.balanceDelta.toString(),
+        stakedDelta: r.stakedDelta.toString(),
+      }));
+      if (rows.length > 0) {
+        await db.insert(antsHolderDeltas).values(rows).onConflictDoNothing();
+        await recomputeAntsHolderRows(holdersTouched);
       }
     }
 

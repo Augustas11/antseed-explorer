@@ -5,8 +5,10 @@ import {
   getBuyerSellerSummary,
   getBuyerMonthlyVolume,
   lookupProviders,
+  isExplorerAddress,
 } from "@/lib/queries";
 import { trackMcpUsage } from "@/lib/mcp-usage";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +18,16 @@ export async function GET(
   { params }: { params: { address: string } },
 ) {
   trackMcpUsage(req, "buyers_detail");
+  const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "rate_limit_exceeded" },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
+    );
+  }
+  if (!isExplorerAddress(params.address)) {
+    return NextResponse.json({ error: "invalid_address" }, { status: 400 });
+  }
   const profile = await getBuyer(params.address);
   if (!profile) {
     return NextResponse.json({ error: "buyer_not_found" }, { status: 404 });
