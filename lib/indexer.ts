@@ -485,8 +485,26 @@ function truncateRawLog(log: any, maxBytes: number): string {
 // Profile recompute — single SQL pass per buyer.
 // ============================================================================
 
+// Cap on in-flight recomputeBuyer() calls. Each call issues Neon HTTP queries,
+// and the serverless driver opens one socket (file descriptor) per in-flight
+// fetch. A full-table reconcile fanning out one promise per buyer with an
+// unbounded Promise.all exhausted the process's file descriptors (EMFILE) and
+// took the /api/cron/sync route down. A small pool stays well under the fd
+// ceiling while still finishing far faster than a fully serial loop.
+const RECOMPUTE_CONCURRENCY = 8;
+
 export async function recomputeBuyers(addresses: string[]) {
-  for (const a of addresses) await recomputeBuyer(a);
+  const queue = [...addresses];
+  const worker = async () => {
+    for (let a = queue.shift(); a !== undefined; a = queue.shift()) {
+      await recomputeBuyer(a);
+    }
+  };
+  const pool = Array.from(
+    { length: Math.min(RECOMPUTE_CONCURRENCY, queue.length) },
+    () => worker(),
+  );
+  await Promise.all(pool);
 }
 
 export async function recomputeBuyer(address: string) {
@@ -581,7 +599,7 @@ export async function reconcileDrift() {
     .selectDistinct({ a: eventsTbl.buyerAddress })
     .from(eventsTbl)
     .where(sql`${eventsTbl.buyerAddress} IS NOT NULL`);
-  await Promise.all(buyers.filter(b => b.a).map(b => recomputeBuyer(b.a!)));
+  await recomputeBuyers(buyers.flatMap((b) => (b.a ? [b.a] : [])));
 }
 
 // ============================================================================
