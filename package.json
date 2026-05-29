@@ -14,6 +14,7 @@
     "sync": "tsx scripts/sync-cli.ts",
     "signals": "tsx scripts/detect-signals.ts",
     "signals:dry": "tsx scripts/detect-signals.ts --dry",
+    "refresh-og": "tsx scripts/refresh-og.ts",
     "vercel-build": "tsx scripts/migrate.ts && next build"
   },
   "dependencies": {
