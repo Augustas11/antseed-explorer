@@ -2,11 +2,10 @@
 // offset so callers cannot derive or skip past the page index by string math.
 // `base64url` so the cursor is safe in JSON/URL contexts without escaping.
 
-// Ceiling on decoded offset. Pagination today is over windows of ≤1000 rows
-// (LOOKUP_PAGE_SIZE) or the explorer's reported total (low millions max), so
-// 1e7 leaves plenty of headroom while preventing an attacker-supplied cursor
-// from forcing 2**40 iterations in any future tool that loops offset → upstream.
-const MAX_OFFSET = 10_000_000;
+// Ceiling on decoded offset. The explorer clamps public REST offsets at
+// 100,000, so larger cursors would be mislabeled pages rather than real
+// continuation tokens.
+const MAX_OFFSET = 100_000;
 
 export function encodeCursor(nextOffset: number): string {
   const payload = JSON.stringify({ o: Math.max(0, Math.floor(nextOffset)) });
@@ -23,7 +22,8 @@ export function decodeCursor(cursor: string | undefined): number {
   }
   if (typeof parsed !== "object" || parsed === null) throw new InvalidCursorError();
   const raw = (parsed as { o?: unknown }).o;
-  const n = typeof raw === "number" ? raw : Number(raw);
+  if (typeof raw !== "number") throw new InvalidCursorError();
+  const n = raw;
   if (!Number.isFinite(n) || n < 0 || n > MAX_OFFSET) throw new InvalidCursorError();
   return Math.floor(n);
 }

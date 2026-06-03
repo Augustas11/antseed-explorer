@@ -1,15 +1,14 @@
 // Cron route: run the signal detector and return what it found as JSON.
 //
-// Auth mirrors /api/cron/sync — Authorization: Bearer ${CRON_SECRET}, with
-// a ?secret= query-param fallback for services that can't set headers.
+// Auth mirrors /api/cron/sync: Authorization: Bearer ${CRON_SECRET}.
 //
 // What this route writes: nothing.
 // On the explorer's Vercel deployment there is no sibling `antfeed` repo
 // on disk, the filesystem is ephemeral between invocations, and the
 // signal-state file would not persist anyway. Writing cards somewhere
 // only this one invocation can see would be misleading. So this route
-// runs the detectors in dry-run mode and surfaces the full rendered
-// cards in the JSON response (visible in Vercel logs or curl output).
+// runs the detectors in dry-run mode and surfaces only status metadata in the
+// JSON response. Full cards are kept in the local operator pipeline.
 // The authoritative pipeline that persists state and writes cards into
 // `marketing/signals/` is the operator running `npm run signals` locally
 // from the explorer repo.
@@ -32,22 +31,11 @@ import os from "node:os";
 import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { runDetectors } from "@/lib/signals/run";
+import { authorizedBearer } from "@/lib/operatorAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-
-function authorized(req: NextRequest): boolean {
-  const expected = process.env.CRON_SECRET;
-  if (!expected) {
-    if (process.env.NODE_ENV === "production") return false;
-    return true;
-  }
-  const header = req.headers.get("authorization");
-  if (header === `Bearer ${expected}`) return true;
-  const param = req.nextUrl.searchParams.get("secret");
-  return param === expected;
-}
 
 function resolveOutDir(): string {
   if (process.env.ANTFEED_SIGNALS_DIR) {
@@ -60,7 +48,7 @@ function resolveOutDir(): string {
 }
 
 export async function GET(req: NextRequest) {
-  if (!authorized(req)) {
+  if (!authorizedBearer(req, process.env.CRON_SECRET)) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
   try {
@@ -70,21 +58,17 @@ export async function GET(req: NextRequest) {
       ok: true,
       ranAt: new Date().toISOString(),
       detected: r.detected,
-      // Per-signal payload. `body` is the full markdown card (frontmatter
-      // + facts + three draft variants + writer notes). Copy-paste-ready.
       signals: r.signals.map((s) => ({
         kind: s.kind,
         key: s.key,
         headline: s.headline,
         importance: s.importance,
-        body: s.body,
       })),
     });
   } catch (e: any) {
-    const cause = e?.cause;
-    const causeMsg = cause?.message || "";
+    console.error("[cron/signals] failed", e);
     return NextResponse.json(
-      { ok: false, error: causeMsg || e?.message || String(e) },
+      { ok: false, error: "signals_failed" },
       { status: 500 },
     );
   }

@@ -17,6 +17,17 @@ const ISO_DATE = z
 
 export const PAGINATION_DEFAULT_LIMIT = 50;
 export const PAGINATION_MAX_LIMIT = 200;
+export const PROVIDER_SORTS = [
+  "volume",
+  "score",
+  "sessions",
+  "ghost",
+  "joined",
+  "reputation",
+  "recent",
+] as const;
+export const PROVIDER_DEFAULT_SORT = "volume";
+export type ProviderSort = (typeof PROVIDER_SORTS)[number];
 
 export const lookupSchema = z.object({
   query: z.string().min(1).max(256, "query is too long"),
@@ -37,7 +48,7 @@ export const listProvidersSchema = z.object({
     .max(PAGINATION_MAX_LIMIT)
     .default(PAGINATION_DEFAULT_LIMIT),
   cursor: z.string().max(256).optional(),
-  sort: z.enum(["score", "recent"]).default("score"),
+  sort: z.enum(PROVIDER_SORTS).default(PROVIDER_DEFAULT_SORT),
 });
 
 export const getPricingSchema = z.object({
@@ -242,8 +253,7 @@ export const NetworkStatsResponseZ = z
 
 export const GasResponseZ = z
   .object({
-    // upstream returns a string like "0.4231" or null when fee estimation fails
-    gwei: z.union([z.string().max(32), z.number(), z.null()]),
+    gwei: z.union([z.number().finite(), z.null()]),
   })
   .passthrough();
 

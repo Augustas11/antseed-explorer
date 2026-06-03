@@ -1,4 +1,3 @@
-import { type Log } from "viem";
 import { publicClient } from "./chain";
 import {
   CONTRACTS,
@@ -22,12 +21,20 @@ import { db, getState, setState, tryAcquireSyncLock, releaseSyncLock } from "./d
 import { events as eventsTbl, buyerProfiles, providerDirectory, antsHolderDeltas } from "./schema";
 import { sql } from "drizzle-orm";
 import { calculateTrustScore } from "./score";
+import { rawAddressList, rawDateLiteral } from "./sqlSafe";
+import {
+  estimateBlockTimestamps,
+  syncEventStream,
+} from "./indexerWindow";
+
+export { growLogBatchSize, shrinkLogBatchSize } from "./indexerWindow";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
 
 const ENV_BATCH_SIZE = BigInt(process.env.LOG_BATCH_SIZE || 2000);
 const SYNC_DEBOUNCE_MS = 60_000;
-const USDC_DECIMALS = 1_000_000;
+const USDC_DECIMALS_BIGINT = 1_000_000n;
+const MAX_SAFE_USDC_ATOMS = BigInt(Number.MAX_SAFE_INTEGER) * USDC_DECIMALS_BIGINT;
 const PROVIDER_REFRESH_MS = 60 * 60 * 1000; // 1h
 const PROVIDER_FETCH_TIMEOUT_MS = 5_000;
 const PENDING_BUYERS_KEY = "buyers_recompute_pending";
@@ -38,6 +45,13 @@ const channelsAddress = (process.env.CHANNELS_ADDRESS ||
 const startBlockEnv = process.env.START_BLOCK
   ? BigInt(process.env.START_BLOCK)
   : CHANNELS_DEPLOYMENT_BLOCK;
+
+function usdcAtomsToNumber(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value !== "bigint") return null;
+  if (value < 0n || value > MAX_SAFE_USDC_ATOMS) return null;
+  return Number(value) / Number(USDC_DECIMALS_BIGINT);
+}
 
 interface SyncResult {
   ok: boolean;
@@ -108,8 +122,8 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
   // Concurrency lock — cron + manual sync can fire simultaneously, and Neon
   // HTTP is connectionless so two passes can race on `last_indexed_block`.
   // Stale-after exceeds the 60s deadline so a killed instance recovers.
-  const acquired = await tryAcquireSyncLock(90_000);
-  if (!acquired) {
+  const lockOwner = await tryAcquireSyncLock(90_000);
+  if (!lockOwner) {
     const last = await getState("last_indexed_block");
     return {
       ok: true,
@@ -123,7 +137,22 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
 
   const syncStart = Date.now();
   try {
-    const channels = await runSync(opts);
+    let channels: SyncResult;
+    try {
+      channels = await runSync(opts);
+    } catch (e) {
+      const msg = (e as Error)?.message || String(e);
+      console.warn("[indexer] channels sync failed:", msg);
+      const last = await getState("last_indexed_block").catch(() => null);
+      channels = {
+        ok: false,
+        fromBlock: last || "?",
+        toBlock: last || "?",
+        eventsAdded: 0,
+        buyersTouched: 0,
+        error: msg,
+      };
+    }
     const cronBudgetMs = opts.deadlineMs ?? 50_000;
     const remaining = (headroomMs = 3_000) =>
       cronBudgetMs - (Date.now() - syncStart) - headroomMs;
@@ -170,11 +199,19 @@ export async function sync(opts: { force?: boolean; deadlineMs?: number } = {}):
     }
     return channels;
   } finally {
-    await releaseSyncLock();
+    try {
+      await releaseSyncLock(lockOwner);
+    } catch (e) {
+      console.warn("[indexer] sync lock release failed:", (e as Error)?.message || e);
+    }
     // Stamp last_sync_ts even on partial/error runs so the dashboard "Updated X ago"
     // dot reflects when the indexer last ran, not just when it last fully succeeded.
     // runSync already writes this on success paths; this catches early-return errors.
-    await setState("last_sync_ts", Date.now().toString());
+    try {
+      await setState("last_sync_ts", Date.now().toString());
+    } catch (e) {
+      console.warn("[indexer] last_sync_ts update failed:", (e as Error)?.message || e);
+    }
   }
 }
 
@@ -216,98 +253,41 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
   const unknownEventNames = new Set<string>();
   let eventsAdded = 0;
   const persisted = await getState("log_batch_size");
-  let batchSize = persisted ? BigInt(persisted) : ENV_BATCH_SIZE;
-  let consecutiveSuccesses = 0;
+  const batchSize = persisted ? BigInt(persisted) : ENV_BATCH_SIZE;
   // Default deadline; cron callers may override (Vercel Pro = 60s).
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 25_000;
   const startedAt = Date.now();
-  const cursor = { from: fromBlock };
-
-  while (cursor.from <= head) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      await recomputePendingBuyers(buyersTouched);
-      await setState("last_sync_ts", Date.now().toString());
-      return {
-        ok: true,
-        fromBlock: fromBlock.toString(),
-        toBlock: cursor.from.toString(),
-        eventsAdded,
-        buyersTouched: buyersTouched.size,
-        skipped: "deadline_partial",
-      };
-    }
-
-    const to =
-      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
-
-    let logs: Log[];
-    let rateLimitRetries = 0;
-    while (true) {
-      try {
-        logs = await publicClient.getLogs({
-          address: channelsAddress,
-          events: channelsAbi as any,
-          fromBlock: cursor.from,
-          toBlock: to,
-        });
-        break;
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRangeError(msg) && batchSize > 1n) {
-          batchSize = batchSize > 20n ? 10n : batchSize / 2n;
-          if (batchSize < 1n) batchSize = 1n;
-          await setState("log_batch_size", batchSize.toString());
-          consecutiveSuccesses = 0;
-          break; // re-enter outer loop with smaller batchSize, logs stays undefined
-        }
-        if (isRateLimitError(msg) && rateLimitRetries < 3) {
-          rateLimitRetries++;
-          await sleep(1500 * rateLimitRetries);
-          continue;
-        }
-        return {
-          ok: false,
-          fromBlock: cursor.from.toString(),
-          toBlock: to.toString(),
-          eventsAdded,
-          buyersTouched: buyersTouched.size,
-          error: msg,
-        };
-      }
-    }
-    if (!logs!) {
-      // Range error shrunk batchSize — retry outer loop with new size.
-      continue;
-    }
-
-    // Fetch one anchor block timestamp and interpolate the rest.
-    // Base has a ~2 s block time so interpolation is accurate within a few
-    // seconds — fine for "X ago" display. One RPC call per batch instead of
-    // N parallel calls keeps us well under Alchemy's CU/sec limit.
-    const uniqueBlocks = [
-      ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
-    ];
-    const blockTs = new Map<bigint, number>();
-    if (uniqueBlocks.length > 0) {
-      const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
-      let anchorTs = 0;
-      try {
-        const blk = await publicClient.getBlock({ blockNumber: anchorBn });
-        anchorTs = Number(blk.timestamp);
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRateLimitError(msg)) await sleep(2000);
-        // Non-fatal: fall back to 0 timestamps for this batch.
-      }
-      const BASE_BLOCK_SECS = 2;
-      for (const bn of uniqueBlocks) {
-        const diff = Number(anchorBn - bn);
-        blockTs.set(bn, anchorTs > 0 ? anchorTs - diff * BASE_BLOCK_SECS : 0);
-      }
-    }
+  const stream = await syncEventStream({
+    fromBlockStart: fromBlock,
+    head,
+    initialBatchSize: batchSize,
+    maxBatchSize: ENV_BATCH_SIZE,
+    cursorKey: "last_indexed_block",
+    batchKey: "log_batch_size",
+    deadlineMs: SOFT_DEADLINE_MS,
+    startedAt,
+    sleepMs: 300,
+    getLogs: (fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: channelsAddress,
+        events: channelsAbi as any,
+        fromBlock,
+        toBlock,
+      }),
+    onLogs: async ({ from, logs, to }) => {
+    // One anchor block timestamp per batch keeps Alchemy CU/sec load low;
+    // Base's ~2s block time is accurate enough for "X ago" display.
+    const blockTs = await estimateBlockTimestamps({
+      logs,
+      blockSeconds: 2,
+      rateLimitBackoffMs: 2000,
+      getBlockTimestamp: async (blockNumber) =>
+        (await publicClient.getBlock({ blockNumber })).timestamp,
+    });
 
     const rows: any[] = [];
     const batchBuyers = new Set<string>();
+    let malformedMetadata = 0;
     for (const log of logs as any[]) {
       const eventType = mapEventType(log.eventName);
       if (!eventType) {
@@ -320,6 +300,7 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
       const channelId = (args.channelId as string | undefined) ?? null;
       const ts = blockTs.get(log.blockNumber!) ?? 0;
       const meta = decodeMetadata(args.metadata);
+      if (eventType === "settled" && args.metadata && !meta) malformedMetadata++;
       rows.push({
         txHash: log.transactionHash,
         logIndex: log.logIndex,
@@ -328,22 +309,22 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         buyerAddress: buyer,
         sellerAddress: seller,
         channelId,
-        maxAmountUsdc: (args.maxAmount ?? args.additionalAmount)
-          ? Number(args.maxAmount ?? args.additionalAmount) / USDC_DECIMALS
-          : null,
-        deltaUsdc: args.delta ? Number(args.delta) / USDC_DECIMALS : null,
-        refundUsdc: args.refund ? Number(args.refund) / USDC_DECIMALS : null,
-        settledAmountUsdc: (args.settledAmount ?? args.totalSettled)
-          ? Number(args.settledAmount ?? args.totalSettled) / USDC_DECIMALS
-          : null,
+        maxAmountUsdc:
+          usdcAtomsToNumber(args.maxAmount) ??
+          usdcAtomsToNumber(args.additionalAmount),
+        deltaUsdc: usdcAtomsToNumber(args.delta),
+        refundUsdc: usdcAtomsToNumber(args.refund),
+        settledAmountUsdc:
+          usdcAtomsToNumber(args.settledAmount) ??
+          usdcAtomsToNumber(args.totalSettled),
         cumulativeAmountUsdc: args.cumulativeAmount
-          ? Number(args.cumulativeAmount) / USDC_DECIMALS
+          ? usdcAtomsToNumber(args.cumulativeAmount)
           : null,
         platformFeeUsdc: args.platformFee
-          ? Number(args.platformFee) / USDC_DECIMALS
+          ? usdcAtomsToNumber(args.platformFee)
           : null,
         newDepositUsdc: args.newDeposit
-          ? Number(args.newDeposit) / USDC_DECIMALS
+          ? usdcAtomsToNumber(args.newDeposit)
           : null,
         gracePeriodEnd: args.gracePeriodEnd
           ? Number(args.gracePeriodEnd)
@@ -359,6 +340,11 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         batchBuyers.add(buyer);
       }
     }
+    if (malformedMetadata > 0) {
+      console.warn(
+        `[indexer] ignored malformed ChannelSettled.metadata in ${malformedMetadata} logs for ${from}..${to}`,
+      );
+    }
 
     if (rows.length > 0) {
       const result = await db
@@ -369,17 +355,31 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
       eventsAdded += result.length;
       await addPendingBuyers(batchBuyers);
     }
+    },
+  });
 
-    await setState("last_indexed_block", to.toString());
-    consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < ENV_BATCH_SIZE) {
-      batchSize = batchSize * 2n > ENV_BATCH_SIZE ? ENV_BATCH_SIZE : batchSize * 2n;
-      await setState("log_batch_size", batchSize.toString());
-      consecutiveSuccesses = 0;
-    }
-    cursor.from = to + 1n;
-    // Pace requests to stay under Alchemy's 300 CU/sec limit.
-    await sleep(300);
+  if (!stream.ok) {
+    return {
+      ok: false,
+      fromBlock: stream.fromBlock,
+      toBlock: stream.toBlock,
+      eventsAdded,
+      buyersTouched: buyersTouched.size,
+      error: stream.error,
+    };
+  }
+
+  if (stream.error === "deadline_partial") {
+    await recomputePendingBuyers(buyersTouched);
+    await setState("last_sync_ts", Date.now().toString());
+    return {
+      ok: true,
+      fromBlock: fromBlock.toString(),
+      toBlock: stream.toBlock,
+      eventsAdded,
+      buyersTouched: buyersTouched.size,
+      skipped: "deadline_partial",
+    };
   }
 
   if (unknownEventNames.size > 0) {
@@ -406,6 +406,10 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
   };
 }
 
+const MAX_SAFE_TOKEN_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_SAFE_REQUEST_COUNT = 2_147_483_647n;
+const CHANNEL_METADATA_VERSION = 1;
+
 // ChannelSettled.metadata is abi-encoded as 4 uint256s:
 //   [version, totalInputTokens, totalOutputTokens, totalRequests]
 export function decodeMetadata(metadata: string | undefined):
@@ -413,50 +417,38 @@ export function decodeMetadata(metadata: string | undefined):
   | null {
   if (!metadata || typeof metadata !== "string") return null;
   const hex = metadata.startsWith("0x") ? metadata.slice(2) : metadata;
-  if (hex.length < 64 * 4) return null;
+  if (hex.length < 64 * 4 || !/^[0-9a-f]+$/i.test(hex)) return null;
   const word = (i: number) => BigInt("0x" + hex.slice(i * 64, (i + 1) * 64));
+  const safeNumber = (value: bigint, max: bigint) =>
+    value >= 0n && value <= max ? Number(value) : null;
   try {
+    const version = safeNumber(word(0), 255n);
+    const inputTokens = safeNumber(word(1), MAX_SAFE_TOKEN_COUNT);
+    const outputTokens = safeNumber(word(2), MAX_SAFE_TOKEN_COUNT);
+    const requestCount = safeNumber(word(3), MAX_SAFE_REQUEST_COUNT);
+    if (
+      version !== CHANNEL_METADATA_VERSION ||
+      inputTokens == null ||
+      outputTokens == null ||
+      requestCount == null
+    ) {
+      return null;
+    }
     return {
-      version: Number(word(0)),
-      inputTokens: Number(word(1)),
-      outputTokens: Number(word(2)),
-      requestCount: Number(word(3)),
+      version,
+      inputTokens,
+      outputTokens,
+      requestCount,
     };
   } catch {
     return null;
   }
 }
 
-function isRangeError(msg: string): boolean {
-  const m = msg.toLowerCase();
-  return (
-    m.includes("block range") ||
-    m.includes("10 block") ||
-    m.includes("more than") ||
-    m.includes("query returned more") ||
-    m.includes("limit exceeded") ||
-    (m.includes("eth_getlogs") && m.includes("range"))
-  );
-}
-
-function isRateLimitError(msg: string): boolean {
-  const m = msg.toLowerCase();
-  return (
-    m.includes("compute units per second") ||
-    m.includes("rate limit") ||
-    m.includes("too many requests") ||
-    m.includes("429")
-  );
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 async function recomputeAntsHolderRows(addresses: Iterable<string>) {
   const safe = [...new Set([...addresses].map((a) => a.toLowerCase()))]
-    .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
-    .map((a) => `'${a}'`)
-    .join(",");
-  if (!safe) return;
+    .filter((a) => /^0x[0-9a-f]{40}$/.test(a));
+  if (safe.length === 0) return;
   const now = Date.now();
   await db.execute(sql`
     INSERT INTO ants_holders (
@@ -475,7 +467,7 @@ async function recomputeAntsHolderRows(addresses: Iterable<string>) {
       MAX(block_number)::bigint,
       ${now}
     FROM ants_holder_deltas
-    WHERE address IN (${sql.raw(safe)})
+    WHERE address IN (${rawAddressList(safe, "ANTS holder recompute addresses")})
     GROUP BY address
     ON CONFLICT (address) DO UPDATE SET
       balance = EXCLUDED.balance,
@@ -573,7 +565,7 @@ export async function recomputeBuyer(address: string) {
     )
     SELECT
       (SELECT COUNT(DISTINCT channel_id)::int FROM base WHERE event_type='settled') AS settled_sessions,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float FROM base WHERE event_type='settled' AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)) AS total_settled,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float FROM base WHERE event_type='settled') AS total_settled,
       (SELECT MIN(block_number)::bigint FROM base) AS first_block,
       (SELECT MAX(block_number)::bigint FROM base) AS last_block,
       (SELECT MIN(timestamp)::bigint FROM base) AS first_ts,
@@ -656,7 +648,7 @@ export async function reconcileDrift(opts: { deadlineMs?: number } = {}) {
   if (!inProgress) {
     const r = await db.execute<{ delta: number }>(sql`
       SELECT
-        ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled' AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0))
+        ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled')
          - (SELECT COALESCE(SUM(total_settled_usdc),0) FROM buyer_profiles))::float AS delta
     `);
     if (Math.abs(r.rows[0]?.delta ?? 0) < 0.01) return;
@@ -691,6 +683,116 @@ export async function reconcileDrift(opts: { deadlineMs?: number } = {}) {
 // EVM seller address = "0x" + first 20 bytes of libp2p peerId.
 // ============================================================================
 
+const PROVIDER_TEXT_LIMITS = {
+  displayName: 120,
+  peerId: 160,
+  region: 80,
+  service: 120,
+};
+const MAX_PROVIDER_SERVICES = 100;
+const MAX_PRICE_USD_PER_MILLION = 1_000_000;
+
+function textOrNull(value: unknown, maxLen: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  return trimmed.slice(0, maxLen);
+}
+
+function sanitizedServiceName(value: unknown): string | null {
+  const service = textOrNull(value, PROVIDER_TEXT_LIMITS.service);
+  if (!service) return null;
+  return service;
+}
+
+function sanitizedTrustScore(value: unknown): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+
+function sanitizedServicePricing(value: unknown): Record<string, number | null> | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const out: Record<string, number | null> = {};
+  for (const key of ["inputUsdPerMillion", "outputUsdPerMillion"]) {
+    if (raw[key] == null) continue;
+    const n = Number(raw[key]);
+    if (!Number.isFinite(n) || n < 0 || n > MAX_PRICE_USD_PER_MILLION) {
+      return null;
+    }
+    out[key] = n;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+export interface SanitizedProviderPeer {
+  row: {
+    address: string;
+    displayName: string | null;
+    peerId: string;
+    region: string | null;
+    trustScore: number | null;
+    services: string | null;
+    pricing: string | null;
+    operatorAddress: string | null;
+    updatedAt: number;
+  };
+  supersededOperator: string | null;
+}
+
+export function sanitizeProviderDirectoryPeer(
+  peer: unknown,
+  now: number,
+): SanitizedProviderPeer | null {
+  const rawPeer = peer as Record<string, any>;
+  const peerId = textOrNull(rawPeer?.peerId, PROVIDER_TEXT_LIMITS.peerId)?.toLowerCase();
+  if (!peerId || peerId.length < 40) return null;
+  const hex40 = peerId.slice(0, 40);
+  if (!/^[0-9a-f]{40}$/.test(hex40)) return null;
+  const operatorAddr = "0x" + hex40;
+
+  // Sellers can settle via a delegation contract; in that case the on-chain
+  // seller_address in AntseedChannels events is the contract, not the operator
+  // peerId. Key the directory off the contract so rows join to events.
+  const scRaw = (rawPeer.sellerContract || "").toString().toLowerCase().replace(/^0x/, "");
+  const hasSc = /^[0-9a-f]{40}$/.test(scRaw);
+  const addr = hasSc ? "0x" + scRaw : operatorAddr;
+
+  const services: string[] = [];
+  const pricing: Record<string, any> = {};
+  const providers = Array.isArray(rawPeer.providers) ? rawPeer.providers : [];
+  for (const p of providers) {
+    const advertisedServices = Array.isArray(p?.services) ? p.services : [];
+    for (const rawSvc of advertisedServices) {
+      const svc = sanitizedServiceName(rawSvc);
+      if (!svc) continue;
+      if (!services.includes(svc)) services.push(svc);
+      const svcPricing = sanitizedServicePricing(p?.servicePricing?.[svc]);
+      if (svcPricing) pricing[svc] = svcPricing;
+      if (services.length >= MAX_PROVIDER_SERVICES) break;
+    }
+    if (services.length >= MAX_PROVIDER_SERVICES) break;
+  }
+
+  return {
+    row: {
+      address: addr,
+      displayName: textOrNull(rawPeer.displayName, PROVIDER_TEXT_LIMITS.displayName),
+      peerId,
+      region: textOrNull(rawPeer.region, PROVIDER_TEXT_LIMITS.region),
+      trustScore: sanitizedTrustScore(rawPeer.trustScore),
+      services: services.length ? JSON.stringify(services) : null,
+      pricing: Object.keys(pricing).length ? JSON.stringify(pricing) : null,
+      operatorAddress: hasSc ? operatorAddr : null,
+      updatedAt: now,
+    },
+    supersededOperator: hasSc && addr !== operatorAddr ? operatorAddr : null,
+  };
+}
+
 export async function refreshProviderDirectory() {
   // Throttle to once an hour — peer listings change slowly and this fetch
   // ran on every cron tick, burning the function budget on a non-essential.
@@ -706,6 +808,7 @@ export async function refreshProviderDirectory() {
     });
     if (!res.ok) return;
     const data = (await res.json()) as { peers?: any[] };
+    if (!Array.isArray(data.peers)) return;
     const now = Date.now();
     const rows: any[] = [];
     // Track operator addresses that have been superseded by a seller
@@ -713,41 +816,11 @@ export async function refreshProviderDirectory() {
     // indexer builds) need to be deleted so the seller profile resolves
     // to the contract that actually settles on AntseedChannels.
     const supersededOperators: string[] = [];
-    for (const peer of data.peers || []) {
-      const peerId = peer.peerId?.toString().toLowerCase();
-      if (!peerId || peerId.length < 40) continue;
-      const hex40 = peerId.slice(0, 40);
-      if (!/^[0-9a-f]{40}$/.test(hex40)) continue;
-      const operatorAddr = "0x" + hex40;
-
-      // Sellers can settle via a delegation contract; in that case the
-      // on-chain seller_address in AntseedChannels events is the contract,
-      // not the operator peerId. Key the directory off the contract so the
-      // row joins to events; remember the operator for display.
-      const scRaw = (peer.sellerContract || "").toString().toLowerCase().replace(/^0x/, "");
-      const hasSc = /^[0-9a-f]{40}$/.test(scRaw);
-      const addr = hasSc ? "0x" + scRaw : operatorAddr;
-      if (hasSc && addr !== operatorAddr) supersededOperators.push(operatorAddr);
-
-      const services: string[] = [];
-      const pricing: Record<string, any> = {};
-      for (const p of peer.providers || []) {
-        for (const svc of p.services || []) {
-          if (!services.includes(svc)) services.push(svc);
-          if (p.servicePricing?.[svc]) pricing[svc] = p.servicePricing[svc];
-        }
-      }
-      rows.push({
-        address: addr,
-        displayName: peer.displayName || null,
-        peerId: peer.peerId || null,
-        region: peer.region || null,
-        trustScore: peer.trustScore ?? null,
-        services: services.length ? JSON.stringify(services) : null,
-        pricing: Object.keys(pricing).length ? JSON.stringify(pricing) : null,
-        operatorAddress: hasSc ? operatorAddr : null,
-        updatedAt: now,
-      });
+    for (const peer of data.peers) {
+      const sanitized = sanitizeProviderDirectoryPeer(peer, now);
+      if (!sanitized) continue;
+      rows.push(sanitized.row);
+      if (sanitized.supersededOperator) supersededOperators.push(sanitized.supersededOperator);
     }
     if (rows.length === 0) return;
     await db
@@ -767,13 +840,10 @@ export async function refreshProviderDirectory() {
         },
       });
     if (supersededOperators.length > 0) {
-      const safe = supersededOperators
-        .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
-        .map((a) => `'${a}'`)
-        .join(",");
-      if (safe) {
+      const safe = supersededOperators.filter((a) => /^0x[0-9a-f]{40}$/.test(a));
+      if (safe.length > 0) {
         await db.execute(
-          sql`DELETE FROM provider_directory WHERE address IN (${sql.raw(safe)})`,
+          sql`DELETE FROM provider_directory WHERE address IN (${rawAddressList(safe, "superseded operator addresses")})`,
         );
       }
     }
@@ -847,82 +917,35 @@ export async function syncAntseedStats(
   // at STATS_BATCH_INITIAL and burns several seconds shrinking before finding
   // a working size, slowing backfill by an order of magnitude.
   const persistedBatch = await getState(STATS_BATCH_KEY);
-  let batchSize = persistedBatch ? BigInt(persistedBatch) : STATS_BATCH_INITIAL;
-  if (batchSize > STATS_BATCH_MAX) batchSize = STATS_BATCH_MAX;
-  let consecutiveSuccesses = 0;
+  const batchSize = persistedBatch ? BigInt(persistedBatch) : STATS_BATCH_INITIAL;
   let recordsAdded = 0;
   const startedAt = Date.now();
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 20_000;
-  const cursor = { from: fromBlockStart };
-
-  while (cursor.from <= head) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      return {
-        ok: true,
-        fromBlock: fromBlockStart.toString(),
-        toBlock: cursor.from.toString(),
-        recordsAdded,
-        error: "deadline_partial",
-      };
-    }
-
-    const to =
-      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
-
-    let logs: Log[];
-    let rateLimitRetries = 0;
-    while (true) {
-      try {
-        logs = await publicClient.getLogs({
-          address: CONTRACTS.AntseedStats as `0x${string}`,
-          events: antseedStatsAbi as any,
-          fromBlock: cursor.from,
-          toBlock: to,
-        });
-        break;
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRangeError(msg) && batchSize > 1n) {
-          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
-          if (batchSize < 1n) batchSize = 1n;
-          await setState(STATS_BATCH_KEY, batchSize.toString());
-          consecutiveSuccesses = 0;
-          break;
-        }
-        if (isRateLimitError(msg) && rateLimitRetries < 3) {
-          rateLimitRetries++;
-          await sleep(1500 * rateLimitRetries);
-          continue;
-        }
-        return {
-          ok: false,
-          fromBlock: cursor.from.toString(),
-          toBlock: to.toString(),
-          recordsAdded,
-          error: msg,
-        };
-      }
-    }
-    if (!logs!) continue;
-
-    if (logs.length > 0) {
-      const uniqueBlocks = [
-        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
-      ];
-      const blockTs = new Map<bigint, number>();
-      if (uniqueBlocks.length > 0) {
-        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
-        try {
-          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
-          const anchorTs = Number(blk.timestamp);
-          for (const bn of uniqueBlocks) {
-            const diff = Number(anchorBn - bn);
-            blockTs.set(bn, anchorTs - diff * STATS_BLOCK_SECS);
-          }
-        } catch {
-          // Timestamp fetch is non-fatal — fall back to 0.
-        }
-      }
+  const stream = await syncEventStream({
+    fromBlockStart,
+    head,
+    initialBatchSize: batchSize,
+    maxBatchSize: STATS_BATCH_MAX,
+    cursorKey: STATS_CURSOR_KEY,
+    batchKey: STATS_BATCH_KEY,
+    deadlineMs: SOFT_DEADLINE_MS,
+    startedAt,
+    sleepMs: 150,
+    getLogs: (fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: CONTRACTS.AntseedStats as `0x${string}`,
+        events: antseedStatsAbi as any,
+        fromBlock,
+        toBlock,
+      }),
+    onLogs: async ({ logs }) => {
+      if (logs.length === 0) return;
+      const blockTs = await estimateBlockTimestamps({
+        logs,
+        blockSeconds: STATS_BLOCK_SECS,
+        getBlockTimestamp: async (blockNumber) =>
+          (await publicClient.getBlock({ blockNumber })).timestamp,
+      });
 
       const rows = (logs as any[]).map((log) => {
         const args = log.args || {};
@@ -964,27 +987,15 @@ export async function syncAntseedStats(
           .returning({ id: eventsTbl.id });
         recordsAdded += result.length;
       }
-    }
-
-    await setState(STATS_CURSOR_KEY, to.toString());
-    consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < STATS_BATCH_MAX) {
-      batchSize =
-        batchSize * 2n > STATS_BATCH_MAX ? STATS_BATCH_MAX : batchSize * 2n;
-      await setState(STATS_BATCH_KEY, batchSize.toString());
-      consecutiveSuccesses = 0;
-    }
-    cursor.from = to + 1n;
-    // 150ms — drpc free tier permits this; channels uses 300ms to share
-    // the rate budget with the heavier ChannelSettled decode pass.
-    await sleep(150);
-  }
+    },
+  });
 
   return {
-    ok: true,
-    fromBlock: fromBlockStart.toString(),
-    toBlock: head.toString(),
+    ok: stream.ok,
+    fromBlock: stream.fromBlock,
+    toBlock: stream.toBlock,
     recordsAdded,
+    ...(stream.error ? { error: stream.error } : {}),
   };
 }
 
@@ -1047,144 +1058,100 @@ export async function syncAntsToken(
   }
 
   const persistedBatch = await getState(ANTS_BATCH_KEY);
-  let batchSize = persistedBatch ? BigInt(persistedBatch) : ANTS_BATCH_INITIAL;
-  if (batchSize > ANTS_BATCH_MAX) batchSize = ANTS_BATCH_MAX;
-  let consecutiveSuccesses = 0;
+  const batchSize = persistedBatch ? BigInt(persistedBatch) : ANTS_BATCH_INITIAL;
   let transfersProcessed = 0;
-  const holdersTouched = new Set<string>();
+  const totalHoldersTouched = new Set<string>();
   const startedAt = Date.now();
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 10_000;
-  const cursor = { from: fromBlockStart };
-
-  while (cursor.from <= head) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      return {
-        ok: true,
-        fromBlock: fromBlockStart.toString(),
-        toBlock: cursor.from.toString(),
-        transfersProcessed,
-        holdersTouched: holdersTouched.size,
-        error: "deadline_partial",
-      };
-    }
-
-    const to =
-      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
-
-    let logs: Log[];
-    let rateLimitRetries = 0;
-    while (true) {
-      try {
-        logs = await publicClient.getLogs({
-          address: CONTRACTS.ANTSToken as `0x${string}`,
-          events: antsTokenAbi as any,
-          fromBlock: cursor.from,
-          toBlock: to,
-        });
-        break;
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRangeError(msg) && batchSize > 1n) {
-          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
-          if (batchSize < 1n) batchSize = 1n;
-          await setState(ANTS_BATCH_KEY, batchSize.toString());
-          consecutiveSuccesses = 0;
-          break;
-        }
-        if (isRateLimitError(msg) && rateLimitRetries < 3) {
-          rateLimitRetries++;
-          await sleep(1500 * rateLimitRetries);
-          continue;
-        }
-        return {
-          ok: false,
-          fromBlock: cursor.from.toString(),
-          toBlock: to.toString(),
-          transfersProcessed,
-          holdersTouched: holdersTouched.size,
-          error: msg,
+  const stream = await syncEventStream({
+    fromBlockStart,
+    head,
+    initialBatchSize: batchSize,
+    maxBatchSize: ANTS_BATCH_MAX,
+    cursorKey: ANTS_CURSOR_KEY,
+    batchKey: ANTS_BATCH_KEY,
+    deadlineMs: SOFT_DEADLINE_MS,
+    startedAt,
+    sleepMs: 150,
+    getLogs: (fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: CONTRACTS.ANTSToken as `0x${string}`,
+        events: antsTokenAbi as any,
+        fromBlock,
+        toBlock,
+      }),
+    onLogs: async ({ logs }) => {
+      const ledgerRows = new Map<string, {
+        txHash: string;
+        logIndex: number;
+        address: string;
+        deltaKind: string;
+        balanceDelta: bigint;
+        stakedDelta: bigint;
+        blockNumber: number;
+        updatedAt: number;
+      }>();
+      const batchHoldersTouched = new Set<string>();
+      for (const log of logs as any[]) {
+        const args = log.args || {};
+        const from = (args.from as string | undefined)?.toLowerCase();
+        const toAddr = (args.to as string | undefined)?.toLowerCase();
+        const value = args.value as bigint | undefined;
+        if (!from || !toAddr || value == null) continue;
+        const bn = Number(log.blockNumber);
+        const addDelta = (address: string, delta: bigint) => {
+          const key = `${log.transactionHash}:${log.logIndex}:${address}:balance`;
+          const existing = ledgerRows.get(key);
+          if (existing) {
+            existing.balanceDelta += delta;
+          } else {
+            ledgerRows.set(key, {
+              txHash: log.transactionHash,
+              logIndex: Number(log.logIndex),
+              address,
+              deltaKind: "balance",
+              balanceDelta: delta,
+              stakedDelta: 0n,
+              blockNumber: bn,
+              updatedAt: Date.now(),
+            });
+          }
         };
-      }
-    }
-    if (!logs!) continue;
 
-    const ledgerRows = new Map<string, {
-      txHash: string;
-      logIndex: number;
-      address: string;
-      deltaKind: string;
-      balanceDelta: bigint;
-      stakedDelta: bigint;
-      blockNumber: number;
-      updatedAt: number;
-    }>();
-    for (const log of logs as any[]) {
-      const args = log.args || {};
-      const from = (args.from as string | undefined)?.toLowerCase();
-      const toAddr = (args.to as string | undefined)?.toLowerCase();
-      const value = args.value as bigint | undefined;
-      if (!from || !toAddr || value == null) continue;
-      const bn = Number(log.blockNumber);
-      const addDelta = (address: string, delta: bigint) => {
-        const key = `${log.transactionHash}:${log.logIndex}:${address}:balance`;
-        const existing = ledgerRows.get(key);
-        if (existing) {
-          existing.balanceDelta += delta;
-        } else {
-          ledgerRows.set(key, {
-            txHash: log.transactionHash,
-            logIndex: Number(log.logIndex),
-            address,
-            deltaKind: "balance",
-            balanceDelta: delta,
-            stakedDelta: 0n,
-            blockNumber: bn,
-            updatedAt: Date.now(),
-          });
+        if (from !== ZERO_ADDR) {
+          addDelta(from, -value);
+          batchHoldersTouched.add(from);
+          totalHoldersTouched.add(from);
         }
-      };
-
-      if (from !== ZERO_ADDR) {
-        addDelta(from, -value);
-        holdersTouched.add(from);
+        if (toAddr !== ZERO_ADDR) {
+          addDelta(toAddr, value);
+          batchHoldersTouched.add(toAddr);
+          totalHoldersTouched.add(toAddr);
+        }
+        transfersProcessed++;
       }
-      if (toAddr !== ZERO_ADDR) {
-        addDelta(toAddr, value);
-        holdersTouched.add(toAddr);
+
+      const rows = [...ledgerRows.values()]
+        .filter((r) => r.balanceDelta !== 0n || r.stakedDelta !== 0n)
+        .map((r) => ({
+          ...r,
+          balanceDelta: r.balanceDelta.toString(),
+          stakedDelta: r.stakedDelta.toString(),
+        }));
+      if (rows.length > 0) {
+        await db.insert(antsHolderDeltas).values(rows).onConflictDoNothing();
+        await recomputeAntsHolderRows(batchHoldersTouched);
       }
-      transfersProcessed++;
-    }
-
-    const rows = [...ledgerRows.values()]
-      .filter((r) => r.balanceDelta !== 0n || r.stakedDelta !== 0n)
-      .map((r) => ({
-        ...r,
-        balanceDelta: r.balanceDelta.toString(),
-        stakedDelta: r.stakedDelta.toString(),
-      }));
-    if (rows.length > 0) {
-      await db.insert(antsHolderDeltas).values(rows).onConflictDoNothing();
-      await recomputeAntsHolderRows(holdersTouched);
-    }
-
-    await setState(ANTS_CURSOR_KEY, to.toString());
-    consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < ANTS_BATCH_MAX) {
-      batchSize =
-        batchSize * 2n > ANTS_BATCH_MAX ? ANTS_BATCH_MAX : batchSize * 2n;
-      await setState(ANTS_BATCH_KEY, batchSize.toString());
-      consecutiveSuccesses = 0;
-    }
-    cursor.from = to + 1n;
-    await sleep(150);
-  }
+    },
+  });
 
   return {
-    ok: true,
-    fromBlock: fromBlockStart.toString(),
-    toBlock: head.toString(),
+    ok: stream.ok,
+    fromBlock: stream.fromBlock,
+    toBlock: stream.toBlock,
     transfersProcessed,
-    holdersTouched: holdersTouched.size,
+    holdersTouched: totalHoldersTouched.size,
+    ...(stream.error ? { error: stream.error } : {}),
   };
 }
 
@@ -1242,82 +1209,34 @@ export async function syncEmissions(
   }
 
   const persistedBatch = await getState(EMISSIONS_BATCH_KEY);
-  let batchSize = persistedBatch ? BigInt(persistedBatch) : EMISSIONS_BATCH_INITIAL;
-  if (batchSize > EMISSIONS_BATCH_MAX) batchSize = EMISSIONS_BATCH_MAX;
-  let consecutiveSuccesses = 0;
+  const batchSize = persistedBatch ? BigInt(persistedBatch) : EMISSIONS_BATCH_INITIAL;
   let claimsProcessed = 0;
   const startedAt = Date.now();
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
-  const cursor = { from: fromBlockStart };
-
-  while (cursor.from <= head) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      return {
-        ok: true,
-        fromBlock: fromBlockStart.toString(),
-        toBlock: cursor.from.toString(),
-        claimsProcessed,
-        error: "deadline_partial",
-      };
-    }
-
-    const to =
-      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
-
-    let logs: Log[];
-    let rateLimitRetries = 0;
-    while (true) {
-      try {
-        logs = await publicClient.getLogs({
-          address: CONTRACTS.AntseedEmissions as `0x${string}`,
-          events: emissionsAbi as any,
-          fromBlock: cursor.from,
-          toBlock: to,
-        });
-        break;
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRangeError(msg) && batchSize > 1n) {
-          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
-          if (batchSize < 1n) batchSize = 1n;
-          await setState(EMISSIONS_BATCH_KEY, batchSize.toString());
-          consecutiveSuccesses = 0;
-          break;
-        }
-        if (isRateLimitError(msg) && rateLimitRetries < 3) {
-          rateLimitRetries++;
-          await sleep(1500 * rateLimitRetries);
-          continue;
-        }
-        return {
-          ok: false,
-          fromBlock: cursor.from.toString(),
-          toBlock: to.toString(),
-          claimsProcessed,
-          error: msg,
-        };
-      }
-    }
-    if (!logs!) continue;
-
-    if (logs.length > 0) {
-      const uniqueBlocks = [
-        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
-      ];
-      const blockTs = new Map<bigint, number>();
-      if (uniqueBlocks.length > 0) {
-        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
-        try {
-          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
-          const anchorTs = Number(blk.timestamp);
-          for (const bn of uniqueBlocks) {
-            const diff = Number(anchorBn - bn);
-            blockTs.set(bn, anchorTs - diff * 2);
-          }
-        } catch {
-          // Timestamp fetch is non-fatal — fall back to 0.
-        }
-      }
+  const stream = await syncEventStream({
+    fromBlockStart,
+    head,
+    initialBatchSize: batchSize,
+    maxBatchSize: EMISSIONS_BATCH_MAX,
+    cursorKey: EMISSIONS_CURSOR_KEY,
+    batchKey: EMISSIONS_BATCH_KEY,
+    deadlineMs: SOFT_DEADLINE_MS,
+    startedAt,
+    sleepMs: 150,
+    getLogs: (fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: CONTRACTS.AntseedEmissions as `0x${string}`,
+        events: emissionsAbi as any,
+        fromBlock,
+        toBlock,
+      }),
+    onLogs: async ({ logs }) => {
+      if (logs.length === 0) return;
+      const blockTs = await estimateBlockTimestamps({
+        logs,
+        getBlockTimestamp: async (blockNumber) =>
+          (await publicClient.getBlock({ blockNumber })).timestamp,
+      });
 
       const rows = (logs as any[]).map((log) => {
         const args = log.args || {};
@@ -1353,27 +1272,15 @@ export async function syncEmissions(
           .returning({ id: eventsTbl.id });
         claimsProcessed += result.length;
       }
-    }
-
-    await setState(EMISSIONS_CURSOR_KEY, to.toString());
-    consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < EMISSIONS_BATCH_MAX) {
-      batchSize =
-        batchSize * 2n > EMISSIONS_BATCH_MAX
-          ? EMISSIONS_BATCH_MAX
-          : batchSize * 2n;
-      await setState(EMISSIONS_BATCH_KEY, batchSize.toString());
-      consecutiveSuccesses = 0;
-    }
-    cursor.from = to + 1n;
-    await sleep(150);
-  }
+    },
+  });
 
   return {
-    ok: true,
-    fromBlock: fromBlockStart.toString(),
-    toBlock: head.toString(),
+    ok: stream.ok,
+    fromBlock: stream.fromBlock,
+    toBlock: stream.toBlock,
     claimsProcessed,
+    ...(stream.error ? { error: stream.error } : {}),
   };
 }
 
@@ -1430,65 +1337,29 @@ export async function syncStaking(
   }
 
   const persistedBatch = await getState(STAKING_BATCH_KEY);
-  let batchSize = persistedBatch ? BigInt(persistedBatch) : STAKING_BATCH_INITIAL;
-  if (batchSize > STAKING_BATCH_MAX) batchSize = STAKING_BATCH_MAX;
-  let consecutiveSuccesses = 0;
+  const batchSize = persistedBatch ? BigInt(persistedBatch) : STAKING_BATCH_INITIAL;
   let eventsProcessed = 0;
   const startedAt = Date.now();
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
-  const cursor = { from: fromBlockStart };
-
-  while (cursor.from <= head) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      return {
-        ok: true,
-        fromBlock: fromBlockStart.toString(),
-        toBlock: cursor.from.toString(),
-        eventsProcessed,
-        error: "deadline_partial",
-      };
-    }
-
-    const to =
-      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
-
-    let logs: Log[];
-    let rateLimitRetries = 0;
-    while (true) {
-      try {
-        logs = await publicClient.getLogs({
-          address: CONTRACTS.AntseedStaking as `0x${string}`,
-          events: stakingAbi as any,
-          fromBlock: cursor.from,
-          toBlock: to,
-        });
-        break;
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRangeError(msg) && batchSize > 1n) {
-          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
-          if (batchSize < 1n) batchSize = 1n;
-          await setState(STAKING_BATCH_KEY, batchSize.toString());
-          consecutiveSuccesses = 0;
-          break;
-        }
-        if (isRateLimitError(msg) && rateLimitRetries < 3) {
-          rateLimitRetries++;
-          await sleep(1500 * rateLimitRetries);
-          continue;
-        }
-        return {
-          ok: false,
-          fromBlock: cursor.from.toString(),
-          toBlock: to.toString(),
-          eventsProcessed,
-          error: msg,
-        };
-      }
-    }
-    if (!logs!) continue;
-
-    if (logs.length > 0) {
+  const stream = await syncEventStream({
+    fromBlockStart,
+    head,
+    initialBatchSize: batchSize,
+    maxBatchSize: STAKING_BATCH_MAX,
+    cursorKey: STAKING_CURSOR_KEY,
+    batchKey: STAKING_BATCH_KEY,
+    deadlineMs: SOFT_DEADLINE_MS,
+    startedAt,
+    sleepMs: 150,
+    getLogs: (fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: CONTRACTS.AntseedStaking as `0x${string}`,
+        events: stakingAbi as any,
+        fromBlock,
+        toBlock,
+      }),
+    onLogs: async ({ logs }) => {
+      if (logs.length === 0) return;
       const ledgerRows = new Map<string, {
         txHash: string;
         logIndex: number;
@@ -1536,25 +1407,15 @@ export async function syncStaking(
         await db.insert(antsHolderDeltas).values(rows).onConflictDoNothing();
         await recomputeAntsHolderRows(holdersTouched);
       }
-    }
-
-    await setState(STAKING_CURSOR_KEY, to.toString());
-    consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < STAKING_BATCH_MAX) {
-      batchSize =
-        batchSize * 2n > STAKING_BATCH_MAX ? STAKING_BATCH_MAX : batchSize * 2n;
-      await setState(STAKING_BATCH_KEY, batchSize.toString());
-      consecutiveSuccesses = 0;
-    }
-    cursor.from = to + 1n;
-    await sleep(150);
-  }
+    },
+  });
 
   return {
-    ok: true,
-    fromBlock: fromBlockStart.toString(),
-    toBlock: head.toString(),
+    ok: stream.ok,
+    fromBlock: stream.fromBlock,
+    toBlock: stream.toBlock,
     eventsProcessed,
+    ...(stream.error ? { error: stream.error } : {}),
   };
 }
 
@@ -1614,84 +1475,36 @@ export async function syncAntseedDeposits(
   }
 
   const persistedBatch = await getState(DEPOSITS_BATCH_KEY);
-  let batchSize = persistedBatch
+  const batchSize = persistedBatch
     ? BigInt(persistedBatch)
     : DEPOSITS_BATCH_INITIAL;
-  if (batchSize > DEPOSITS_BATCH_MAX) batchSize = DEPOSITS_BATCH_MAX;
-  let consecutiveSuccesses = 0;
   let recordsAdded = 0;
   const startedAt = Date.now();
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
-  const cursor = { from: fromBlockStart };
-
-  while (cursor.from <= head) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      return {
-        ok: true,
-        fromBlock: fromBlockStart.toString(),
-        toBlock: cursor.from.toString(),
-        recordsAdded,
-        error: "deadline_partial",
-      };
-    }
-
-    const to =
-      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
-
-    let logs: Log[];
-    let rateLimitRetries = 0;
-    while (true) {
-      try {
-        logs = await publicClient.getLogs({
-          address: CONTRACTS.AntseedDeposits as `0x${string}`,
-          events: depositsAbi as any,
-          fromBlock: cursor.from,
-          toBlock: to,
-        });
-        break;
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRangeError(msg) && batchSize > 1n) {
-          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
-          if (batchSize < 1n) batchSize = 1n;
-          await setState(DEPOSITS_BATCH_KEY, batchSize.toString());
-          consecutiveSuccesses = 0;
-          break;
-        }
-        if (isRateLimitError(msg) && rateLimitRetries < 3) {
-          rateLimitRetries++;
-          await sleep(1500 * rateLimitRetries);
-          continue;
-        }
-        return {
-          ok: false,
-          fromBlock: cursor.from.toString(),
-          toBlock: to.toString(),
-          recordsAdded,
-          error: msg,
-        };
-      }
-    }
-    if (!logs!) continue;
-
-    if (logs.length > 0) {
-      const uniqueBlocks = [
-        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
-      ];
-      const blockTs = new Map<bigint, number>();
-      if (uniqueBlocks.length > 0) {
-        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
-        try {
-          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
-          const anchorTs = Number(blk.timestamp);
-          for (const bn of uniqueBlocks) {
-            const diff = Number(anchorBn - bn);
-            blockTs.set(bn, anchorTs - diff * 2);
-          }
-        } catch {
-          // Timestamp fetch is non-fatal — fall back to 0.
-        }
-      }
+  const stream = await syncEventStream({
+    fromBlockStart,
+    head,
+    initialBatchSize: batchSize,
+    maxBatchSize: DEPOSITS_BATCH_MAX,
+    cursorKey: DEPOSITS_CURSOR_KEY,
+    batchKey: DEPOSITS_BATCH_KEY,
+    deadlineMs: SOFT_DEADLINE_MS,
+    startedAt,
+    sleepMs: 150,
+    getLogs: (fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: CONTRACTS.AntseedDeposits as `0x${string}`,
+        events: depositsAbi as any,
+        fromBlock,
+        toBlock,
+      }),
+    onLogs: async ({ logs }) => {
+      if (logs.length === 0) return;
+      const blockTs = await estimateBlockTimestamps({
+        logs,
+        getBlockTimestamp: async (blockNumber) =>
+          (await publicClient.getBlock({ blockNumber })).timestamp,
+      });
 
       // For Deposited events, the event's `buyer` field is a caller-supplied
       // parameter (deposit(address buyer, uint256 amount)) and can differ from
@@ -1743,12 +1556,12 @@ export async function syncAntseedDeposits(
           // without a re-index.
           maxAmountUsdc:
             isDeposited && args.amount != null
-              ? Number(args.amount) / USDC_DECIMALS
+              ? usdcAtomsToNumber(args.amount)
               : null,
           deltaUsdc: null,
           refundUsdc:
             eventType === "withdrawal_executed" && args.amount != null
-              ? Number(args.amount) / USDC_DECIMALS
+              ? usdcAtomsToNumber(args.amount)
               : null,
           settledAmountUsdc: null,
           cumulativeAmountUsdc: null,
@@ -1790,27 +1603,15 @@ export async function syncAntseedDeposits(
           await recomputeBuyers(depositors);
         }
       }
-    }
-
-    await setState(DEPOSITS_CURSOR_KEY, to.toString());
-    consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < DEPOSITS_BATCH_MAX) {
-      batchSize =
-        batchSize * 2n > DEPOSITS_BATCH_MAX
-          ? DEPOSITS_BATCH_MAX
-          : batchSize * 2n;
-      await setState(DEPOSITS_BATCH_KEY, batchSize.toString());
-      consecutiveSuccesses = 0;
-    }
-    cursor.from = to + 1n;
-    await sleep(150);
-  }
+    },
+  });
 
   return {
-    ok: true,
-    fromBlock: fromBlockStart.toString(),
-    toBlock: head.toString(),
+    ok: stream.ok,
+    fromBlock: stream.fromBlock,
+    toBlock: stream.toBlock,
     recordsAdded,
+    ...(stream.error ? { error: stream.error } : {}),
   };
 }
 
@@ -1844,7 +1645,7 @@ export async function recomputeDailyDau(days: string[]) {
 async function recomputeDailyDauOne(day: string, now: number) {
   // Single SQL statement: compute the four metrics for the given day from
   // the union of activity rows, plus the first-deposit lookup for new_users.
-  // Inline-safe because `day` is sanitized to YYYY-MM-DD by the caller.
+  const dayLiteral = rawDateLiteral(day, "daily DAU recompute day");
   await db.execute(sql`
     WITH user_activity AS (
       SELECT buyer_address AS addr, 'buyer' AS role
@@ -1852,14 +1653,14 @@ async function recomputeDailyDauOne(day: string, now: number) {
       WHERE event_type IN ('deposited','withdrawal_executed','reserved','settled','closed')
         AND buyer_address IS NOT NULL
         AND timestamp > 0
-        AND to_timestamp(timestamp)::date = ${sql.raw(`DATE '${day}'`)}
+        AND to_timestamp(timestamp)::date = ${dayLiteral}
       UNION ALL
       SELECT seller_address AS addr, 'seller' AS role
       FROM events
       WHERE event_type IN ('reserved','settled','closed')
         AND seller_address IS NOT NULL
         AND timestamp > 0
-        AND to_timestamp(timestamp)::date = ${sql.raw(`DATE '${day}'`)}
+        AND to_timestamp(timestamp)::date = ${dayLiteral}
     ),
     first_deposits AS (
       SELECT buyer_address AS addr, MIN(to_timestamp(timestamp)::date) AS first_day
@@ -1879,10 +1680,10 @@ async function recomputeDailyDauOne(day: string, now: number) {
     n AS (
       SELECT COUNT(*)::int AS new_users
       FROM first_deposits
-      WHERE first_day = ${sql.raw(`DATE '${day}'`)}
+      WHERE first_day = ${dayLiteral}
     )
     INSERT INTO daily_dau (day, dau, dau_buyers, dau_sellers, new_users, last_recomputed_at)
-    SELECT ${sql.raw(`DATE '${day}'`)}, a.dau, a.dau_buyers, a.dau_sellers, n.new_users, ${now}
+    SELECT ${dayLiteral}, a.dau, a.dau_buyers, a.dau_sellers, n.new_users, ${now}
     FROM a, n
     ON CONFLICT (day) DO UPDATE SET
       dau                = EXCLUDED.dau,
@@ -2015,88 +1816,40 @@ export async function syncIdentityRegistry(
   }
 
   const persistedBatch = await getState(IDENTITY_BATCH_KEY);
-  let batchSize = persistedBatch
+  const batchSize = persistedBatch
     ? BigInt(persistedBatch)
     : IDENTITY_BATCH_INITIAL;
-  if (batchSize > IDENTITY_BATCH_MAX) batchSize = IDENTITY_BATCH_MAX;
-  let consecutiveSuccesses = 0;
   let recordsAdded = 0;
   const startedAt = Date.now();
   const SOFT_DEADLINE_MS = opts.deadlineMs ?? 6_000;
-  const cursor = { from: fromBlockStart };
   // Antseed-relevance sets, loaded once per run. agentIds is mutated as we
   // accept new Registered rows so URIUpdated/MetadataSet later in the same
   // run are kept without a re-query.
   const { addrs, agentIds } = await loadAntseedIdentitySets();
-
-  while (cursor.from <= head) {
-    if (Date.now() - startedAt > SOFT_DEADLINE_MS) {
-      return {
-        ok: true,
-        fromBlock: fromBlockStart.toString(),
-        toBlock: cursor.from.toString(),
-        recordsAdded,
-        error: "deadline_partial",
-      };
-    }
-
-    const to =
-      cursor.from + batchSize - 1n > head ? head : cursor.from + batchSize - 1n;
-
-    let logs: Log[];
-    let rateLimitRetries = 0;
-    while (true) {
-      try {
-        logs = await publicClient.getLogs({
-          address: CONTRACTS.IdentityRegistry as `0x${string}`,
-          events: identityRegistryAbi as any,
-          fromBlock: cursor.from,
-          toBlock: to,
-        });
-        break;
-      } catch (e: any) {
-        const msg = e?.message || String(e);
-        if (isRangeError(msg) && batchSize > 1n) {
-          batchSize = batchSize > 20n ? batchSize / 2n : 10n;
-          if (batchSize < 1n) batchSize = 1n;
-          await setState(IDENTITY_BATCH_KEY, batchSize.toString());
-          consecutiveSuccesses = 0;
-          break;
-        }
-        if (isRateLimitError(msg) && rateLimitRetries < 3) {
-          rateLimitRetries++;
-          await sleep(1500 * rateLimitRetries);
-          continue;
-        }
-        return {
-          ok: false,
-          fromBlock: cursor.from.toString(),
-          toBlock: to.toString(),
-          recordsAdded,
-          error: msg,
-        };
-      }
-    }
-    if (!logs!) continue;
-
-    if (logs.length > 0) {
-      const uniqueBlocks = [
-        ...new Set(logs.map((l) => l.blockNumber).filter((b): b is bigint => !!b)),
-      ];
-      const blockTs = new Map<bigint, number>();
-      if (uniqueBlocks.length > 0) {
-        const anchorBn = uniqueBlocks.reduce((a, b) => (b > a ? b : a));
-        try {
-          const blk = await publicClient.getBlock({ blockNumber: anchorBn });
-          const anchorTs = Number(blk.timestamp);
-          for (const bn of uniqueBlocks) {
-            const diff = Number(anchorBn - bn);
-            blockTs.set(bn, anchorTs - diff * 2);
-          }
-        } catch {
-          // Timestamp fetch is non-fatal — fall back to 0.
-        }
-      }
+  const stream = await syncEventStream({
+    fromBlockStart,
+    head,
+    initialBatchSize: batchSize,
+    maxBatchSize: IDENTITY_BATCH_MAX,
+    cursorKey: IDENTITY_CURSOR_KEY,
+    batchKey: IDENTITY_BATCH_KEY,
+    deadlineMs: SOFT_DEADLINE_MS,
+    startedAt,
+    sleepMs: 150,
+    getLogs: (fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: CONTRACTS.IdentityRegistry as `0x${string}`,
+        events: identityRegistryAbi as any,
+        fromBlock,
+        toBlock,
+      }),
+    onLogs: async ({ logs }) => {
+      if (logs.length === 0) return;
+      const blockTs = await estimateBlockTimestamps({
+        logs,
+        getBlockTimestamp: async (blockNumber) =>
+          (await publicClient.getBlock({ blockNumber })).timestamp,
+      });
 
       const rows = (logs as any[]).map((log) => {
         const args = log.args || {};
@@ -2168,27 +1921,15 @@ export async function syncIdentityRegistry(
           .returning({ id: eventsTbl.id });
         recordsAdded += result.length;
       }
-    }
-
-    await setState(IDENTITY_CURSOR_KEY, to.toString());
-    consecutiveSuccesses += 1;
-    if (consecutiveSuccesses >= 5 && batchSize < IDENTITY_BATCH_MAX) {
-      batchSize =
-        batchSize * 2n > IDENTITY_BATCH_MAX
-          ? IDENTITY_BATCH_MAX
-          : batchSize * 2n;
-      await setState(IDENTITY_BATCH_KEY, batchSize.toString());
-      consecutiveSuccesses = 0;
-    }
-    cursor.from = to + 1n;
-    await sleep(150);
-  }
+    },
+  });
 
   return {
-    ok: true,
-    fromBlock: fromBlockStart.toString(),
-    toBlock: head.toString(),
+    ok: stream.ok,
+    fromBlock: stream.fromBlock,
+    toBlock: stream.toBlock,
     recordsAdded,
+    ...(stream.error ? { error: stream.error } : {}),
   };
 }
 

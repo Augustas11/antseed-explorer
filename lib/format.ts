@@ -6,9 +6,11 @@ export function shortAddr(a: string | null | undefined, head = 6, tail = 4) {
 
 export function fmtUsd(n: number) {
   if (n == null) return "$0";
-  if (n >= 1000) return `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-  if (n >= 1) return `$${n.toFixed(2)}`;
-  if (n > 0) return `$${n.toFixed(4)}`;
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  if (abs >= 1000) return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  if (abs >= 1) return `${sign}$${abs.toFixed(2)}`;
+  if (abs > 0) return `${sign}$${abs.toFixed(4)}`;
   return "$0";
 }
 

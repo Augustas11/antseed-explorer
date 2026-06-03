@@ -11,6 +11,7 @@
 
 import { sql } from "drizzle-orm";
 import { db } from "../db";
+import { rawAddressList, rawNonNegativeInteger } from "../sqlSafe";
 import type { ServiceSnapshot, Signal } from "./types";
 import {
   newlyOfferedServices,
@@ -58,8 +59,8 @@ export async function detectDailySnapshot(asOf: Date): Promise<Signal[]> {
       COUNT(DISTINCT seller_address) FILTER (WHERE event_type = 'settled')::int    AS active_sellers
     FROM events
     WHERE timestamp IS NOT NULL
-      AND timestamp >= ${sql.raw(String(startTs))}
-      AND timestamp < ${sql.raw(String(endTs))}
+      AND timestamp >= ${rawNonNegativeInteger(startTs, "signal start timestamp")}
+      AND timestamp < ${rawNonNegativeInteger(endTs, "signal end timestamp")}
   `);
   const row = r.rows[0] ?? {};
   const sessions = Number(row.sessions ?? 0);
@@ -119,8 +120,8 @@ export async function detectDailyNewSellers(asOf: Date): Promise<Signal[]> {
         AND timestamp < 32503680000
       GROUP BY seller_address
     ) s
-    WHERE first_settled_ts >= ${sql.raw(String(startTs))}
-      AND first_settled_ts <  ${sql.raw(String(endTs))}
+    WHERE first_settled_ts >= ${rawNonNegativeInteger(startTs, "signal start timestamp")}
+      AND first_settled_ts <  ${rawNonNegativeInteger(endTs, "signal end timestamp")}
     ORDER BY first_settled_ts ASC
   `);
   const newSellers = r.rows.map((x: any) => ({
@@ -192,11 +193,20 @@ export async function detectDailyNewBuyers(asOf: Date): Promise<Signal[]> {
   const { startTs, endTs, isoDate } = yesterdayWindow(asOf);
 
   const r = await db.execute<{ count: number }>(sql`
+    WITH first_buyer_events AS (
+      SELECT buyer_address, MIN(timestamp) AS first_ts
+      FROM events
+      WHERE event_type IN ('deposited', 'reserved')
+        AND buyer_address IS NOT NULL
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp < 32503680000
+      GROUP BY buyer_address
+    )
     SELECT COUNT(*)::int AS count
-    FROM buyer_profiles
-    WHERE first_seen_ts IS NOT NULL
-      AND first_seen_ts >= ${sql.raw(String(startTs))}
-      AND first_seen_ts <  ${sql.raw(String(endTs))}
+    FROM first_buyer_events
+    WHERE first_ts >= ${rawNonNegativeInteger(startTs, "signal start timestamp")}
+      AND first_ts <  ${rawNonNegativeInteger(endTs, "signal end timestamp")}
   `);
   const count = Number(r.rows[0]?.count ?? 0);
   if (count < NEW_BUYERS_FLOOR) return [];
@@ -309,10 +319,12 @@ export async function detectDailyVolumeDelta(asOf: Date): Promise<Signal[]> {
 
   const r = await db.execute<any>(sql`
     SELECT
-      COALESCE(SUM(delta_usdc) FILTER (WHERE timestamp >= ${sql.raw(String(startTs))} AND timestamp < ${sql.raw(String(endTs))}), 0)::float
+      COALESCE(SUM(delta_usdc) FILTER (WHERE timestamp >= ${rawNonNegativeInteger(startTs, "signal start timestamp")} AND timestamp < ${rawNonNegativeInteger(endTs, "signal end timestamp")}), 0)::float
         AS yesterday_volume,
-      COALESCE(SUM(delta_usdc) FILTER (WHERE timestamp >= ${sql.raw(String(trailingStart))} AND timestamp < ${sql.raw(String(startTs))}), 0)::float
-        AS trailing_volume
+      COALESCE(SUM(delta_usdc) FILTER (WHERE timestamp >= ${rawNonNegativeInteger(trailingStart, "signal trailing start timestamp")} AND timestamp < ${rawNonNegativeInteger(startTs, "signal start timestamp")}), 0)::float
+        AS trailing_volume,
+      COUNT(DISTINCT to_timestamp(timestamp)::date) FILTER (WHERE timestamp >= ${rawNonNegativeInteger(trailingStart, "signal trailing start timestamp")} AND timestamp < ${rawNonNegativeInteger(startTs, "signal start timestamp")})::int
+        AS trailing_days
     FROM events
     WHERE event_type = 'settled'
       AND timestamp IS NOT NULL
@@ -322,7 +334,8 @@ export async function detectDailyVolumeDelta(asOf: Date): Promise<Signal[]> {
   const row = r.rows[0] ?? {};
   const yesterdayVol = Number(row.yesterday_volume ?? 0);
   const trailingTotal = Number(row.trailing_volume ?? 0);
-  const trailingAvg = trailingTotal / 7;
+  const trailingDays = Number(row.trailing_days ?? 0);
+  const trailingAvg = trailingDays > 0 ? trailingTotal / trailingDays : 0;
 
   // Skip when there's no baseline yet (trailing avg = 0) — comparison
   // meaningless. Also skip when yesterday was a true zero day; saying
@@ -346,6 +359,7 @@ export async function detectDailyVolumeDelta(asOf: Date): Promise<Signal[]> {
         day: isoDate,
         yesterday_volume_usdc: round(yesterdayVol, 4),
         trailing_7d_avg_usdc: round(trailingAvg, 4),
+        trailing_days: trailingDays,
         pct_change: round(pctChange * 100, 1),
         direction,
       },
@@ -364,14 +378,12 @@ async function lookupDisplayNames(
   if (addresses.length === 0) return new Map();
   const safe = addresses
     .map((a) => a.toLowerCase())
-    .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
-    .map((a) => `'${a}'`)
-    .join(",");
-  if (!safe) return new Map();
+    .filter((a) => /^0x[0-9a-f]{40}$/.test(a));
+  if (safe.length === 0) return new Map();
   const rows = (
     await db.execute<{ address: string; display_name: string | null }>(sql`
       SELECT address, display_name FROM provider_directory
-      WHERE address IN (${sql.raw(safe)}) AND display_name IS NOT NULL
+      WHERE address IN (${rawAddressList(safe, "signal display-name addresses")}) AND display_name IS NOT NULL
     `)
   ).rows;
   const m = new Map<string, string>();
@@ -397,9 +409,16 @@ function round(n: number, dp: number): number {
 }
 
 function slugList(items: string[]): string {
-  // Stable short slug for filenames when ≥1 service names are listed.
-  // Just the first item, lowercased + cleaned, so re-runs same day produce
-  // the same filename even if the order changes.
-  const head = items[0] ?? "service";
-  return head.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
+  const slugs = items
+    .map((item) => item.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""))
+    .filter(Boolean)
+    .sort();
+  if (slugs.length === 0) return "service";
+  const joined = slugs.join("-");
+  let hash = 0;
+  for (const ch of joined) {
+    hash = Math.imul(hash ^ ch.charCodeAt(0), 16777619);
+  }
+  const digest = (hash >>> 0).toString(36);
+  return `${joined.slice(0, 60).replace(/-+$/g, "")}-${digest}`;
 }

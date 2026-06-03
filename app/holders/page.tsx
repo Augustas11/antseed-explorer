@@ -11,9 +11,10 @@ interface SP {
 export default async function HoldersPage({
   searchParams,
 }: {
-  searchParams: SP;
+  searchParams: Promise<SP>;
 }) {
-  const page = Math.max(1, Number(searchParams.page || 1));
+  const query = await searchParams;
+  const page = Math.max(1, Number(query.page || 1));
   const limit = 50;
   const offset = (page - 1) * limit;
 

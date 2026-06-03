@@ -38,36 +38,64 @@ interface CacheEntry {
   expires: number;
 }
 
+const TTL = 60 * 60 * 1000; // 1 hour
+const MAX_CACHE_ENTRIES = 1_000;
+
+// Per-process best-effort caches only; serverless instances do not share them.
+// Misses are harmless and re-resolve through mainnet RPC.
 const nameCache = new Map<string, CacheEntry>();
 const addrCache = new Map<string, CacheEntry>();
 
-const TTL = 60 * 60 * 1000; // 1 hour
+function getCached(cache: Map<string, CacheEntry>, key: string): string | null | undefined {
+  const hit = cache.get(key);
+  if (!hit) return undefined;
+  if (hit.expires <= Date.now()) {
+    cache.delete(key);
+    return undefined;
+  }
+  cache.delete(key);
+  cache.set(key, hit);
+  return hit.value;
+}
+
+function setCached(cache: Map<string, CacheEntry>, key: string, value: string | null) {
+  const now = Date.now();
+  cache.set(key, { value, expires: now + TTL });
+  for (const [entryKey, entry] of cache) {
+    if (entry.expires <= now) cache.delete(entryKey);
+  }
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (!oldest) break;
+    cache.delete(oldest);
+  }
+}
 
 export async function getEnsName(address: string): Promise<string | null> {
   const key = address.toLowerCase();
-  const hit = nameCache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.value;
+  const hit = getCached(nameCache, key);
+  if (hit !== undefined) return hit;
   try {
     const name = await mainnetClient.getEnsName({ address: address as `0x${string}` });
-    nameCache.set(key, { value: name ?? null, expires: Date.now() + TTL });
+    setCached(nameCache, key, name ?? null);
     return name ?? null;
   } catch {
-    nameCache.set(key, { value: null, expires: Date.now() + TTL });
+    setCached(nameCache, key, null);
     return null;
   }
 }
 
 export async function resolveEnsName(name: string): Promise<string | null> {
   const key = name.toLowerCase();
-  const hit = addrCache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.value;
+  const hit = getCached(addrCache, key);
+  if (hit !== undefined) return hit;
   try {
     const addr = await mainnetClient.getEnsAddress({ name });
     const result = addr ?? null;
-    addrCache.set(key, { value: result, expires: Date.now() + TTL });
+    setCached(addrCache, key, result);
     return result;
   } catch {
-    addrCache.set(key, { value: null, expires: Date.now() + TTL });
+    setCached(addrCache, key, null);
     return null;
   }
 }

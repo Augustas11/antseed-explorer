@@ -4,7 +4,7 @@
 // the public Antfeed API. Exits non-zero if any tracked diff exceeds tolerance.
 //
 // Usage:
-//   DUNE_API_KEY=<key> npx tsx scripts/check-dune-parity.ts            # uses prod (antfeed.org)
+//   DUNE_API_KEY=<key> npx tsx scripts/check-dune-parity.ts            # uses prod (www.antfeed.org)
 //   EXPLORER_BASE=http://localhost:3000 npx tsx scripts/check-dune-parity.ts
 //
 // Dashboard: https://dune.com/antseed_com/antseed (id 209285).
@@ -14,7 +14,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const DUNE_KEY = process.env.DUNE_API_KEY;
-const EXPLORER_BASE = (process.env.EXPLORER_BASE || "https://antfeed.org").replace(/\/$/, "");
+const EXPLORER_BASE = (process.env.EXPLORER_BASE || "https://www.antfeed.org").replace(/\/$/, "");
 const DUNE_BASE = "https://api.dune.com/api/v1";
 const SNAPSHOT_DIR = ".omc/research/dune-snapshots";
 
@@ -56,7 +56,8 @@ function loadSnapshot(qid: number): any {
 }
 
 async function fetchJson(url: string): Promise<any> {
-  const r = await fetch(url, { redirect: "follow" });
+  const r = await fetch(url, { redirect: "manual" });
+  if (r.status >= 300 && r.status < 400) throw new Error(`${url}: redirect ${r.status}`);
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
   return r.json();
 }

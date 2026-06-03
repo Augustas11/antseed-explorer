@@ -29,12 +29,16 @@ export const getBuyerTool: ToolDef = {
         type: "object",
         properties: {
           total: { type: "number" },
-          volume: { type: "number" },
-          consistency: { type: "number" },
-          diversity: { type: "number" },
-          reliability: { type: "number" },
+          breakdownAvailable: {
+            type: "boolean",
+            description: "False when the score endpoint degraded and component scores are unavailable.",
+          },
+          volume: { type: ["number", "null"] },
+          consistency: { type: ["number", "null"] },
+          diversity: { type: ["number", "null"] },
+          reliability: { type: ["number", "null"] },
         },
-        required: ["total", "volume", "consistency", "diversity", "reliability"],
+        required: ["total", "breakdownAvailable", "volume", "consistency", "diversity", "reliability"],
       },
       sessions: {
         type: "object",
@@ -154,10 +158,11 @@ function shapeBuyer(profile: BuyerProfileResponse, score: BuyerScoreResponse | n
     qualified: p.qualified === 1,
     trustScore: {
       total: breakdown?.total ?? p.trust_score,
-      volume: breakdown?.volume ?? 0,
-      consistency: breakdown?.consistency ?? 0,
-      diversity: breakdown?.diversity ?? 0,
-      reliability: breakdown?.reliability ?? 0,
+      breakdownAvailable: Boolean(breakdown),
+      volume: breakdown?.volume ?? null,
+      consistency: breakdown?.consistency ?? null,
+      diversity: breakdown?.diversity ?? null,
+      reliability: breakdown?.reliability ?? null,
     },
     sessions: {
       total: p.total_sessions,

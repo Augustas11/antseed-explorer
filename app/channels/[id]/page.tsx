@@ -26,12 +26,13 @@ function eventTypePillClass(type: string) {
 export async function generateMetadata({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }): Promise<Metadata> {
-  const channel = await getChannel(params.id).catch(() => null);
+  const { id } = await params;
+  const channel = await getChannel(id).catch(() => null);
   if (!channel)
     return { title: `Channel not found | AntSeed Explorer` };
-  const short = `${params.id.slice(0, 10)}…${params.id.slice(-6)}`;
+  const short = `${id.slice(0, 10)}…${id.slice(-6)}`;
   return {
     title: `Channel ${short} — ${channel.state} | AntSeed Explorer`,
     description: `AntSeed channel between ${shortAddr(channel.buyer_address)} and ${shortAddr(channel.seller_address)}. State: ${channel.state}. Max: ${fmtUsd(channel.max_amount_usdc ?? 0)}.`,
@@ -41,12 +42,13 @@ export async function generateMetadata({
 export default async function ChannelDetailPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const channel = await getChannel(params.id);
+  const { id } = await params;
+  const channel = await getChannel(id);
   if (!channel) notFound();
 
-  const events = await getChannelEvents(params.id, 100);
+  const events = await getChannelEvents(id, 100);
 
   const addrs = [channel.buyer_address, channel.seller_address].filter(
     Boolean,
@@ -63,9 +65,9 @@ export default async function ChannelDetailPage({
           </div>
           <div className="flex items-center gap-3 mt-1 flex-wrap">
             <code className="font-mono text-lg text-ink break-all">
-              {params.id}
+              {id}
             </code>
-            <CopyButton text={params.id} />
+            <CopyButton text={id} />
           </div>
           <div className="mt-2 flex items-center gap-2">
             <span className={`pill ${statePillClass(channel.state)}`}>

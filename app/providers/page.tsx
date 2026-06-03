@@ -85,17 +85,18 @@ function SortLink({
 export default async function ProvidersPage({
   searchParams,
 }: {
-  searchParams: {
+  searchParams: Promise<{
     sort?: string;
     service?: string;
     active7d?: string;
-  };
+  }>;
 }) {
-  const sort = (SORT_KEYS.includes(searchParams.sort as ProviderSortKey)
-    ? searchParams.sort
+  const query = await searchParams;
+  const sort = (SORT_KEYS.includes(query.sort as ProviderSortKey)
+    ? query.sort
     : "volume") as ProviderSortKey;
-  const service = searchParams.service ?? "";
-  const active7d = searchParams.active7d === "1";
+  const service = query.service ?? "";
+  const active7d = query.active7d === "1";
 
   // Resolve canonical service key (?service=) to its raw aliases via facets.
   // We have to await facets before listProviders so the filter can expand

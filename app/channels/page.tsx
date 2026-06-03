@@ -29,19 +29,20 @@ function statePillClass(state: "Open" | "Settled" | "Created") {
 export default async function ChannelsPage({
   searchParams,
 }: {
-  searchParams: SP;
+  searchParams: Promise<SP>;
 }) {
-  const page = pageParam(searchParams.page);
+  const query = await searchParams;
+  const page = pageParam(query.page);
   const limit = 25;
   const offset = (page - 1) * limit;
-  const sortParam = searchParams.sort || "opened";
+  const sortParam = query.sort || "opened";
   const sort = (SORTS.has(sortParam) ? sortParam : "opened") as
     | "amount"
     | "settled"
     | "events"
     | "opened"
     | "last_activity";
-  const dir = searchParams.dir === "asc" ? "asc" : "desc";
+  const dir = query.dir === "asc" ? "asc" : "desc";
 
   const [rows, total] = await Promise.all([
     listChannels({ limit, offset, sort, dir }),

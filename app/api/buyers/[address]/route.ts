@@ -15,8 +15,9 @@ export const dynamic = "force-dynamic";
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { address: string } },
+  { params }: { params: Promise<{ address: string }> },
 ) {
+  const { address } = await params;
   trackMcpUsage(req, "buyers_detail");
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
   if (!rl.allowed) {
@@ -25,17 +26,17 @@ export async function GET(
       { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
     );
   }
-  if (!isExplorerAddress(params.address)) {
+  if (!isExplorerAddress(address)) {
     return NextResponse.json({ error: "invalid_address" }, { status: 400 });
   }
-  const profile = await getBuyer(params.address);
+  const profile = await getBuyer(address);
   if (!profile) {
     return NextResponse.json({ error: "buyer_not_found" }, { status: 404 });
   }
   const [sessions, topSellers, monthly] = await Promise.all([
-    getBuyerSessions(params.address, 50),
-    getBuyerSellerSummary(params.address, 10),
-    getBuyerMonthlyVolume(params.address),
+    getBuyerSessions(address, 50),
+    getBuyerSellerSummary(address, 10),
+    getBuyerMonthlyVolume(address),
   ]);
   const providerMap = await lookupProviders([
     ...sessions.map((s) => s.seller_address),

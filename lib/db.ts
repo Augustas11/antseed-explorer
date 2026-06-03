@@ -9,6 +9,7 @@ import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema";
 import { indexerState } from "./schema";
+import { rawNonNegativeInteger } from "./sqlSafe";
 
 let _sql: NeonQueryFunction<false, false> | null = null;
 let _db: NeonHttpDatabase<typeof schema> | null = null;
@@ -62,25 +63,35 @@ export async function setState(key: string, value: string) {
 // without racing on `last_indexed_block`.
 const SYNC_LOCK_KEY = "indexer_running_at";
 
-export async function tryAcquireSyncLock(staleAfterMs = 90_000): Promise<boolean> {
+export async function tryAcquireSyncLock(staleAfterMs = 90_000): Promise<string | null> {
   const now = Date.now();
   const cutoff = now - staleAfterMs;
-  // sql.raw inlines safe ints — see queries.ts for the same pattern under
-  // Neon HTTP's binding quirks.
+  const nonce =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+  const owner = `${now}:${nonce}`;
   const r = await init().execute<{ value: string }>(sql`
     INSERT INTO indexer_state (key, value)
-    VALUES ('${sql.raw(SYNC_LOCK_KEY)}', '${sql.raw(String(now))}')
+    VALUES (${SYNC_LOCK_KEY}, ${owner})
     ON CONFLICT (key) DO UPDATE
       SET value = EXCLUDED.value
-      WHERE indexer_state.value ~ '^[0-9]+$'
-        AND indexer_state.value::bigint < ${sql.raw(String(cutoff))}
+      WHERE indexer_state.value = '0'
+         OR (
+           split_part(indexer_state.value, ':', 1) ~ '^[0-9]+$'
+           AND split_part(indexer_state.value, ':', 1)::bigint < ${rawNonNegativeInteger(cutoff, "sync lock cutoff")}
+         )
     RETURNING value
   `);
-  return r.rows.length > 0;
+  return r.rows[0]?.value === owner ? owner : null;
 }
 
-export async function releaseSyncLock() {
-  await setState(SYNC_LOCK_KEY, "0");
+export async function releaseSyncLock(owner: string) {
+  await init().execute(sql`
+    UPDATE indexer_state
+    SET value = '0'
+    WHERE key = ${SYNC_LOCK_KEY}
+      AND value = ${owner}
+  `);
 }
 
 export type DB = ReturnType<typeof init>;

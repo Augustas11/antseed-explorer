@@ -4,18 +4,14 @@ import { apiKeys } from "@/lib/schema";
 import { desc } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
+import { hashApiKey } from "@/lib/apiKeys";
+import { authorizedBearer } from "@/lib/operatorAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function authorized(req: NextRequest): boolean {
-  const expected = process.env.API_KEYS_ADMIN_SECRET || process.env.CRON_SECRET;
-  if (!expected) return process.env.NODE_ENV !== "production";
-  return req.headers.get("authorization") === `Bearer ${expected}`;
-}
-
 export async function GET(req: NextRequest) {
-  if (!authorized(req)) {
+  if (!authorizedBearer(req, process.env.API_KEYS_ADMIN_SECRET || process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -42,7 +38,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!authorized(req)) {
+  if (!authorizedBearer(req, process.env.API_KEYS_ADMIN_SECRET || process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
@@ -60,7 +56,7 @@ export async function POST(req: NextRequest) {
 
   const key = randomBytes(32).toString("hex");
   const createdAt = Date.now();
-  await db.insert(apiKeys).values({ key, label, createdAt });
+  await db.insert(apiKeys).values({ key: hashApiKey(key), label, createdAt });
 
   return NextResponse.json({ key, label, createdAt }, { status: 201 });
 }

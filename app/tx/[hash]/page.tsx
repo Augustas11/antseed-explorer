@@ -6,24 +6,25 @@ import { decodeEventLog } from "viem";
 import { publicClient, explorerBaseUrl } from "@/lib/chain";
 import { channelsAbi, CONTRACTS } from "@/lib/antseed";
 import { mapEventType, decodeMetadata } from "@/lib/indexer";
-import { shortAddr, fmtUsd, fmtNum } from "@/lib/format";
+import { shortAddr, fmtNum } from "@/lib/format";
 import AddressDisplay from "../../components/AddressDisplay";
 import TimestampDisplay from "../../components/TimestampDisplay";
 import CopyButton from "../../components/CopyButton";
 
 export const dynamic = "force-dynamic";
 
-const USDC_DECIMALS = 1_000_000;
+const USDC_DECIMALS_BIGINT = 1_000_000n;
 const channelsAddress = CONTRACTS.AntseedChannels.toLowerCase();
 
 export async function generateMetadata({
   params,
 }: {
-  params: { hash: string };
+  params: Promise<{ hash: string }>;
 }): Promise<Metadata> {
+  const { hash } = await params;
   return {
-    title: `Tx ${params.hash.slice(0, 10)}… | AntSeed Explorer`,
-    description: `Transaction details for ${params.hash}`,
+    title: `Tx ${hash.slice(0, 10)}… | AntSeed Explorer`,
+    description: `Transaction details for ${hash}`,
   };
 }
 
@@ -32,24 +33,24 @@ function eventSummary(eventType: string, args: Record<string, unknown>): string 
   const seller = shortAddr(args.seller as string | undefined);
   switch (eventType) {
     case "reserved":
-      return `Buyer ${buyer} opened a channel with ${seller} for up to ${fmtUsd(Number(args.maxAmount ?? 0n) / USDC_DECIMALS)} USDC`;
+      return `Buyer ${buyer} opened a channel with ${seller} for up to ${fmtUsdcAtoms(args.maxAmount ?? 0n)} USDC`;
     case "settled": {
-      const delta = Number(args.delta ?? 0n) / USDC_DECIMALS;
-      const cumul = Number(args.cumulativeAmount ?? 0n) / USDC_DECIMALS;
-      return `Buyer ${buyer} settled ${fmtUsd(delta)} USDC with ${seller} (cumulative: ${fmtUsd(cumul)})`;
+      const delta = fmtUsdcAtoms(args.delta ?? 0n);
+      const cumul = fmtUsdcAtoms(args.cumulativeAmount ?? 0n);
+      return `Buyer ${buyer} settled ${delta} USDC with ${seller} (cumulative: ${cumul})`;
     }
     case "closed": {
-      const settled = Number(args.settledAmount ?? 0n) / USDC_DECIMALS;
-      const refund = Number(args.refund ?? 0n) / USDC_DECIMALS;
-      return `Channel closed — ${fmtUsd(settled)} USDC settled, ${fmtUsd(refund)} USDC refunded`;
+      const settled = fmtUsdcAtoms(args.settledAmount ?? 0n);
+      const refund = fmtUsdcAtoms(args.refund ?? 0n);
+      return `Channel closed — ${settled} USDC settled, ${refund} USDC refunded`;
     }
     case "topup": {
-      const add = Number(args.additionalAmount ?? 0n) / USDC_DECIMALS;
-      return `Buyer ${buyer} topped up channel by ${fmtUsd(add)} USDC`;
+      const add = fmtUsdcAtoms(args.additionalAmount ?? 0n);
+      return `Buyer ${buyer} topped up channel by ${add} USDC`;
     }
     case "withdrawn": {
-      const refund = Number(args.refund ?? 0n) / USDC_DECIMALS;
-      return `Withdrawal of ${fmtUsd(refund)} USDC`;
+      const refund = fmtUsdcAtoms(args.refund ?? 0n);
+      return `Withdrawal of ${refund} USDC`;
     }
     case "close_requested": {
       const grace = args.gracePeriodEnd
@@ -62,6 +63,39 @@ function eventSummary(eventType: string, args: Record<string, unknown>): string 
   }
 }
 
+function bigintFromEventValue(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === "string" && /^-?\d+$/.test(value)) return BigInt(value);
+  return 0n;
+}
+
+function formatDecimalAtoms(atoms: bigint, fractionDigits: number): string {
+  if (fractionDigits === 0) return atoms.toLocaleString();
+  const unit = 10n ** BigInt(6 - fractionDigits);
+  const rounded = (atoms + unit / 2n) / unit;
+  const scale = 10n ** BigInt(fractionDigits);
+  const whole = rounded / scale;
+  const fraction = (rounded % scale).toString().padStart(fractionDigits, "0");
+  return `${whole.toLocaleString()}.${fraction}`;
+}
+
+function fmtUsdcAtoms(value: unknown): string {
+  const atoms = bigintFromEventValue(value);
+  const sign = atoms < 0n ? "-" : "";
+  const abs = atoms < 0n ? -atoms : atoms;
+  if (abs >= 1000n * USDC_DECIMALS_BIGINT) {
+    return `${sign}$${formatDecimalAtoms(abs, 0)}`;
+  }
+  if (abs >= USDC_DECIMALS_BIGINT) {
+    return `${sign}$${formatDecimalAtoms(abs, 2)}`;
+  }
+  if (abs > 0n) {
+    return `${sign}$${formatDecimalAtoms(abs, 4)}`;
+  }
+  return "$0";
+}
+
 function eventTypePillClass(type: string): string {
   if (type === "settled") return "text-accent";
   if (type === "closed") return "text-muted";
@@ -72,9 +106,10 @@ function eventTypePillClass(type: string): string {
 export default async function TxPage({
   params,
 }: {
-  params: { hash: string };
+  params: Promise<{ hash: string }>;
 }) {
-  const hash = params.hash as `0x${string}`;
+  const { hash: rawHash } = await params;
+  const hash = rawHash as `0x${string}`;
 
   let tx: Awaited<ReturnType<typeof publicClient.getTransaction>>;
   let receipt: Awaited<ReturnType<typeof publicClient.getTransactionReceipt>>;
@@ -243,31 +278,31 @@ export default async function TxPage({
                     />
                   )}
                   {args.maxAmount !== undefined && (
-                    <Field label="Max amount" value={fmtUsd(Number(args.maxAmount as bigint) / USDC_DECIMALS)} />
+                    <Field label="Max amount" value={fmtUsdcAtoms(args.maxAmount)} />
                   )}
                   {args.delta !== undefined && (
-                    <Field label="Delta" value={fmtUsd(Number(args.delta as bigint) / USDC_DECIMALS)} />
+                    <Field label="Delta" value={fmtUsdcAtoms(args.delta)} />
                   )}
                   {args.cumulativeAmount !== undefined && (
-                    <Field label="Cumulative" value={fmtUsd(Number(args.cumulativeAmount as bigint) / USDC_DECIMALS)} />
+                    <Field label="Cumulative" value={fmtUsdcAtoms(args.cumulativeAmount)} />
                   )}
                   {args.totalSettled !== undefined && (
-                    <Field label="Total settled" value={fmtUsd(Number(args.totalSettled as bigint) / USDC_DECIMALS)} />
+                    <Field label="Total settled" value={fmtUsdcAtoms(args.totalSettled)} />
                   )}
                   {args.settledAmount !== undefined && (
-                    <Field label="Settled" value={fmtUsd(Number(args.settledAmount as bigint) / USDC_DECIMALS)} />
+                    <Field label="Settled" value={fmtUsdcAtoms(args.settledAmount)} />
                   )}
                   {args.refund !== undefined && (
-                    <Field label="Refund" value={fmtUsd(Number(args.refund as bigint) / USDC_DECIMALS)} />
+                    <Field label="Refund" value={fmtUsdcAtoms(args.refund)} />
                   )}
                   {args.additionalAmount !== undefined && (
-                    <Field label="Top-up" value={fmtUsd(Number(args.additionalAmount as bigint) / USDC_DECIMALS)} />
+                    <Field label="Top-up" value={fmtUsdcAtoms(args.additionalAmount)} />
                   )}
                   {args.newDeposit !== undefined && (
-                    <Field label="New deposit" value={fmtUsd(Number(args.newDeposit as bigint) / USDC_DECIMALS)} />
+                    <Field label="New deposit" value={fmtUsdcAtoms(args.newDeposit)} />
                   )}
                   {args.platformFee !== undefined && (
-                    <Field label="Platform fee" value={fmtUsd(Number(args.platformFee as bigint) / USDC_DECIMALS)} />
+                    <Field label="Platform fee" value={fmtUsdcAtoms(args.platformFee)} />
                   )}
                   {ev.meta && (
                     <>

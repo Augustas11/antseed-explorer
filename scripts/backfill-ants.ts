@@ -30,8 +30,8 @@ async function main() {
 
   for (let i = 1; i <= 200; i++) {
     // Re-acquire each iteration so the lock TTL keeps refreshing.
-    const acquired = await tryAcquireSyncLock(LOCK_STALE_MS);
-    if (!acquired) {
+    const lockOwner = await tryAcquireSyncLock(LOCK_STALE_MS);
+    if (!lockOwner) {
       console.log(`iter ${i}: lock held by another process, retrying in 3s`);
       await new Promise((r) => setTimeout(r, 3000));
       continue;
@@ -42,7 +42,7 @@ async function main() {
     const r = await syncAntsToken({ deadlineMs: ITER_DEADLINE_MS });
     const elapsed = Date.now() - t0;
     await setState("last_sync_ts", Date.now().toString());
-    await releaseSyncLock();
+    await releaseSyncLock(lockOwner);
 
     const after = await getState("last_indexed_block_ants_token");
     const advanced = Number(after ?? 0) - Number(before ?? 0);

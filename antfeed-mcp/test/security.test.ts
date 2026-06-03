@@ -18,9 +18,27 @@ describe("sanitizeMessage", () => {
     expect(sanitizeMessage("ECONNREFUSED 192.168.1.42:5432")).not.toContain("192.168.1.42");
   });
 
+  it("redacts IPv6 addresses to <ip>", () => {
+    const out = sanitizeMessage("ECONNREFUSED [2001:db8::1]:5432");
+    expect(out).toContain("<ip>");
+    expect(out).not.toContain("2001:db8");
+  });
+
+  it("redacts URLs with hostnames", () => {
+    const out = sanitizeMessage("fetch failed at https://internal.example.local:8443/path?q=secret");
+    expect(out).toContain("<url>");
+    expect(out).not.toContain("internal.example.local");
+  });
+
   it("redacts env-var values but keeps the variable name", () => {
     const out = sanitizeMessage("missing API_KEY=sk-secretvalue123");
     expect(out).toContain("API_KEY=<redacted>");
+    expect(out).not.toContain("sk-secretvalue123");
+  });
+
+  it("redacts lowercase secret-like assignments", () => {
+    const out = sanitizeMessage("bad config token=sk-secretvalue123");
+    expect(out).toContain("token=<redacted>");
     expect(out).not.toContain("sk-secretvalue123");
   });
 

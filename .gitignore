@@ -9,6 +9,7 @@ data
 *.db-journal
 .DS_Store
 .vercel
+.claude/
 .env*.local
 .omc/
 *.tsbuildinfo

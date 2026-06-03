@@ -12,9 +12,10 @@ interface SP {
 export default async function SearchPage({
   searchParams,
 }: {
-  searchParams: SP;
+  searchParams: Promise<SP>;
 }) {
-  const raw = (searchParams.q ?? "").trim();
+  const query = await searchParams;
+  const raw = (query.q ?? "").trim();
   const q = raw.toLowerCase();
 
   if (!q) {

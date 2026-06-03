@@ -22,13 +22,14 @@ export const dynamic = "force-dynamic";
 export async function generateMetadata({
   params,
 }: {
-  params: { address: string };
+  params: Promise<{ address: string }>;
 }): Promise<Metadata> {
+  const { address } = await params;
   const [seller, provider] = await Promise.all([
-    getSeller(params.address).catch(() => null),
-    lookupProviderFn(params.address).catch(() => null),
+    getSeller(address).catch(() => null),
+    lookupProviderFn(address).catch(() => null),
   ]);
-  const short = shortAddr(params.address);
+  const short = shortAddr(address);
   if (!seller && !provider) {
     return {
       title: `Seller ${short} — not indexed | AntSeed Explorer`,
@@ -51,13 +52,14 @@ export default async function SellerProfilePage({
   params,
   searchParams,
 }: {
-  params: { address: string };
-  searchParams: { range?: string };
+  params: Promise<{ address: string }>;
+  searchParams: Promise<{ range?: string }>;
 }) {
-  const addrLc = params.address.toLowerCase();
+  const [{ address }, query] = await Promise.all([params, searchParams]);
+  const addrLc = address.toLowerCase();
   const [sellerRaw, provider] = await Promise.all([
-    getSeller(params.address).catch(() => null),
-    lookupProviderFn(params.address).catch((e) => { console.error("lookupProvider failed:", e); return null; }),
+    getSeller(address).catch(() => null),
+    lookupProviderFn(address).catch((e) => { console.error("lookupProvider failed:", e); return null; }),
   ]);
   if (!sellerRaw && !provider) notFound();
 
@@ -73,7 +75,7 @@ export default async function SellerProfilePage({
     last_seen_block: null,
   };
 
-  const range = searchParams.range || "30d";
+  const range = query.range || "30d";
   const rangeLabel =
     range === "24h"
       ? "last 24h"
@@ -334,20 +336,35 @@ function renderInlineMd(s: string): React.ReactNode[] {
     if (m[1] !== undefined) {
       out.push(<strong key={k++}>{m[1]}</strong>);
     } else {
-      out.push(
+      const href = safeProfileHref(m[3]);
+      out.push(href ? (
         <a
           key={k++}
-          href={m[3]}
+          href={href}
           target="_blank"
           rel="noopener noreferrer"
           className="text-accent hover:underline"
         >
           {m[2]}
-        </a>,
-      );
+        </a>
+      ) : (
+        <span key={k++}>{m[2]}</span>
+      ));
     }
     last = m.index + m[0].length;
   }
   if (last < s.length) out.push(s.slice(last));
   return out;
+}
+
+function safeProfileHref(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:") {
+      return raw;
+    }
+  } catch {
+    // Fall through to rendering the link text as plain text.
+  }
+  return null;
 }

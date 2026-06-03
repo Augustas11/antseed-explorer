@@ -1,13 +1,19 @@
 import { decodeCursor, encodeCursor, InvalidCursorError } from "../cursor.js";
 import type { ExplorerClient } from "../explorer.js";
 import type { DirectoryProviderRow } from "../schemas.js";
-import { listProvidersSchema, PAGINATION_DEFAULT_LIMIT, PAGINATION_MAX_LIMIT } from "../schemas.js";
+import {
+  listProvidersSchema,
+  PAGINATION_DEFAULT_LIMIT,
+  PAGINATION_MAX_LIMIT,
+  PROVIDER_DEFAULT_SORT,
+  PROVIDER_SORTS,
+} from "../schemas.js";
 import type { ToolDef } from "./registry.js";
 
 export const listProvidersTool: ToolDef = {
   name: "list_providers",
   description:
-    "Browse the AntFeed provider directory page by page. Use to discover sellers; use lookup for substring search, get_pricing for a single (peerId, service) lookup. sort: score (USDC earned, default) | recent (last refresh). Returns up to limit providers per page, plus an opaque nextCursor for the next page.",
+    "Browse the AntFeed provider directory page by page. Use to discover sellers; use lookup for substring search, get_pricing for a single (peerId, service) lookup. Sort by volume/score, sessions, ghost rate, joined date, reputation proxy, or recent refresh. Returns up to limit providers per page, plus an opaque nextCursor for the next page.",
   inputSchema: {
     type: "object",
     properties: {
@@ -25,9 +31,9 @@ export const listProvidersTool: ToolDef = {
       },
       sort: {
         type: "string",
-        enum: ["score", "recent"],
-        default: "score",
-        description: "score = total USDC earned; recent = newest in directory (by last-refresh timestamp).",
+        enum: PROVIDER_SORTS,
+        default: PROVIDER_DEFAULT_SORT,
+        description: "score/volume = total USDC earned; sessions = settled session count; ghost = ghost rate; joined = first settlement; reputation = local reputation proxy; recent = newest directory refresh.",
       },
     },
     additionalProperties: false,
@@ -72,7 +78,7 @@ export const listProvidersTool: ToolDef = {
         },
       },
       total: { type: "integer", description: "Total providers across all pages" },
-      sort: { type: "string", enum: ["score", "recent"] },
+      sort: { type: "string", enum: PROVIDER_SORTS },
       nextCursor: {
         type: "string",
         description: "Pass back as `cursor` to fetch the next page. Absent when no more results.",
@@ -107,16 +113,10 @@ export async function listProviders(raw: unknown, deps: { explorer: ExplorerClie
   const page = await deps.explorer.listProvidersDirectory({
     offset,
     limit: input.limit,
-    // Upstream supports "volume" | "sessions" | "ghost". For both "score" and "recent"
-    // we fetch by volume; "recent" is then re-sorted client-side within the page.
-    sort: "volume",
+    sort: input.sort,
   });
 
-  let providers = page.providers;
-  if (input.sort === "recent") {
-    providers = [...providers].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-  }
-
+  const providers = page.providers;
   const nextOffset = offset + providers.length;
   const hasMore = nextOffset < page.total && providers.length > 0;
 

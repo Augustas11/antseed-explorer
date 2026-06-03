@@ -71,6 +71,8 @@ const sellersPage = (sellers: typeof SELLER_ROW[], total: number) =>
   jsonResponse({ sellers, total, limit: 1000, offset: 0 });
 const channelsPage = (channels: typeof CHANNEL_ROW[], total: number, offset = 0) =>
   jsonResponse({ channels, total, limit: 1000, offset });
+const channelDetail = (channel: typeof CHANNEL_ROW | null) =>
+  channel ? jsonResponse(channel) : jsonResponse({ error: "channel_not_found" }, { status: 404 });
 
 const PROVIDER_ROW = {
   address: ADDR_A,
@@ -133,6 +135,14 @@ describe("ExplorerClient URL construction", () => {
     await explorer.listChannels({ limit: 1000, sort: "last_activity", dir: "desc" });
     const url = fetchImpl.mock.calls[0]![0] as string;
     expect(url).toBe(`${BASE}/api/channels?limit=1000&sort=last_activity&dir=desc`);
+  });
+
+  it("getChannel hits /api/channels/{id}", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(channelDetail(CHANNEL_ROW));
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    await explorer.getChannel(CHANNEL_ROW.channel_id);
+    const url = fetchImpl.mock.calls[0]![0] as string;
+    expect(url).toBe(`${BASE}/api/channels/${CHANNEL_ROW.channel_id}`);
   });
 
   it("strips trailing slashes from baseUrl", async () => {
@@ -271,13 +281,23 @@ describe("lookup tool", () => {
 });
 
 describe("list_providers tool", () => {
-  it("hits /api/providers with sort=volume for sort=score", async () => {
+  it("hits /api/providers with sort=volume by default", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW], 1));
+    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
+    const out = await listProviders({ limit: 20 }, { explorer });
+    const url = fetchImpl.mock.calls[0]![0] as string;
+    expect(url).toContain("/api/providers");
+    expect(url).toContain("sort=volume");
+    expect(out.sort).toBe("volume");
+  });
+
+  it("passes score alias through to /api/providers", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(providersPage([PROVIDER_ROW], 1));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const out = await listProviders({ sort: "score", limit: 20 }, { explorer });
     const url = fetchImpl.mock.calls[0]![0] as string;
     expect(url).toContain("/api/providers");
-    expect(url).toContain("sort=volume");
+    expect(url).toContain("sort=score");
     expect(out.providers).toHaveLength(1);
     expect(out.providers[0]!.peerId).toBe(PROVIDER_ROW.address);
     expect(out.providers[0]!.displayName).toBe("Dark Signal");
@@ -286,12 +306,15 @@ describe("list_providers tool", () => {
     expect(out.providers[0]!.pricingSummary.maxInputUsdPerMillion).toBe(5.0);
   });
 
-  it("sorts by updatedAt desc when sort=recent", async () => {
+  it("passes REST provider sorts through to /api/providers", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValue(providersPage([PROVIDER_ROW, PROVIDER_ROW_2], 2));
+      .mockResolvedValue(providersPage([PROVIDER_ROW_2, PROVIDER_ROW], 2));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
-    const out = await listProviders({ sort: "recent" }, { explorer });
+    const out = await listProviders({ sort: "reputation" }, { explorer });
+    const url = fetchImpl.mock.calls[0]![0] as string;
+    expect(url).toContain("sort=reputation");
+    expect(out.sort).toBe("reputation");
     expect(out.providers[0]!.peerId).toBe(ADDR_B); // updatedAt = 1_700_001_000_000 (newer)
     expect(out.providers[1]!.peerId).toBe(ADDR_A);
   });
@@ -400,7 +423,7 @@ describe("get_pricing tool", () => {
 
 describe("get_session_status tool", () => {
   it("finds channel by id and formats", async () => {
-    const fetchImpl = vi.fn().mockImplementation(async () => channelsPage([CHANNEL_ROW], 1));
+    const fetchImpl = vi.fn().mockImplementation(async () => channelDetail(CHANNEL_ROW));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const out = await getSessionStatus({ sessionId: CHANNEL_ROW.channel_id }, { explorer });
     expect(out.sessionId).toBe(CHANNEL_ROW.channel_id);
@@ -410,7 +433,7 @@ describe("get_session_status tool", () => {
   });
 
   it("is case-insensitive on the hex part of channel id", async () => {
-    const fetchImpl = vi.fn().mockImplementation(async () => channelsPage([CHANNEL_ROW], 1));
+    const fetchImpl = vi.fn().mockImplementation(async () => channelDetail(CHANNEL_ROW));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const mixedCase = "0x" + CHANNEL_ROW.channel_id.slice(2).toUpperCase();
     const out = await getSessionStatus({ sessionId: mixedCase }, { explorer });
@@ -426,7 +449,7 @@ describe("get_session_status tool", () => {
   });
 
   it("SESSION_NOT_FOUND when not in index (single short page)", async () => {
-    const fetchImpl = vi.fn().mockImplementation(async () => channelsPage([CHANNEL_ROW], 1));
+    const fetchImpl = vi.fn().mockImplementation(async () => channelDetail(null));
     const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
     const err = await getSessionStatus(
       { sessionId: "0x000000000000000000000000000000000000000000000000000000000000dead" },
@@ -434,22 +457,6 @@ describe("get_session_status tool", () => {
     ).catch((e) => e);
     expect(err).toBeInstanceOf(ExplorerError);
     expect(err).toMatchObject({ code: "SESSION_NOT_FOUND" });
-  });
-
-  it("SESSION_OUT_OF_RANGE when MAX_PAGES exhausted on a deep total", async () => {
-    const fullPage = Array.from({ length: 1000 }, (_, i) => ({
-      ...CHANNEL_ROW,
-      channel_id: `0x${(i + 1).toString(16).padStart(64, "0")}`,
-    }));
-    const fetchImpl = vi.fn().mockImplementation(async () => channelsPage(fullPage, 10000));
-    const explorer = makeExplorer(fetchImpl as unknown as typeof fetch);
-    const err = await getSessionStatus(
-      { sessionId: "0x000000000000000000000000000000000000000000000000000000000000beef" },
-      { explorer },
-    ).catch((e) => e);
-    expect(err).toBeInstanceOf(ExplorerError);
-    expect(err).toMatchObject({ code: "SESSION_OUT_OF_RANGE" });
-    expect(fetchImpl).toHaveBeenCalledTimes(5);
   });
 });
 

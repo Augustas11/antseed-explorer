@@ -1,30 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listSellers, countSellers } from "@/lib/queries";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
+import { trackMcpUsage } from "@/lib/mcp-usage";
+import { csvLine } from "@/lib/csv";
+import { SELLER_DEFAULT_SORT, SELLER_SORTS, type SellerSort } from "@/lib/publicApiContract";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const SORTS = new Set(["volume", "sessions", "buyers", "ghosts", "first_seen"]);
+const SORTS = new Set<string>(SELLER_SORTS);
 
 function intParam(value: string | null, fallback: number, min: number, max: number): number {
+  if (value == null || value === "") return fallback;
   const n = Number(value ?? fallback);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-function csvLine(fields: (string | number | null | undefined)[]): string {
-  return fields
-    .map((f) => {
-      if (f == null) return "";
-      const s = String(f);
-      if (/[,"\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-      return s;
-    })
-    .join(",");
-}
-
 export async function GET(req: NextRequest) {
+  trackMcpUsage(req, "sellers");
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
   if (!rl.allowed) {
     return NextResponse.json(
@@ -36,8 +30,8 @@ export async function GET(req: NextRequest) {
   const u = new URL(req.url);
   const limit = intParam(u.searchParams.get("limit"), 100, 1, 1000);
   const offset = intParam(u.searchParams.get("offset"), 0, 0, 100_000);
-  const sortParam = u.searchParams.get("sort") || "volume";
-  const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
+  const sortParam = u.searchParams.get("sort") || SELLER_DEFAULT_SORT;
+  const sort: SellerSort = SORTS.has(sortParam) ? (sortParam as SellerSort) : SELLER_DEFAULT_SORT;
   const dir = u.searchParams.get("dir") === "asc" ? "asc" : "desc";
   const format = u.searchParams.get("format");
 

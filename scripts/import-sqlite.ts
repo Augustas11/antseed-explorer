@@ -22,18 +22,87 @@ import {
 } from "../lib/schema";
 import { sql } from "drizzle-orm";
 
+const IMPORT_STATUS_KEY = "sqlite_import_status";
+const CHUNK = 500;
+
+interface TargetCounts {
+  events: number;
+  buyerProfiles: number;
+  providerDirectory: number;
+  indexerState: number;
+}
+
+async function tableCounts(): Promise<TargetCounts> {
+  const r = await db.execute<{
+    events: number;
+    buyer_profiles: number;
+    provider_directory: number;
+    indexer_state: number;
+  }>(sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM events) AS events,
+      (SELECT COUNT(*)::int FROM buyer_profiles) AS buyer_profiles,
+      (SELECT COUNT(*)::int FROM provider_directory) AS provider_directory,
+      (SELECT COUNT(*)::int FROM indexer_state WHERE key <> ${IMPORT_STATUS_KEY}) AS indexer_state
+  `);
+  const row = r.rows[0];
+  return {
+    events: Number(row?.events ?? 0),
+    buyerProfiles: Number(row?.buyer_profiles ?? 0),
+    providerDirectory: Number(row?.provider_directory ?? 0),
+    indexerState: Number(row?.indexer_state ?? 0),
+  };
+}
+
+async function importStatus(): Promise<string | null> {
+  const r = await db.execute<{ value: string }>(sql`
+    SELECT value FROM indexer_state WHERE key = ${IMPORT_STATUS_KEY} LIMIT 1
+  `);
+  return r.rows[0]?.value ?? null;
+}
+
+async function setImportStatus(value: string) {
+  await db
+    .insert(indexerState)
+    .values({ key: IMPORT_STATUS_KEY, value })
+    .onConflictDoUpdate({
+      target: indexerState.key,
+      set: { value },
+    });
+}
+
+function hasTargetRows(counts: TargetCounts): boolean {
+  return counts.events > 0 ||
+    counts.buyerProfiles > 0 ||
+    counts.providerDirectory > 0 ||
+    counts.indexerState > 0;
+}
+
+function statusAllowsResume(status: string | null): boolean {
+  return status != null && status.startsWith("in_progress:");
+}
+
 async function main() {
   if (!process.env.DATABASE_URL) {
     console.error("DATABASE_URL is not set. Aborting.");
     process.exit(1);
   }
 
-  const evCheck = await db.execute<{ n: number }>(sql`SELECT COUNT(*)::int AS n FROM events`);
-  if ((evCheck.rows[0]?.n ?? 0) > 0) {
+  const status = await importStatus();
+  if (status?.startsWith("complete:")) {
+    console.error(`SQLite import already completed (${status}). Refusing to re-run.`);
+    process.exit(1);
+  }
+
+  const counts = await tableCounts();
+  if (hasTargetRows(counts) && !statusAllowsResume(status)) {
     console.error(
-      `Postgres already has ${evCheck.rows[0]?.n} events. ` +
+      `Postgres is not empty: ` +
+      `${counts.events} events, ${counts.buyerProfiles} buyers, ` +
+      `${counts.providerDirectory} providers, ${counts.indexerState} state rows. ` +
       `import-sqlite is a one-time backfill and must not be re-run on a non-empty database — ` +
-      `it would overwrite live buyer_profiles with stale SQLite data.`
+      `it would overwrite live data with stale SQLite values. ` +
+      `Only a database marked ${IMPORT_STATUS_KEY}=in_progress:* may be resumed.`
     );
     process.exit(1);
   }
@@ -46,6 +115,11 @@ async function main() {
 
   const sdb = new Database(sqlitePath, { readonly: true });
   console.log(`Importing from ${sqlitePath} → ${process.env.DATABASE_URL.replace(/:[^@]*@/, ":***@")}`);
+  if (statusAllowsResume(status)) {
+    console.log(`Resuming interrupted SQLite import (${status}).`);
+  } else {
+    await setImportStatus(`in_progress:${new Date().toISOString()}`);
+  }
 
   // ---- events ----
   const events = sdb
@@ -57,7 +131,6 @@ async function main() {
     )
     .all() as any[];
   console.log(`events: ${events.length}`);
-  const CHUNK = 500;
   for (let i = 0; i < events.length; i += CHUNK) {
     const slice = events.slice(i, i + CHUNK).map((r) => ({
       txHash: r.tx_hash,
@@ -163,6 +236,8 @@ async function main() {
   // sanity check
   const ev = await db.execute<{ n: number }>(sql`SELECT COUNT(*)::int AS n FROM events`);
   const bp = await db.execute<{ n: number }>(sql`SELECT COUNT(*)::int AS n FROM buyer_profiles`);
+  await setImportStatus(`complete:${new Date().toISOString()}:events=${ev.rows[0]?.n ?? 0}:buyers=${bp.rows[0]?.n ?? 0}`);
+  sdb.close();
   console.log(`✓ done. Postgres now has ${ev.rows[0]?.n} events, ${bp.rows[0]?.n} buyers.`);
 }
 

@@ -1,5 +1,6 @@
 import { ImageResponse } from "next/og";
 import { getSeller } from "@/lib/queries";
+import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 
 export const runtime = "nodejs";
 export const revalidate = 3600;
@@ -10,10 +11,11 @@ export const contentType = "image/png";
 export default async function SellerOG({
   params,
 }: {
-  params: { address: string };
+  params: Promise<{ address: string }>;
 }) {
   try {
-    return await renderSellerOG(params.address);
+    const { address } = await params;
+    return await renderSellerOG(address);
   } catch {
     return new ImageResponse(
       (
@@ -212,22 +214,4 @@ function Stat({ label, value }: { label: string; value: string }) {
       </div>
     </div>
   );
-}
-
-function shortAddr(a: string, head = 6, tail = 4): string {
-  if (a.length <= head + tail) return a;
-  return `${a.slice(0, head)}...${a.slice(-tail)}`;
-}
-
-function fmtNum(n: number | null | undefined): string {
-  if (n == null) return "—";
-  return n.toLocaleString();
-}
-
-function fmtUsd(n: number | null | undefined): string {
-  if (n == null) return "$0";
-  if (n >= 1000) return `$${Math.round(n).toLocaleString()}`;
-  if (n >= 1) return `$${n.toFixed(2)}`;
-  if (n > 0) return `$${n.toFixed(4)}`;
-  return "$0";
 }
