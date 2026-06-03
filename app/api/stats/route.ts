@@ -6,7 +6,6 @@ import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 export const runtime = "nodejs";
 // Aggregates change at most every minute (when the indexer pulses).
 // 30s edge cache + SWR keeps Neon out of the request path for 95% of hits.
-export const dynamic = "force-dynamic";
 
 const RESPONSE_HEADERS = {
   "Cache-Control": "public, s-maxage=30, stale-while-revalidate=120",

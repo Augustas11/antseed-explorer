@@ -171,28 +171,33 @@ export function DauChart() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  const fetchData = useCallback(async (r: Range) => {
+  const fetchData = useCallback(async (r: Range, signal?: AbortSignal) => {
     setLoading(true);
     setError(false);
     try {
       const { from, to } = getDates(r);
       const res = await fetch(
         `/api/metrics/dau?from=${from}&to=${to}&granularity=day`,
-        { cache: "default" },
+        { cache: "default", signal },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const rows: DauRow[] = await res.json();
+      if (signal?.aborted) return;
       setData(rows);
     } catch {
+      if (signal?.aborted) return;
       setError(true);
       setData(null);
     } finally {
+      if (signal?.aborted) return;
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchData(range);
+    const controller = new AbortController();
+    void fetchData(range, controller.signal);
+    return () => controller.abort();
   }, [range, fetchData]);
 
   const handleRangeChange = useCallback(

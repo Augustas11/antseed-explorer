@@ -13,14 +13,14 @@ Not affiliated with the AntSeed team.
 1. **Buyer profiles** — per-address volume, sessions, unique sellers, ghost-session count, and a derived **Buyer Trust Score** (0–100).
 2. **Network leaderboard** — sortable, filterable buyer ranking.
 3. **Network overview** — daily settlement volume, active buyers, last 30 days.
-4. **Token-level session detail** — input/output tokens and request count per settled session, decoded from `ChannelSettled.metadata`.
+4. **Token usage detail** — input/output tokens and request count from `AntseedStats.MetadataRecorded`, with legacy settled-session metadata decoded only after validation.
 5. **Public scoring API** — `GET /api/score/[address]` returns the trust score JSON for any address.
 
 ---
 
 ## Stack
 
-- Next.js 14 (App Router) + TypeScript
+- Next.js 15 (App Router) + TypeScript
 - [viem](https://viem.sh) for Base reads (no wallet, read-only)
 - Neon Postgres + Drizzle ORM (HTTP driver, serverless-friendly)
 - Tailwind CSS, Recharts
@@ -65,13 +65,15 @@ npm run dev
 
 ## Contract integration
 
-Single contract: **`AntseedChannels`** on Base mainnet,
+Core settlement contract: **`AntseedChannels`** on Base mainnet,
 [`0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d`](https://basescan.org/address/0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d), deployed at block `45,667,842`.
+Auxiliary indexers also read AntseedStats, ANTS, staking, deposits, and identity events for token accounting, holder state, DAU, and profile enrichment.
 
 | event | semantic |
 |---|---|
 | `Reserved` | session opened (buyer locks `maxAmount` for a seller). |
-| `ChannelSettled` | seller called settle; `delta` USDC moved this batch. `metadata` = `[version, inputTokens, outputTokens, requestCount]`. |
+| `ChannelSettled` | seller called settle; `delta` USDC moved this batch. `metadata` is seller-provided opaque bytes and is stored only after validation. |
+| `MetadataRecorded` | authorized stats writer recorded per-inference input/output tokens and request count; canonical source for network token totals. |
 | `ChannelClosed` | channel closed. `settledAmount=0` + no prior `ChannelSettled` → ghost. |
 | `ChannelTopUp` | buyer added more deposit to an existing channel. |
 | `ChannelWithdrawn` | buyer pulled refund. |
@@ -136,12 +138,12 @@ antseed-explorer/
     buyers/[address]/page.tsx   # buyer profile
     api/
       cron/sync/route.ts        # cron-driven indexer pass
-      sync/route.ts             # manual sync (Sync now button)
+      sync/route.ts             # authenticated manual sync endpoint
       buyers/route.ts
       buyers/[address]/route.ts
       stats/route.ts
       score/[address]/route.ts
-    components/                 # SyncButton, Charts, Badges, CopyButton
+    components/                 # Charts, Badges, CopyButton, UI helpers
   lib/
     schema.ts                   # Drizzle Postgres schema
     db.ts                       # Neon HTTP client + state helpers

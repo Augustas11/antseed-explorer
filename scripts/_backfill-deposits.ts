@@ -29,10 +29,18 @@ const RPC = process.env.RPC_URL || "https://mainnet.base.org";
 const DEPOSITS = CONTRACTS.AntseedDeposits as `0x${string}`;
 const BATCH = BigInt(process.env.BACKFILL_BATCH || "9000");
 const SLEEP_MS = Number(process.env.BACKFILL_SLEEP_MS || "120");
-const USDC_DECIMALS = 1_000_000;
+const USDC_DECIMALS_BIGINT = 1_000_000n;
+const MAX_SAFE_USDC_ATOMS = BigInt(Number.MAX_SAFE_INTEGER) * USDC_DECIMALS_BIGINT;
 
 const client = createPublicClient({ chain: base, transport: http(RPC) });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function usdcAtomsToNumber(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value !== "bigint") return null;
+  if (value < 0n || value > MAX_SAFE_USDC_ATOMS) return null;
+  return Number(value) / Number(USDC_DECIMALS_BIGINT);
+}
 
 function mapEventType(name: string | undefined): EventType | null {
   switch (name) {
@@ -140,7 +148,7 @@ async function main() {
       const buyer = isDeposited
         ? (txFromMap.get(log.transactionHash) ?? (args.buyer as string | undefined)?.toLowerCase() ?? null)
         : (args.buyer as string | undefined)?.toLowerCase() ?? null;
-      const amount = args.amount != null ? Number(args.amount) / USDC_DECIMALS : null;
+      const amount = usdcAtomsToNumber(args.amount);
       rows.push({
         txHash: log.transactionHash,
         logIndex: log.logIndex,

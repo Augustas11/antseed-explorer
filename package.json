@@ -15,19 +15,27 @@
     "signals": "tsx scripts/detect-signals.ts",
     "signals:dry": "tsx scripts/detect-signals.ts --dry",
     "refresh-og": "tsx scripts/refresh-og.ts",
+    "test:indexer": "node --import tsx scripts/test-indexer-window.ts && node --import tsx scripts/test-indexer-metadata.ts",
+    "test:contracts": "node --import tsx scripts/test-api-contract.ts && node --import tsx scripts/test-sql-safe.ts && node --import tsx scripts/test-csv.ts && node --import tsx scripts/test-diem-snapshot.ts && node --import tsx scripts/test-provider-directory.ts && node --import tsx scripts/test-format.ts && node --import tsx scripts/test-security-headers.ts",
     "vercel-build": "tsx scripts/migrate.ts && next build"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
-    "@scalar/api-reference-react": "^0.9.34",
+    "@scalar/api-reference-react": "^0.9.42",
     "@vercel/analytics": "^2.0.1",
     "drizzle-orm": "^0.45.2",
-    "next": "^14.2.33",
+    "next": "^15.5.19",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-qr-code": "^2.0.21",
     "recharts": "^2.13.0",
-    "viem": "^2.21.0"
+    "viem": "^2.52.0"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "^0.25.12"
+    },
+    "postcss": "^8.5.14"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
@@ -38,7 +46,7 @@
     "better-sqlite3": "^11.3.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
-    "postcss": "^8.4.47",
+    "postcss": "^8.5.14",
     "tailwindcss": "^3.4.13",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"

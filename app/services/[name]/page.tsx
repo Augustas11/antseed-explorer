@@ -10,9 +10,10 @@ export const dynamic = "force-dynamic";
 export async function generateMetadata({
   params,
 }: {
-  params: { name: string };
+  params: Promise<{ name: string }>;
 }): Promise<Metadata> {
-  const input = decodeURIComponent(params.name);
+  const { name } = await params;
+  const input = decodeURIComponent(name);
   const service = await getService(input);
   const title = service?.display ?? input;
   return {
@@ -24,9 +25,10 @@ export async function generateMetadata({
 export default async function ServiceDetailPage({
   params,
 }: {
-  params: { name: string };
+  params: Promise<{ name: string }>;
 }) {
-  const input = decodeURIComponent(params.name);
+  const { name } = await params;
+  const input = decodeURIComponent(name);
   const service = await getService(input);
   if (!service) notFound();
 

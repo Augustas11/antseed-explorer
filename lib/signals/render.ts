@@ -13,8 +13,8 @@
 //   - banned: "ghost"/"ghosts" (use "unsettled" / "closure" / "no settlement")
 //   - banned corporate verbs: excited/thrilled/leveraging/unlock/amazing/huge
 //
-// Full rules + ground-truth exemplars in:
-//   ~/.claude/projects/-Users-augstar-ohmyclaude/memory/feedback_voice_antfeed.md
+// Full rules + ground-truth exemplars live in the internal AntFeed Colony
+// Scout voice rules.
 
 import type { Signal } from "./types";
 
@@ -78,7 +78,7 @@ ${drafts.asset}
 ## Notes for the writer
 
 - Verify the number against ${s.link ?? "antfeed.org"} before posting — indexer is near-real-time, not real-time.
-- Voice = Colony Scout. Full rules: \`~/.claude/projects/-Users-augstar-ohmyclaude/memory/feedback_voice_antfeed.md\`. Do NOT use the operator first-person voice from \`marketing/social/g0.1-x-thread.md\` — that's launch-thread mode, not routine post mode.
+- Voice = Colony Scout. Use the internal AntFeed Colony Scout voice rules. Do NOT use the operator first-person launch-thread mode for routine posts.
 - If a stinger doesn't land naturally, drop it. Forcing "the colony does X" on a mundane day reads as parody.
 - This card describes a daily delta. The story is the *movement*, not the static state.
 - "ghost" / "ghosts" are banned vocabulary. If the data is about ChannelClosed-without-settlement, say "unsettled closures" or "closures with no settlement."

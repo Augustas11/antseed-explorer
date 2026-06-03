@@ -5,7 +5,6 @@ import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { trackMcpUsage } from "@/lib/mcp-usage";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 // Public scoring API — meant to be consumed by other dApps from the browser.
 // 60s edge cache + SWR keeps Neon load flat; CORS lets browser callers in.
@@ -21,8 +20,9 @@ export async function OPTIONS() {
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { address: string } },
+  { params }: { params: Promise<{ address: string }> },
 ) {
+  const { address } = await params;
   trackMcpUsage(req, "score");
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
   if (!rl.allowed) {
@@ -31,15 +31,15 @@ export async function GET(
       { status: 429, headers: { "Retry-After": String(rl.retryAfter) } },
     );
   }
-  if (!isExplorerAddress(params.address)) {
+  if (!isExplorerAddress(address)) {
     return NextResponse.json({ error: "invalid_address" }, { status: 400, headers: RESPONSE_HEADERS });
   }
 
-  const profile = await getBuyer(params.address);
+  const profile = await getBuyer(address);
   if (!profile) {
     return NextResponse.json(
       {
-        address: params.address.toLowerCase(),
+        address: address.toLowerCase(),
         score: 0,
         tier: "unknown",
         qualified: false,

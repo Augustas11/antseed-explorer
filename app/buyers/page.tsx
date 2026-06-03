@@ -40,16 +40,17 @@ function scoreParam(value: string | undefined): number {
 export default async function BuyersPage({
   searchParams,
 }: {
-  searchParams: SP;
+  searchParams: Promise<SP>;
 }) {
-  const page = pageParam(searchParams.page);
+  const query = await searchParams;
+  const page = pageParam(query.page);
   const limit = 25;
   const offset = (page - 1) * limit;
-  const qualifiedOnly = searchParams.qualified === "1";
-  const minScore = scoreParam(searchParams.minScore);
-  const sortParam = searchParams.sort || "volume";
+  const qualifiedOnly = query.qualified === "1";
+  const minScore = scoreParam(query.minScore);
+  const sortParam = query.sort || "volume";
   const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
-  const dir = searchParams.dir === "asc" ? "asc" : "desc";
+  const dir = query.dir === "asc" ? "asc" : "desc";
 
   const [rows, total] = await Promise.all([
     listBuyers({ limit, offset, qualifiedOnly, minScore, sort }),

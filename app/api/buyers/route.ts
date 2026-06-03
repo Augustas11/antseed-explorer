@@ -1,36 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listBuyers, countBuyers } from "@/lib/queries";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
+import { trackMcpUsage } from "@/lib/mcp-usage";
+import { csvLine } from "@/lib/csv";
+import { BUYER_DEFAULT_SORT, BUYER_SORTS, type BuyerSort } from "@/lib/publicApiContract";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const SORTS = new Set(["score", "volume", "sessions", "first_seen", "unique_sellers", "ghosts"]);
+const SORTS = new Set<string>(BUYER_SORTS);
 
 function intParam(value: string | null, fallback: number, min: number, max: number): number {
+  if (value == null || value === "") return fallback;
   const n = Number(value ?? fallback);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
 function scoreParam(value: string | null): number {
+  if (value == null || value === "") return 0;
   const n = Number(value ?? 0);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, n));
 }
 
-function csvLine(fields: (string | number | null | undefined)[]): string {
-  return fields
-    .map((f) => {
-      if (f == null) return "";
-      const s = String(f);
-      if (/[,"\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-      return s;
-    })
-    .join(",");
-}
-
 export async function GET(req: NextRequest) {
+  trackMcpUsage(req, "buyers");
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
   if (!rl.allowed) {
     return NextResponse.json(
@@ -44,8 +39,8 @@ export async function GET(req: NextRequest) {
   const offset = intParam(u.searchParams.get("offset"), 0, 0, 100_000);
   const qualifiedOnly = u.searchParams.get("qualified") === "1";
   const minScore = scoreParam(u.searchParams.get("minScore"));
-  const sortParam = u.searchParams.get("sort") || "volume";
-  const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
+  const sortParam = u.searchParams.get("sort") || BUYER_DEFAULT_SORT;
+  const sort: BuyerSort = SORTS.has(sortParam) ? (sortParam as BuyerSort) : BUYER_DEFAULT_SORT;
   const format = u.searchParams.get("format");
 
   const [rows, total] = await Promise.all([

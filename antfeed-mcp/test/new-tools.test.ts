@@ -55,9 +55,13 @@ describe("cursor", () => {
     expect(() => decodeCursor(Buffer.from('{"o":-5}', "utf8").toString("base64url"))).toThrow(
       InvalidCursorError,
     );
+    expect(() => decodeCursor(Buffer.from('{"o":"5"}', "utf8").toString("base64url"))).toThrow(
+      InvalidCursorError,
+    );
   });
 
   it("rejects offsets above the safety ceiling", () => {
+    expect(decodeCursor(encodeCursor(100_000))).toBe(100_000);
     const huge = Buffer.from(JSON.stringify({ o: 999_999_999 }), "utf8").toString("base64url");
     expect(() => decodeCursor(huge)).toThrow(InvalidCursorError);
   });
@@ -73,7 +77,7 @@ describe("network_stats tool", () => {
     lastSyncTs: 1_700_000_000,
     drift: { eventsUsdc: 12345.67, profilesUsdc: 12345.67, driftUsdc: 0 },
   };
-  const GAS = { gwei: "0.4231" };
+  const GAS = { gwei: 0.4231 };
   const DAU_TODAY = [
     {
       day: new Date().toISOString().slice(0, 10),
@@ -271,7 +275,11 @@ describe("get_buyer tool", () => {
     const out = (await getBuyer({ address: ADDR_A }, { explorer })) as Record<string, any>;
     // Falls back to profile.trust_score when breakdown is unavailable.
     expect(out.trustScore.total).toBe(65);
-    expect(out.trustScore.volume).toBe(0);
+    expect(out.trustScore.breakdownAvailable).toBe(false);
+    expect(out.trustScore.volume).toBeNull();
+    expect(out.trustScore.consistency).toBeNull();
+    expect(out.trustScore.diversity).toBeNull();
+    expect(out.trustScore.reliability).toBeNull();
   });
 
   it("INVALID_INPUT on non-hex address", async () => {

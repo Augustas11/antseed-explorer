@@ -24,10 +24,11 @@ export const dynamic = "force-dynamic";
 export async function generateMetadata({
   params,
 }: {
-  params: { address: string };
+  params: Promise<{ address: string }>;
 }): Promise<Metadata> {
-  const buyer = await getBuyer(params.address).catch(() => null);
-  const short = shortAddr(params.address);
+  const { address } = await params;
+  const buyer = await getBuyer(address).catch(() => null);
+  const short = shortAddr(address);
   if (!buyer) {
     return {
       title: `Buyer ${short} — not indexed | AntSeed Demand Explorer`,
@@ -49,10 +50,11 @@ export default async function BuyerProfilePage({
   params,
   searchParams,
 }: {
-  params: { address: string };
-  searchParams: { range?: string };
+  params: Promise<{ address: string }>;
+  searchParams: Promise<{ range?: string }>;
 }) {
-  const buyer = await getBuyer(params.address);
+  const [{ address }, query] = await Promise.all([params, searchParams]);
+  const buyer = await getBuyer(address);
   if (!buyer) notFound();
 
   const breakdown = calculateTrustScore({
@@ -63,7 +65,7 @@ export default async function BuyerProfilePage({
     ghostSessions: buyer.ghost_sessions,
   });
 
-  const range = searchParams.range || "30d";
+  const range = query.range || "30d";
   const rangeLabel =
     range === "24h"
       ? "last 24h"
@@ -73,20 +75,24 @@ export default async function BuyerProfilePage({
       ? "all time"
       : "last 30d";
 
-  const sessions = await getBuyerSessions(buyer.address, 50);
-  const topSellers = await getBuyerSellerSummary(buyer.address, 10);
-  const activity =
+  const activityPromise =
     range === "24h"
-      ? await getBuyerHourlyVolume(buyer.address, 24)
+      ? getBuyerHourlyVolume(buyer.address, 24)
       : range === "7d"
-      ? await getBuyerDailyVolume(buyer.address, 7)
+      ? getBuyerDailyVolume(buyer.address, 7)
       : range === "all"
-      ? await getBuyerDailyVolume(buyer.address, 9999)
-      : await getBuyerDailyVolume(buyer.address, 30);
+      ? getBuyerDailyVolume(buyer.address, 9999)
+      : getBuyerDailyVolume(buyer.address, 30);
+
+  const [sessions, topSellers, activity] = await Promise.all([
+    getBuyerSessions(buyer.address, 50).catch((e) => { console.error("getBuyerSessions failed:", e); return []; }),
+    getBuyerSellerSummary(buyer.address, 10).catch((e) => { console.error("getBuyerSellerSummary failed:", e); return []; }),
+    activityPromise.catch((e) => { console.error("getBuyer activity failed:", e); return []; }),
+  ]);
   const providerMap = await lookupProviders([
     ...sessions.map((s) => s.seller_address),
     ...topSellers.map((s) => s.seller_address),
-  ]);
+  ]).catch(() => new Map());
   const lookupProvider = (a: string | null | undefined): ProviderRow | null =>
     a ? providerMap.get(a) ?? null : null;
 
@@ -192,7 +198,7 @@ export default async function BuyerProfilePage({
           <div className="px-4 py-3 border-b border-edge">
             <h2 className="font-medium">Top sellers used</h2>
             <p className="text-xs text-muted mt-1">
-              Tokens are on-chain (decoded from <code>ChannelSettled.metadata</code>).
+              Token totals are from validated on-chain records.
               Services are what each peer currently advertises on
               network.antseed.com — likely candidates for what was served.
             </p>

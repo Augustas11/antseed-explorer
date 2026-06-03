@@ -12,7 +12,7 @@ export const dauTrendTool: ToolDef = {
       from: {
         type: "string",
         pattern: "^\\d{4}-\\d{2}-\\d{2}$",
-        description: "ISO date YYYY-MM-DD (UTC). Default: today − 30 days.",
+        description: "ISO date YYYY-MM-DD (UTC). Default: today minus 29 days, for a 30-day inclusive window.",
       },
       to: {
         type: "string",

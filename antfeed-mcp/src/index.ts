@@ -303,7 +303,7 @@ function errorFor(err: unknown, log: (lvl: LogLevel, msg: string) => void) {
   if (err instanceof BuyerError) return errorResponse(err.code, err.message);
   const raw = err instanceof Error ? err.message : String(err);
   log("error", `unhandled: ${sanitizeMessage(raw)}`);
-  return errorResponse("INTERNAL", raw || "Unknown error");
+  return errorResponse("INTERNAL", "Internal server error");
 }
 
 function isMainModule(): boolean {

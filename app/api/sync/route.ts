@@ -1,21 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sync, refreshProviderDirectory } from "@/lib/indexer";
+import { authorizedBearer } from "@/lib/operatorAuth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-function authorized(req: NextRequest): boolean {
-  const expected = process.env.SYNC_SECRET || process.env.CRON_SECRET;
-  if (!expected) return process.env.NODE_ENV !== "production";
-  return req.headers.get("authorization") === `Bearer ${expected}`;
-}
-
 // POST-only. The Sync button issues a same-origin POST; the indexer's 60s
 // debounce caps how often a real getLogs pass actually fires. We also reject
 // cross-origin Origin headers so the route can't be casually weaponized.
 export async function POST(req: NextRequest) {
-  if (!authorized(req)) {
+  if (!authorizedBearer(req, process.env.SYNC_SECRET || process.env.CRON_SECRET)) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
   const origin = req.headers.get("origin");
@@ -37,8 +32,9 @@ export async function POST(req: NextRequest) {
     await refreshProviderDirectory();
     return NextResponse.json(result);
   } catch (e: any) {
+    console.error("[api/sync] failed", e);
     return NextResponse.json(
-      { ok: false, error: e?.message || String(e) },
+      { ok: false, error: "sync_failed" },
       { status: 500 },
     );
   }

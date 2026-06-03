@@ -53,8 +53,12 @@ export async function detectBuyer(
   try {
     const res = await fetchImpl(url, {
       signal: controller.signal,
+      redirect: "manual",
       headers: { Accept: "application/json", "User-Agent": userAgent },
     });
+    if (res.status >= 300 && res.status < 400) {
+      return { reachable: false, identityVerified: false };
+    }
     if (!res.ok) return { reachable: false, identityVerified: false };
 
     let body: unknown = null;
@@ -122,6 +126,7 @@ export class BuyerClient {
     try {
       res = await this.fetchImpl(url, {
         method: "POST",
+        redirect: "manual",
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
@@ -138,6 +143,10 @@ export class BuyerClient {
       throw new BuyerError("BUYER_DOWN", "Network error calling local buyer");
     } finally {
       clearTimeout(timer);
+    }
+
+    if (res.status >= 300 && res.status < 400) {
+      throw new BuyerError("BUYER_REDIRECT", "Local buyer unexpectedly returned a redirect");
     }
 
     if (!res.ok) {

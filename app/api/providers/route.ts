@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listProviders } from "@/lib/queries";
+import { countProviders, listProviders, type ProviderSortKey } from "@/lib/queries";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { trackMcpUsage } from "@/lib/mcp-usage";
+import { PROVIDER_DEFAULT_SORT, PROVIDER_SORTS } from "@/lib/publicApiContract";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
-const ALLOWED_SORTS = ["volume", "sessions", "ghost"] as const;
-type Sort = (typeof ALLOWED_SORTS)[number];
+const RESPONSE_HEADERS = {
+  "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=3600",
+};
+
+const ALLOWED_SORTS = new Set<string>(PROVIDER_SORTS);
 
 function intParam(value: string | null, fallback: number, min: number, max: number): number {
+  if (value == null || value === "") return fallback;
   const n = Number(value ?? fallback);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
@@ -28,18 +32,20 @@ export async function GET(req: NextRequest) {
   const u = new URL(req.url);
   const limit = intParam(u.searchParams.get("limit"), 100, 1, 1000);
   const offset = intParam(u.searchParams.get("offset"), 0, 0, 100_000);
-  const sortParam = u.searchParams.get("sort") || "volume";
-  const sort: Sort = (ALLOWED_SORTS as readonly string[]).includes(sortParam)
-    ? (sortParam as Sort)
-    : "volume";
+  const sortParam = u.searchParams.get("sort") || PROVIDER_DEFAULT_SORT;
+  const sort: ProviderSortKey = ALLOWED_SORTS.has(sortParam)
+    ? (sortParam as ProviderSortKey)
+    : PROVIDER_DEFAULT_SORT;
 
-  const all = await listProviders({ sort });
-  const page = all.slice(offset, offset + limit);
+  const [providers, total] = await Promise.all([
+    listProviders({ sort, limit, offset }),
+    countProviders(),
+  ]);
 
   return NextResponse.json({
-    providers: page,
-    total: all.length,
+    providers,
+    total,
     limit,
     offset,
-  });
+  }, { headers: RESPONSE_HEADERS });
 }

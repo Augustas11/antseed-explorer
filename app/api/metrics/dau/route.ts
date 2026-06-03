@@ -12,9 +12,9 @@ import { db } from "@/lib/db";
 import { sql } from "drizzle-orm";
 import { trackMcpUsage } from "@/lib/mcp-usage";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
+import { rawDateLiteral } from "@/lib/sqlSafe";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 const RESPONSE_HEADERS = {
   "Cache-Control": "public, s-maxage=30, stale-while-revalidate=120",
@@ -22,6 +22,16 @@ const RESPONSE_HEADERS = {
 
 function isValidDate(s: string | null): s is string {
   return !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function isCalendarDate(s: string): boolean {
+  const [year, month, day] = s.split("-").map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return (
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() === month - 1 &&
+    d.getUTCDate() === day
+  );
 }
 
 function defaultFrom(): string {
@@ -56,6 +66,13 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  if ((isValidDate(fromRaw) && !isCalendarDate(fromRaw)) || (isValidDate(toRaw) && !isCalendarDate(toRaw))) {
+    return NextResponse.json(
+      { error: "invalid_date", from: fromRaw, to: toRaw },
+      { status: 400 },
+    );
+  }
+
   const from = isValidDate(fromRaw) ? fromRaw : defaultFrom();
   const to = isValidDate(toRaw) ? toRaw : defaultTo();
   if (from > to) {
@@ -65,7 +82,6 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // sql.raw is safe — from/to are validated above against /^\d{4}-\d{2}-\d{2}$/.
   const r = await db.execute<{
     day: string;
     dau: number;
@@ -80,8 +96,8 @@ export async function GET(req: NextRequest) {
       dau_sellers::int           AS dau_sellers,
       new_users::int             AS new_users
     FROM daily_dau
-    WHERE day >= DATE '${sql.raw(from)}'
-      AND day <= DATE '${sql.raw(to)}'
+    WHERE day >= ${rawDateLiteral(from, "dau from")}
+      AND day <= ${rawDateLiteral(to, "dau to")}
     ORDER BY day ASC
   `);
 

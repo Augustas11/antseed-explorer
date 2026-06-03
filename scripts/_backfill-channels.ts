@@ -26,6 +26,9 @@ const TARGET_END_BLOCK = process.env.BACKFILL_END_BLOCK ? BigInt(process.env.BAC
 const BATCH = BigInt(process.env.BACKFILL_BATCH || "9000");
 const SLEEP_MS = Number(process.env.BACKFILL_SLEEP_MS || "120");
 const USDC_DECIMALS = 1_000_000;
+const USDC_DECIMALS_BIGINT = 1_000_000n;
+const MAX_SAFE_TOKEN_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_SAFE_USDC_ATOMS = BigInt(Number.MAX_SAFE_INTEGER) * USDC_DECIMALS_BIGINT;
 
 const client = createPublicClient({ chain: base, transport: http(RPC) });
 
@@ -48,16 +51,29 @@ function decodeMetadata(b: any): { inputTokens: number; outputTokens: number; re
   // Old indexer stores only the 3 we care about — version is the first 32 bytes.
   if (!b || typeof b !== "string") return null;
   const hex = b.startsWith("0x") ? b.slice(2) : b;
-  if (hex.length < 256) return null;
+  if (hex.length < 256 || !/^[0-9a-f]+$/i.test(hex)) return null;
+  const safeNumber = (value: bigint, max: bigint) =>
+    value >= 0n && value <= max ? Number(value) : null;
   try {
     const v = BigInt("0x" + hex.slice(0, 64));
     if (v !== 1n) return null;
+    const inputTokens = safeNumber(BigInt("0x" + hex.slice(64, 128)), MAX_SAFE_TOKEN_COUNT);
+    const outputTokens = safeNumber(BigInt("0x" + hex.slice(128, 192)), MAX_SAFE_TOKEN_COUNT);
+    const requestCount = safeNumber(BigInt("0x" + hex.slice(192, 256)), 2_147_483_647n);
+    if (inputTokens == null || outputTokens == null || requestCount == null) return null;
     return {
-      inputTokens:  Number(BigInt("0x" + hex.slice(64, 128))),
-      outputTokens: Number(BigInt("0x" + hex.slice(128, 192))),
-      requestCount: Number(BigInt("0x" + hex.slice(192, 256))),
+      inputTokens,
+      outputTokens,
+      requestCount,
     };
   } catch { return null; }
+}
+
+function usdcToNumber(value: unknown): number | null {
+  if (value == null) return null;
+  const atoms = BigInt(value as bigint);
+  if (atoms < 0n || atoms > MAX_SAFE_USDC_ATOMS) return null;
+  return Number(atoms) / USDC_DECIMALS;
 }
 
 async function main() {
@@ -82,6 +98,9 @@ async function main() {
 
   while (from <= end) {
     const to = (from + BATCH - 1n) > end ? end : (from + BATCH - 1n);
+    const scannedFrom = from;
+    let scannedTo = to;
+    let nextFrom = to + 1n;
     batches++;
 
     let logs: Log[];
@@ -98,11 +117,11 @@ async function main() {
       // Try smaller chunk
       const half = (to - from) / 2n;
       if (half < 1n) { console.warn("[backfill] giving up on this block"); from = to + 1n; continue; }
-      from = from; // re-enter outer loop, but with shrunken effective batch
       const subEnd = from + half;
       try {
         logs = await client.getLogs({ address: CHANNELS, events: channelsAbi as any, fromBlock: from, toBlock: subEnd });
-        from = subEnd + 1n;
+        scannedTo = subEnd;
+        nextFrom = subEnd + 1n;
       } catch (e2: any) {
         console.warn("[backfill] retry failed, skipping range:", e2?.message?.slice(0, 200));
         from = to + 1n;
@@ -110,7 +129,7 @@ async function main() {
       }
     }
 
-    totalScanned += Number(to - from + 1n);
+    totalScanned += Number(scannedTo - scannedFrom + 1n);
 
     // Fetch a single anchor timestamp per batch (Base ~2s/block).
     const uniqueBlocks = [...new Set((logs as any[]).map((l) => l.blockNumber).filter((b): b is bigint => !!b))];
@@ -146,13 +165,13 @@ async function main() {
         buyerAddress: buyer,
         sellerAddress: seller,
         channelId,
-        maxAmountUsdc: (args.maxAmount ?? args.additionalAmount) ? Number(args.maxAmount ?? args.additionalAmount) / USDC_DECIMALS : null,
-        deltaUsdc: args.delta ? Number(args.delta) / USDC_DECIMALS : null,
-        refundUsdc: args.refund ? Number(args.refund) / USDC_DECIMALS : null,
-        settledAmountUsdc: (args.settledAmount ?? args.totalSettled) ? Number(args.settledAmount ?? args.totalSettled) / USDC_DECIMALS : null,
-        cumulativeAmountUsdc: args.cumulativeAmount ? Number(args.cumulativeAmount) / USDC_DECIMALS : null,
-        platformFeeUsdc: args.platformFee ? Number(args.platformFee) / USDC_DECIMALS : null,
-        newDepositUsdc: args.newDeposit ? Number(args.newDeposit) / USDC_DECIMALS : null,
+        maxAmountUsdc: usdcToNumber(args.maxAmount ?? args.additionalAmount),
+        deltaUsdc: usdcToNumber(args.delta),
+        refundUsdc: usdcToNumber(args.refund),
+        settledAmountUsdc: usdcToNumber(args.settledAmount ?? args.totalSettled),
+        cumulativeAmountUsdc: usdcToNumber(args.cumulativeAmount),
+        platformFeeUsdc: usdcToNumber(args.platformFee),
+        newDepositUsdc: usdcToNumber(args.newDeposit),
         gracePeriodEnd: args.gracePeriodEnd ? Number(args.gracePeriodEnd) : null,
         inputTokens: meta?.inputTokens ?? null,
         outputTokens: meta?.outputTokens ?? null,
@@ -169,11 +188,11 @@ async function main() {
 
     if (batches % 10 === 0 || logs.length > 0) {
       const elapsed = (Date.now() - startedAt) / 1000;
-      const pct = Number(((to - CHANNELS_DEPLOYMENT_BLOCK) * 10000n) / (end - CHANNELS_DEPLOYMENT_BLOCK)) / 100;
-      console.log(`[backfill] batch ${batches} ${from}..${to} logs=${logs.length} added=${totalAdded} (${pct.toFixed(1)}%, ${elapsed.toFixed(0)}s)`);
+      const pct = Number(((scannedTo - CHANNELS_DEPLOYMENT_BLOCK) * 10000n) / (end - CHANNELS_DEPLOYMENT_BLOCK)) / 100;
+      console.log(`[backfill] batch ${batches} ${scannedFrom}..${scannedTo} logs=${logs.length} added=${totalAdded} (${pct.toFixed(1)}%, ${elapsed.toFixed(0)}s)`);
     }
 
-    from = to + 1n;
+    from = nextFrom;
     if (SLEEP_MS > 0) await sleep(SLEEP_MS);
   }
 

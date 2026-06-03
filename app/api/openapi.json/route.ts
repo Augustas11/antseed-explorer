@@ -1,4 +1,18 @@
 import { NextResponse } from "next/server";
+import {
+  BUYER_DEFAULT_SORT,
+  BUYER_SORTS,
+  CHANNEL_DEFAULT_SORT,
+  CHANNEL_SORTS,
+  DEFAULT_SORT_DIRECTION,
+  EXPORT_FORMATS,
+  PROVIDER_DEFAULT_SORT,
+  PROVIDER_SORTS,
+  PUBLIC_RESPONSE_FIELDS,
+  SELLER_DEFAULT_SORT,
+  SELLER_SORTS,
+  SORT_DIRECTIONS,
+} from "@/lib/publicApiContract";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,7 +23,7 @@ const spec = {
     title: "AntSeed Explorer API",
     version: "1.0.0",
     description:
-      "REST API for the AntSeed Channels protocol on Base. Indexes buyer/seller payment channel events and computes trust scores.\n\n**Rate limits:** 60 req/min unauthenticated · 300 req/min with `X-Api-Key` header. Exceeded limits return `429` with a `Retry-After` header. API key creation is operator-gated.",
+      "REST API for the AntSeed Channels protocol on Base. Indexes buyer/seller payment channel events and computes trust scores.\n\n**Rate limits:** shared fixed-window limits of 60 req/min unauthenticated · 300 req/min with `X-Api-Key` header when the database is available. Exceeded limits return `429` with a `Retry-After` header. API key creation is operator-gated.",
     contact: { url: "https://www.antfeed.org" },
     license: { name: "MIT" },
   },
@@ -26,6 +40,7 @@ const spec = {
     schemas: {
       BuyerRow: {
         type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.BuyerRow,
         properties: {
           address: { type: "string", example: "0xabc123..." },
           total_sessions: { type: "integer", example: 12 },
@@ -42,6 +57,7 @@ const spec = {
       },
       SellerRow: {
         type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.SellerRow,
         properties: {
           address: { type: "string" },
           unique_buyers: { type: "integer" },
@@ -56,6 +72,7 @@ const spec = {
       },
       ChannelRow: {
         type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.ChannelRow,
         properties: {
           channel_id: { type: "string", description: "bytes32 hex" },
           buyer_address: { type: "string", nullable: true },
@@ -74,6 +91,7 @@ const spec = {
       ServicePricing: {
         type: "object",
         description: "Per-service pricing as USDC per million tokens.",
+        required: PUBLIC_RESPONSE_FIELDS.ServicePricing,
         properties: {
           inputUsdPerMillion: { type: "number", nullable: true, example: 0.21 },
           outputUsdPerMillion: { type: "number", nullable: true, example: 5.00 },
@@ -82,6 +100,7 @@ const spec = {
       DirectoryProviderRow: {
         type: "object",
         description: "Service provider as indexed in the AntFeed provider directory (refreshed hourly from network.antseed.com), joined with on-chain channel aggregates.",
+        required: PUBLIC_RESPONSE_FIELDS.DirectoryProviderRow,
         properties: {
           address: { type: "string", example: "0x4668854ba3e8b094e6f48fbeb59cec1cfde162f2" },
           displayName: { type: "string", nullable: true, example: "Dark Signal" },
@@ -111,6 +130,7 @@ const spec = {
       },
       SellerServicesResponse: {
         type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.SellerServicesResponse,
         properties: {
           address: { type: "string" },
           displayName: { type: "string", nullable: true },
@@ -123,8 +143,53 @@ const spec = {
           updatedAt: { type: "integer", nullable: true },
         },
       },
+      BuyerSessionEvent: {
+        type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.BuyerSessionEvent,
+        properties: {
+          tx_hash: { type: "string", nullable: true },
+          block_number: { type: "integer", nullable: true },
+          event_type: { type: "string" },
+          seller_address: { type: "string", nullable: true },
+          channel_id: { type: "string", nullable: true },
+          delta_usdc: { type: "number", nullable: true },
+          settled_amount_usdc: { type: "number", nullable: true },
+          timestamp: { type: "integer", nullable: true },
+          seller_label: { type: "string", nullable: true },
+        },
+      },
+      BuyerSellerSummaryRow: {
+        type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.BuyerSellerSummaryRow,
+        properties: {
+          seller_address: { type: "string" },
+          sessions: { type: "integer" },
+          total_usdc: { type: "number" },
+          seller_label: { type: "string", nullable: true },
+        },
+      },
+      BuyerMonthlyVolumeRow: {
+        type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.BuyerMonthlyVolumeRow,
+        properties: {
+          month: { type: "string", example: "2026-06" },
+          sessions: { type: "integer" },
+          volume: { type: "number" },
+        },
+      },
+      BuyerProfileResponse: {
+        type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.BuyerProfileResponse,
+        properties: {
+          profile: { "$ref": "#/components/schemas/BuyerRow" },
+          sessions: { type: "array", items: { "$ref": "#/components/schemas/BuyerSessionEvent" } },
+          topSellers: { type: "array", items: { "$ref": "#/components/schemas/BuyerSellerSummaryRow" } },
+          monthly: { type: "array", items: { "$ref": "#/components/schemas/BuyerMonthlyVolumeRow" } },
+        },
+      },
       ScoreResponse: {
         type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.ScoreResponse,
         properties: {
           address: { type: "string" },
           score: { type: "number", description: "0–100" },
@@ -133,6 +198,7 @@ const spec = {
           breakdown: {
             type: "object",
             nullable: true,
+            required: PUBLIC_RESPONSE_FIELDS.TrustScoreBreakdown,
             properties: {
               total: { type: "number" },
               qualified: { type: "boolean" },
@@ -145,6 +211,7 @@ const spec = {
           stats: {
             type: "object",
             nullable: true,
+            required: PUBLIC_RESPONSE_FIELDS.ScoreStats,
             properties: {
               totalSessions: { type: "integer" },
               totalSettledUsdc: { type: "number" },
@@ -160,6 +227,45 @@ const spec = {
         type: "object",
         properties: { error: { type: "string", example: "rate_limit_exceeded" } },
       },
+      ProfileDrift: {
+        type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.ProfileDrift,
+        properties: {
+          eventsUsdc: { type: "number" },
+          profilesUsdc: { type: "number" },
+          driftUsdc: { type: "number" },
+        },
+      },
+      StatsResponse: {
+        type: "object",
+        required: PUBLIC_RESPONSE_FIELDS.StatsResponse,
+        properties: {
+          totalBuyers: { type: "integer" },
+          qualifiedBuyers: { type: "integer" },
+          totalVolumeUsdc: { type: "number" },
+          totalSessions: { type: "integer" },
+          totalGhosts: { type: "integer" },
+          lastIndexedBlock: { type: "integer", nullable: true },
+          lastHeadBlock: { type: "integer", nullable: true },
+          lastSyncTs: { type: "integer", nullable: true, description: "Unix ms" },
+          drift: { "$ref": "#/components/schemas/ProfileDrift" },
+          daily: {
+            type: "array",
+            items: {
+              type: "object",
+              required: PUBLIC_RESPONSE_FIELDS.StatsDailyRow,
+              properties: {
+                day: { type: "string", example: "2025-01-15" },
+                sessions: { type: "integer" },
+                volume: { type: "number" },
+                active_buyers: { type: "integer" },
+                daily_active_users: { type: "integer", description: "Total unique wallets with any on-chain activity that day" },
+                new_users: { type: "integer", description: "Wallets appearing for the first time that day" },
+              },
+            },
+          },
+        },
+      },
     },
   },
   security: [{}],
@@ -173,10 +279,10 @@ const spec = {
         parameters: [
           { name: "limit", in: "query", schema: { type: "integer", default: 100, maximum: 1000 } },
           { name: "offset", in: "query", schema: { type: "integer", default: 0 } },
-          { name: "sort", in: "query", schema: { type: "string", enum: ["volume", "sessions", "score", "first_seen", "unique_sellers", "ghosts"], default: "volume" } },
+          { name: "sort", in: "query", schema: { type: "string", enum: BUYER_SORTS, default: BUYER_DEFAULT_SORT } },
           { name: "qualified", in: "query", schema: { type: "integer", enum: [0, 1] }, description: "Set to 1 to return only qualified buyers" },
           { name: "minScore", in: "query", schema: { type: "number", default: 0 } },
-          { name: "format", in: "query", schema: { type: "string", enum: ["csv", "json"] }, description: "csv returns a downloadable CSV; json returns a JSON attachment" },
+          { name: "format", in: "query", schema: { type: "string", enum: EXPORT_FORMATS }, description: "csv returns a downloadable CSV; json returns a JSON attachment" },
         ],
         responses: {
           "200": {
@@ -185,6 +291,7 @@ const spec = {
               "application/json": {
                 schema: {
                   type: "object",
+                  required: PUBLIC_RESPONSE_FIELDS.BuyersPage,
                   properties: {
                     buyers: { type: "array", items: { "$ref": "#/components/schemas/BuyerRow" } },
                     total: { type: "integer" },
@@ -199,6 +306,23 @@ const spec = {
         },
       },
     },
+    "/api/buyers/{address}": {
+      get: {
+        summary: "Get buyer profile",
+        description: "Returns one buyer profile with recent sessions, top sellers, and monthly settled volume.",
+        operationId: "getBuyerProfile",
+        security: [{ ApiKey: [] }, {}],
+        parameters: [
+          { name: "address", in: "path", required: true, schema: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }, description: "Ethereum address (0x-prefixed, 40 hex chars)" },
+        ],
+        responses: {
+          "200": { description: "Buyer profile", content: { "application/json": { schema: { "$ref": "#/components/schemas/BuyerProfileResponse" } } } },
+          "400": { description: "Invalid address" },
+          "404": { description: "Buyer not found" },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
+        },
+      },
+    },
     "/api/sellers": {
       get: {
         summary: "List sellers",
@@ -208,9 +332,9 @@ const spec = {
         parameters: [
           { name: "limit", in: "query", schema: { type: "integer", default: 100, maximum: 1000 } },
           { name: "offset", in: "query", schema: { type: "integer", default: 0 } },
-          { name: "sort", in: "query", schema: { type: "string", enum: ["volume", "sessions", "buyers", "ghosts", "first_seen"], default: "volume" } },
-          { name: "dir", in: "query", schema: { type: "string", enum: ["asc", "desc"], default: "desc" } },
-          { name: "format", in: "query", schema: { type: "string", enum: ["csv", "json"] } },
+          { name: "sort", in: "query", schema: { type: "string", enum: SELLER_SORTS, default: SELLER_DEFAULT_SORT } },
+          { name: "dir", in: "query", schema: { type: "string", enum: SORT_DIRECTIONS, default: DEFAULT_SORT_DIRECTION } },
+          { name: "format", in: "query", schema: { type: "string", enum: EXPORT_FORMATS } },
         ],
         responses: {
           "200": {
@@ -219,6 +343,7 @@ const spec = {
               "application/json": {
                 schema: {
                   type: "object",
+                  required: PUBLIC_RESPONSE_FIELDS.SellersPage,
                   properties: {
                     sellers: { type: "array", items: { "$ref": "#/components/schemas/SellerRow" } },
                     total: { type: "integer" },
@@ -242,7 +367,7 @@ const spec = {
         parameters: [
           { name: "limit", in: "query", schema: { type: "integer", default: 100, maximum: 1000 } },
           { name: "offset", in: "query", schema: { type: "integer", default: 0 } },
-          { name: "sort", in: "query", schema: { type: "string", enum: ["volume", "sessions", "ghost"], default: "volume" } },
+          { name: "sort", in: "query", schema: { type: "string", enum: PROVIDER_SORTS, default: PROVIDER_DEFAULT_SORT } },
         ],
         responses: {
           "200": {
@@ -251,6 +376,7 @@ const spec = {
               "application/json": {
                 schema: {
                   type: "object",
+                  required: PUBLIC_RESPONSE_FIELDS.ProvidersPage,
                   properties: {
                     providers: { type: "array", items: { "$ref": "#/components/schemas/DirectoryProviderRow" } },
                     total: { type: "integer" },
@@ -291,9 +417,9 @@ const spec = {
         parameters: [
           { name: "limit", in: "query", schema: { type: "integer", default: 100, maximum: 1000 } },
           { name: "offset", in: "query", schema: { type: "integer", default: 0 } },
-          { name: "sort", in: "query", schema: { type: "string", enum: ["amount", "settled", "events", "opened", "last_activity"], default: "opened" } },
-          { name: "dir", in: "query", schema: { type: "string", enum: ["asc", "desc"], default: "desc" } },
-          { name: "format", in: "query", schema: { type: "string", enum: ["csv", "json"] } },
+          { name: "sort", in: "query", schema: { type: "string", enum: CHANNEL_SORTS, default: CHANNEL_DEFAULT_SORT } },
+          { name: "dir", in: "query", schema: { type: "string", enum: SORT_DIRECTIONS, default: DEFAULT_SORT_DIRECTION } },
+          { name: "format", in: "query", schema: { type: "string", enum: EXPORT_FORMATS } },
         ],
         responses: {
           "200": {
@@ -302,6 +428,7 @@ const spec = {
               "application/json": {
                 schema: {
                   type: "object",
+                  required: PUBLIC_RESPONSE_FIELDS.ChannelsPage,
                   properties: {
                     channels: { type: "array", items: { "$ref": "#/components/schemas/ChannelRow" } },
                     total: { type: "integer" },
@@ -312,6 +439,23 @@ const spec = {
               },
             },
           },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
+        },
+      },
+    },
+    "/api/channels/{id}": {
+      get: {
+        summary: "Get one channel",
+        description: "Returns one payment channel by bytes32 channel id.",
+        operationId: "getChannel",
+        security: [{ ApiKey: [] }, {}],
+        parameters: [
+          { name: "id", in: "path", required: true, schema: { type: "string", pattern: "^0x[0-9a-fA-F]{64}$" }, description: "Channel id (bytes32 hex)" },
+        ],
+        responses: {
+          "200": { description: "Channel", content: { "application/json": { schema: { "$ref": "#/components/schemas/ChannelRow" } } } },
+          "400": { description: "Invalid channel id" },
+          "404": { description: "Channel not found" },
           "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
         },
       },
@@ -340,38 +484,90 @@ const spec = {
         responses: {
           "200": {
             description: "Network stats",
+            content: { "application/json": { schema: { "$ref": "#/components/schemas/StatsResponse" } } },
+          },
+        },
+      },
+    },
+    "/api/metrics/dau": {
+      get: {
+        summary: "Daily active users",
+        description: "Returns daily active user rows from the daily_dau pre-aggregate.",
+        operationId: "getDau",
+        security: [{ ApiKey: [] }, {}],
+        parameters: [
+          { name: "from", in: "query", schema: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }, description: "Inclusive UTC day. Defaults to 29 days before today." },
+          { name: "to", in: "query", schema: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }, description: "Inclusive UTC day. Defaults to today." },
+          { name: "granularity", in: "query", schema: { type: "string", enum: ["day"], default: "day" } },
+        ],
+        responses: {
+          "200": {
+            description: "Daily active user rows",
             content: {
               "application/json": {
                 schema: {
-                  type: "object",
-                  properties: {
-                    totalBuyers: { type: "integer" },
-                    qualifiedBuyers: { type: "integer" },
-                    totalVolumeUsdc: { type: "number" },
-                    totalSessions: { type: "integer" },
-                    totalGhosts: { type: "integer" },
-                    lastIndexedBlock: { type: "integer", nullable: true },
-                    lastHeadBlock: { type: "integer", nullable: true },
-                    lastSyncTs: { type: "integer", nullable: true, description: "Unix ms" },
-                    daily: {
-                      type: "array",
-                      items: {
-                        type: "object",
-                        properties: {
-                          day: { type: "string", example: "2025-01-15" },
-                          sessions: { type: "integer" },
-                          volume: { type: "number" },
-                          active_buyers: { type: "integer" },
-                          daily_active_users: { type: "integer", description: "Total unique wallets with any on-chain activity that day" },
-                          new_users: { type: "integer", description: "Wallets appearing for the first time that day" },
-                        },
-                      },
+                  type: "array",
+                  items: {
+                    type: "object",
+                    required: PUBLIC_RESPONSE_FIELDS.DauDayRow,
+                    properties: {
+                      day: { type: "string", example: "2026-06-03" },
+                      new: { type: "integer" },
+                      existing: { type: "integer" },
+                      total: { type: "integer" },
+                      dau_buyers: { type: "integer" },
+                      dau_sellers: { type: "integer" },
                     },
                   },
                 },
               },
             },
           },
+          "400": { description: "Invalid range or unsupported granularity" },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
+        },
+      },
+    },
+    "/api/read-contract": {
+      post: {
+        summary: "Read allowlisted AntSeed contract functions",
+        description: "Reads allowlisted view functions on the AntseedChannels contract. Supported functions: getChannel(bytes32), balanceOf(address).",
+        operationId: "readContract",
+        security: [{ ApiKey: [] }, {}],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["fnName", "args"],
+                properties: {
+                  fnName: { type: "string", enum: ["getChannel", "balanceOf"] },
+                  args: { type: "array", items: {} },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Serialized contract result",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: PUBLIC_RESPONSE_FIELDS.ReadContractResponse,
+                  properties: {
+                    ok: { type: "boolean" },
+                    result: {},
+                  },
+                },
+              },
+            },
+          },
+          "400": { description: "Invalid request, function, or arguments" },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
+          "502": { description: "RPC read failed" },
         },
       },
     },
@@ -387,6 +583,7 @@ const spec = {
               "application/json": {
                 schema: {
                   type: "object",
+                  required: PUBLIC_RESPONSE_FIELDS.GasResponse,
                   properties: { gwei: { type: "number", example: 0.0042 } },
                 },
               },
@@ -420,6 +617,7 @@ const spec = {
               "application/json": {
                 schema: {
                   type: "object",
+                  required: PUBLIC_RESPONSE_FIELDS.SyncResponse,
                   properties: {
                     ok: { type: "boolean" },
                     fromBlock: { type: "string" },

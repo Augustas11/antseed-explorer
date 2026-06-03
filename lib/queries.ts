@@ -1,4 +1,4 @@
-import { db } from "./db";
+import { db, getState, setState } from "./db";
 import {
   events as eventsTbl,
   buyerProfiles,
@@ -16,12 +16,42 @@ import {
   isNotNull,
   sql,
 } from "drizzle-orm";
+import { cache } from "react";
 import { canonicalize, groupServices, type ServiceGroup } from "./services-canonical";
 import { getActiveDiemPoolUsers } from "./diem";
+import {
+  rawAddressList,
+  rawFiniteNumber,
+  rawNonNegativeInteger,
+  rawPositiveInteger,
+  rawSqlFragment,
+  rawStringLiteralList,
+  rawTextValuesSelect,
+} from "./sqlSafe";
+import {
+  CHANNEL_DEFAULT_SORT,
+  PROVIDER_DEFAULT_SORT,
+  SELLER_DEFAULT_SORT,
+  type BuyerSort,
+  type ChannelSort,
+  type ProviderSort,
+  type SellerSort,
+} from "./publicApiContract";
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
-const CHANNEL_EVENT_TYPES_SQL =
-  "'reserved','settled','closed','topup','withdrawn','close_requested'";
+const CHANNEL_EVENT_TYPES = [
+  "reserved",
+  "settled",
+  "closed",
+  "topup",
+  "withdrawn",
+  "close_requested",
+] as const;
+const CHANNEL_EVENT_TYPES_SQL = rawStringLiteralList(
+  CHANNEL_EVENT_TYPES,
+  (value) => /^[a-z_]+$/.test(value),
+  "channel event types",
+);
 
 function cleanPositiveInt(value: unknown, fallback: number, max: number): number {
   const n = Number(value);
@@ -43,6 +73,25 @@ function cleanScore(value: unknown): number {
 
 function cleanDirection(value: unknown, fallback: "asc" | "desc"): "asc" | "desc" {
   return value === "asc" || value === "desc" ? value : fallback;
+}
+
+function safeTokenCount(value: unknown, label: string): number {
+  if (value == null) return 0;
+  try {
+    const count = BigInt(value as string | number | bigint);
+    if (count < 0n) {
+      console.warn(`[queries] negative ${label} token count ignored`);
+      return 0;
+    }
+    if (count > BigInt(Number.MAX_SAFE_INTEGER)) {
+      console.warn(`[queries] ${label} token count exceeds Number.MAX_SAFE_INTEGER; clamping`);
+      return Number.MAX_SAFE_INTEGER;
+    }
+    return Number(count);
+  } catch {
+    console.warn(`[queries] invalid ${label} token count ignored`);
+    return 0;
+  }
 }
 
 export function isExplorerAddress(value: string): boolean {
@@ -87,7 +136,7 @@ export async function listBuyers(opts: {
   offset?: number;
   qualifiedOnly?: boolean;
   minScore?: number;
-  sort?: "score" | "volume" | "sessions" | "first_seen" | "unique_sellers" | "ghosts";
+  sort?: BuyerSort;
 } = {}): Promise<BuyerRow[]> {
   const limit = cleanPositiveInt(opts.limit, 25, 100);
   const offset = cleanNonNegativeInt(opts.offset);
@@ -100,17 +149,25 @@ export async function listBuyers(opts: {
     : opts.sort === "ghosts" ? "ghost_sessions DESC"
     : "trust_score DESC";
   const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
+  const allowedOrderCols = [
+    "total_settled_usdc DESC",
+    "total_sessions DESC",
+    "first_seen_block ASC NULLS LAST",
+    "unique_sellers DESC",
+    "ghost_sessions DESC",
+    "trust_score DESC",
+  ];
 
   // Raw SQL — Drizzle's chained query builder under Neon HTTP returned empty
   // rows for specific (sort, limit) combinations on Vercel cold starts.
   // No user input is interpolated; all values are sanitized integers / fixed enum strings.
   const r = await db.execute<any>(sql`
     SELECT * FROM buyer_profiles
-    WHERE trust_score >= ${sql.raw(String(minScore))}
-    ${sql.raw(qualClause)}
-    ORDER BY ${sql.raw(orderCol)}
-    LIMIT ${sql.raw(String(limit))}
-    OFFSET ${sql.raw(String(offset))}
+    WHERE trust_score >= ${rawFiniteNumber(minScore, "buyer min score", { min: 0, max: 100 })}
+    ${rawSqlFragment(qualClause, ["", "AND qualified = true"], "buyer qualification clause")}
+    ORDER BY ${rawSqlFragment(orderCol, allowedOrderCols, "buyer order clause")}
+    LIMIT ${rawPositiveInteger(limit, "buyer limit")}
+    OFFSET ${rawNonNegativeInteger(offset, "buyer offset")}
   `);
   return r.rows.map((row: any) =>
     shapeBuyer({
@@ -138,13 +195,13 @@ export async function countBuyers(opts: {
   const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
   const r = await db.execute<{ n: number }>(sql`
     SELECT COUNT(*)::int AS n FROM buyer_profiles
-    WHERE trust_score >= ${sql.raw(String(minScore))}
-    ${sql.raw(qualClause)}
+    WHERE trust_score >= ${rawFiniteNumber(minScore, "buyer count min score", { min: 0, max: 100 })}
+    ${rawSqlFragment(qualClause, ["", "AND qualified = true"], "buyer count qualification clause")}
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
 
-export async function getBuyer(address: string): Promise<BuyerRow | null> {
+async function getBuyerUncached(address: string): Promise<BuyerRow | null> {
   if (!isExplorerAddress(address)) return null;
   const r = await db.execute<any>(sql`
     SELECT * FROM buyer_profiles WHERE address = ${address.toLowerCase()} LIMIT 1
@@ -167,6 +224,8 @@ export async function getBuyer(address: string): Promise<BuyerRow | null> {
   });
 }
 
+export const getBuyer = cache(getBuyerUncached);
+
 export async function getBuyerSessions(address: string, limit = 25) {
   if (!isExplorerAddress(address)) return [];
   const safeLimit = cleanPositiveInt(limit, 25, 100);
@@ -177,7 +236,7 @@ export async function getBuyerSessions(address: string, limit = 25) {
     FROM events
     WHERE buyer_address = ${address.toLowerCase()}
     ORDER BY block_number DESC, log_index DESC
-    LIMIT ${sql.raw(String(safeLimit))}
+    LIMIT ${rawPositiveInteger(safeLimit, "buyer sessions limit")}
   `);
   return r.rows.map((e: any) => ({
     tx_hash: e.tx_hash,
@@ -231,7 +290,7 @@ export async function getBuyerDailyVolume(address: string, days = 30) {
     WHERE buyer_address = ${address.toLowerCase()}
       AND event_type = 'settled'
       AND timestamp IS NOT NULL AND timestamp > 0 AND timestamp < 32503680000
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+      AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "buyer daily window days")} * 86400
     GROUP BY bucket
     ORDER BY bucket ASC
   `);
@@ -253,7 +312,7 @@ export async function getBuyerHourlyVolume(address: string, hours = 24) {
     WHERE buyer_address = ${address.toLowerCase()}
       AND event_type = 'settled'
       AND timestamp IS NOT NULL
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+      AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(h, "buyer hourly window hours")} * 3600
     GROUP BY bucket
     ORDER BY bucket ASC
   `);
@@ -287,13 +346,13 @@ export async function getBuyerSellerSummary(
       AND event_type = 'settled'
     GROUP BY seller_address
     ORDER BY total_usdc DESC
-    LIMIT ${sql.raw(String(safeLimit))}
+    LIMIT ${rawPositiveInteger(safeLimit, "buyer seller summary limit")}
   `);
   // bigint -> number for JSON friendliness in the UI
   return rows.rows.map((r: any) => ({
     ...r,
-    total_input_tokens: Number(r.total_input_tokens),
-    total_output_tokens: Number(r.total_output_tokens),
+    total_input_tokens: safeTokenCount(r.total_input_tokens, "buyer seller input"),
+    total_output_tokens: safeTokenCount(r.total_output_tokens, "buyer seller output"),
   }));
 }
 
@@ -373,17 +432,117 @@ export interface HeroStats {
   diemPoolUsers: number;
 }
 
+export interface HeroSnapshot {
+  at: number;
+  stats: HeroStats;
+  sparklines: HeroSparklinePoint[];
+}
+
+const HERO_SNAPSHOT_KEY = "hero_snapshot";
+const HERO_SNAPSHOT_CACHE_TTL_MS = 30_000;
+
+let heroSnapshotCache: { at: number; snapshot: HeroSnapshot } | null = null;
+
+function emptyHeroStats(): HeroStats {
+  return {
+    totalRevenueUsdc: 0,
+    recentRevenueUsdc: 0,
+    priorRevenueUsdc: 0,
+    totalTokens: 0,
+    totalTokensInput: 0,
+    totalTokensOutput: 0,
+    recentTokens: 0,
+    priorTokens: 0,
+    totalPayingUsers: 0,
+    recentPayingUsers: 0,
+    priorPayingUsers: 0,
+    usdcPayers: 0,
+    antsClaimers: 0,
+    diemPoolUsers: 0,
+  };
+}
+
+function emptyHeroSparklines(): HeroSparklinePoint[] {
+  const today = new Date();
+  return Array.from({ length: 30 }, (_v, i) => {
+    const d = new Date(today);
+    d.setUTCDate(today.getUTCDate() - (29 - i));
+    return {
+      day: d.toISOString().slice(0, 10),
+      revenue: 0,
+      tokens: 0,
+      paying_users: 0,
+    };
+  });
+}
+
+function validateHeroSnapshot(value: unknown): HeroSnapshot | null {
+  const parsed = value as Partial<HeroSnapshot>;
+  if (
+    typeof parsed?.at !== "number" ||
+    !parsed.stats ||
+    !Array.isArray(parsed.sparklines)
+  ) {
+    return null;
+  }
+  return parsed as HeroSnapshot;
+}
+
+async function readHeroSnapshot(): Promise<HeroSnapshot | null> {
+  const now = Date.now();
+  if (heroSnapshotCache && now - heroSnapshotCache.at < HERO_SNAPSHOT_CACHE_TTL_MS) {
+    return heroSnapshotCache.snapshot;
+  }
+  try {
+    const raw = await getState(HERO_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = validateHeroSnapshot(JSON.parse(raw));
+    if (!parsed) return null;
+    heroSnapshotCache = { at: now, snapshot: parsed };
+    return parsed;
+  } catch (e: any) {
+    console.warn("[hero] failed to read hero snapshot", e?.message ?? e);
+    return null;
+  }
+}
+
+async function writeHeroSnapshot(snapshot: HeroSnapshot) {
+  await setState(HERO_SNAPSHOT_KEY, JSON.stringify(snapshot));
+  heroSnapshotCache = { at: Date.now(), snapshot };
+}
+
+export async function refreshHeroSnapshot(): Promise<HeroSnapshot> {
+  const stats = await computeHeroStats();
+  const sparklines = await computeHeroSparklines();
+  const snapshot = { at: Date.now(), stats, sparklines };
+  await writeHeroSnapshot(snapshot);
+  return snapshot;
+}
+
 export async function getHeroStats(): Promise<HeroStats> {
-  // Window cutoffs inlined as ints — same Neon-HTTP/Drizzle quirk that the
-  // rest of this file works around with sql.raw.
+  return (await readHeroSnapshot())?.stats ?? emptyHeroStats();
+}
+
+async function computeHeroStats(): Promise<HeroStats> {
+  // Window cutoffs are guarded raw integers because Neon HTTP has been
+  // unreliable with bound JS numbers inside bigint arithmetic.
   const now = Math.floor(Date.now() / 1000);
-  const day30 = String(now - 30 * 86400);
-  const day60 = String(now - 60 * 86400);
+  const day30 = now - 30 * 86400;
+  const day60 = now - 60 * 86400;
 
   const diemPool = await getActiveDiemPoolUsers();
-  const diemPoolUsersSql = diemPool.addresses.length
-    ? diemPool.addresses.map((a) => `('${a}')`).join(",")
-    : "";
+  const diemAddresses = diemPool.addresses
+    .map((address) => address.toLowerCase())
+    .filter((address) => ADDRESS_RE.test(address));
+  const diemPoolUsersCte =
+    diemPool.exactAddresses && diemAddresses.length > 0
+      ? rawTextValuesSelect(
+          diemAddresses,
+          "addr",
+          (value) => ADDRESS_RE.test(value),
+          "DIEM pool addresses",
+        )
+      : sql`SELECT ('diem_pool_user_' || n)::text AS addr FROM generate_series(1, ${rawNonNegativeInteger(diemPool.count, "diem pool count")}) AS n`;
 
   // Revenue: SUM(delta_usdc) per ChannelSettled event — delta is the
   // per-batch amount actually moved.
@@ -409,7 +568,6 @@ export async function getHeroStats(): Promise<HeroStats> {
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp < 32503680000
-        AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)
     ),
     tok AS (
       SELECT
@@ -424,8 +582,8 @@ export async function getHeroStats(): Promise<HeroStats> {
     ),
     usdc_payers AS (
       SELECT buyer_address AS addr,
-             bool_or(timestamp > ${sql.raw(day30)}) AS active_recent,
-             bool_or(timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS active_prior
+             bool_or(timestamp > ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS active_recent,
+             bool_or(timestamp > ${rawNonNegativeInteger(day60, "hero 60-day cutoff")} AND timestamp <= ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS active_prior
       FROM events
       WHERE event_type = 'deposited'
         AND buyer_address IS NOT NULL
@@ -435,8 +593,8 @@ export async function getHeroStats(): Promise<HeroStats> {
     ),
     ants_claimers AS (
       SELECT buyer_address AS addr,
-             bool_or(timestamp > ${sql.raw(day30)}) AS active_recent,
-             bool_or(timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS active_prior
+             bool_or(timestamp > ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS active_recent,
+             bool_or(timestamp > ${rawNonNegativeInteger(day60, "hero 60-day cutoff")} AND timestamp <= ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS active_prior
       FROM events
       WHERE event_type = 'ants_claim'
         AND buyer_address IS NOT NULL
@@ -445,13 +603,7 @@ export async function getHeroStats(): Promise<HeroStats> {
       GROUP BY buyer_address
     ),
     diem_pool_users AS (
-      ${
-        diemPool.exactAddresses && diemPoolUsersSql
-          ? sql.raw(`SELECT addr FROM (VALUES ${diemPoolUsersSql}) AS v(addr)`)
-          : sql.raw(
-              `SELECT ('diem_pool_user_' || n)::text AS addr FROM generate_series(1, ${diemPool.count}) AS n`,
-            )
-      }
+      ${diemPoolUsersCte}
     ),
     paying AS (
       SELECT addr,
@@ -470,12 +622,12 @@ export async function getHeroStats(): Promise<HeroStats> {
       (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok) AS total_tokens,
       (SELECT COALESCE(SUM(in_tok),0)::bigint           FROM tok) AS total_tokens_input,
       (SELECT COALESCE(SUM(out_tok),0)::bigint          FROM tok) AS total_tokens_output,
-      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok WHERE timestamp > ${sql.raw(day30)}) AS recent_tokens,
-      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_tokens,
+      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok WHERE timestamp > ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS recent_tokens,
+      (SELECT COALESCE(SUM(in_tok + out_tok),0)::bigint FROM tok WHERE timestamp > ${rawNonNegativeInteger(day60, "hero 60-day cutoff")} AND timestamp <= ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS prior_tokens,
 
       (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled) AS total_revenue,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${sql.raw(day30)}) AS recent_revenue,
-      (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${sql.raw(day60)} AND timestamp <= ${sql.raw(day30)}) AS prior_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS recent_revenue,
+      (SELECT COALESCE(SUM(delta_usdc),0)::float        FROM settled WHERE timestamp > ${rawNonNegativeInteger(day60, "hero 60-day cutoff")} AND timestamp <= ${rawNonNegativeInteger(day30, "hero 30-day cutoff")}) AS prior_revenue,
 
       (SELECT COUNT(*)::int                             FROM paying) AS total_paying_users,
       (SELECT COUNT(*)::int                             FROM paying WHERE active_recent) AS recent_paying_users,
@@ -490,11 +642,11 @@ export async function getHeroStats(): Promise<HeroStats> {
     totalRevenueUsdc: Number(x.total_revenue ?? 0),
     recentRevenueUsdc: Number(x.recent_revenue ?? 0),
     priorRevenueUsdc: Number(x.prior_revenue ?? 0),
-    totalTokens: Number(x.total_tokens ?? 0),
-    totalTokensInput: Number(x.total_tokens_input ?? 0),
-    totalTokensOutput: Number(x.total_tokens_output ?? 0),
-    recentTokens: Number(x.recent_tokens ?? 0),
-    priorTokens: Number(x.prior_tokens ?? 0),
+    totalTokens: safeTokenCount(x.total_tokens, "hero total"),
+    totalTokensInput: safeTokenCount(x.total_tokens_input, "hero total input"),
+    totalTokensOutput: safeTokenCount(x.total_tokens_output, "hero total output"),
+    recentTokens: safeTokenCount(x.recent_tokens, "hero recent"),
+    priorTokens: safeTokenCount(x.prior_tokens, "hero prior"),
     totalPayingUsers: Number(x.total_paying_users ?? 0),
     recentPayingUsers: Number(x.recent_paying_users ?? 0),
     priorPayingUsers: Number(x.prior_paying_users ?? 0),
@@ -504,13 +656,6 @@ export async function getHeroStats(): Promise<HeroStats> {
   };
 }
 
-export interface TokenBucket {
-  day: string;
-  in_tokens: number;
-  out_tokens: number;
-  total_tokens: number;
-}
-
 export interface HeroSparklinePoint {
   day: string;
   revenue: number;
@@ -518,13 +663,36 @@ export interface HeroSparklinePoint {
   paying_users: number;
 }
 
+export interface TokenBucket {
+  day: string;
+  in_tokens: number;
+  out_tokens: number;
+  total_tokens: number;
+}
+
 // 30d daily series for the three hero KPIs in a single round-trip. Used to
 // draw the sparkline under each hero card; not enough resolution for real
 // charts, just shape signal. Tokens come from MetadataRecorded events
 // (canonical, matches the hero card source).
 export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
+  return (await readHeroSnapshot())?.sparklines ?? emptyHeroSparklines();
+}
+
+async function computeHeroSparklines(): Promise<HeroSparklinePoint[]> {
   const diemPool = await getActiveDiemPoolUsers();
   const diemPoolCount = diemPool.count;
+  const diemAddresses = diemPool.addresses
+    .map((address) => address.toLowerCase())
+    .filter((address) => ADDRESS_RE.test(address));
+  const diemPoolUsersCte =
+    diemPool.exactAddresses && diemAddresses.length > 0
+      ? rawTextValuesSelect(
+          diemAddresses,
+          "addr",
+          (value) => ADDRESS_RE.test(value),
+          "DIEM pool sparkline addresses",
+        )
+      : sql`SELECT NULL::text AS addr WHERE FALSE`;
   const rows = await db.execute<any>(sql`
     WITH days AS (
       SELECT generate_series(
@@ -537,11 +705,10 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
       SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS day,
              COALESCE(SUM(delta_usdc),0)::float AS revenue
       FROM events
-      WHERE event_type IN ('settled','topup')
+      WHERE event_type = 'settled'
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp > extract(epoch from now())::bigint - 30 * 86400
-        AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)
       GROUP BY day
     ),
     paying_events AS (
@@ -553,6 +720,19 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
         AND timestamp IS NOT NULL
         AND timestamp > 0
         AND timestamp > extract(epoch from now())::bigint - 30 * 86400
+    ),
+    diem_pool_users AS (
+      ${diemPoolUsersCte}
+    ),
+    today_paying AS (
+      SELECT COUNT(DISTINCT addr)::int AS paying_users
+      FROM (
+        SELECT addr
+        FROM paying_events
+        WHERE day = to_char(date_trunc('day', to_timestamp(extract(epoch from now())::bigint)), 'YYYY-MM-DD')
+        UNION ALL
+        SELECT addr FROM diem_pool_users
+      ) u
     ),
     payers AS (
       SELECT day, COUNT(DISTINCT addr)::int AS paying_users
@@ -578,7 +758,11 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
              COALESCE(payers.paying_users, 0)::int
              + CASE
                  WHEN d = date_trunc('day', to_timestamp(extract(epoch from now())::bigint))::date
-                 THEN ${sql.raw(String(diemPoolCount))}
+                 THEN ${
+                   diemPool.exactAddresses
+                     ? sql`GREATEST(0, COALESCE(today_paying.paying_users, 0) - COALESCE(payers.paying_users, 0))`
+                     : rawNonNegativeInteger(diemPoolCount, "diem pool count")
+                 }
                  ELSE 0
                END
            )::int AS paying_users
@@ -586,12 +770,13 @@ export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
     LEFT JOIN rev    ON rev.day    = to_char(d, 'YYYY-MM-DD')
     LEFT JOIN payers ON payers.day = to_char(d, 'YYYY-MM-DD')
     LEFT JOIN tok    ON tok.day    = to_char(d, 'YYYY-MM-DD')
+    CROSS JOIN today_paying
     ORDER BY d ASC
   `);
   return rows.rows.map((r: any) => ({
     day: r.day,
     revenue: Number(r.revenue ?? 0),
-    tokens: Number(r.tokens ?? 0),
+    tokens: safeTokenCount(r.tokens, "hero sparkline"),
     paying_users: Number(r.paying_users ?? 0),
   }));
 }
@@ -609,15 +794,15 @@ export async function getDailyTokens(days = 30): Promise<TokenBucket[]> {
     WHERE event_type='metadata_recorded'
       AND timestamp IS NOT NULL
       AND timestamp > 0
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+      AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "daily token window days")} * 86400
     GROUP BY day
     ORDER BY day ASC
   `);
   return rows.rows.map((r: any) => ({
     day: r.day,
-    in_tokens: Number(r.in_tokens ?? 0),
-    out_tokens: Number(r.out_tokens ?? 0),
-    total_tokens: Number(r.total_tokens ?? 0),
+    in_tokens: safeTokenCount(r.in_tokens, "daily input"),
+    out_tokens: safeTokenCount(r.out_tokens, "daily output"),
+    total_tokens: safeTokenCount(r.total_tokens, "daily total"),
   }));
 }
 
@@ -632,23 +817,22 @@ export async function getHourlyTokens(hours = 24): Promise<TokenBucket[]> {
     WHERE event_type='metadata_recorded'
       AND timestamp IS NOT NULL
       AND timestamp > 0
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+      AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(h, "hourly token window hours")} * 3600
     GROUP BY day
     ORDER BY day ASC
   `);
   return rows.rows.map((r: any) => ({
     day: r.day,
-    in_tokens: Number(r.in_tokens ?? 0),
-    out_tokens: Number(r.out_tokens ?? 0),
-    total_tokens: Number(r.total_tokens ?? 0),
+    in_tokens: safeTokenCount(r.in_tokens, "hourly input"),
+    out_tokens: safeTokenCount(r.out_tokens, "hourly output"),
+    total_tokens: safeTokenCount(r.total_tokens, "hourly total"),
   }));
 }
 
 export async function getDailyVolume(days = 30) {
-  // sql.raw(String(days)) — Drizzle's parameterized binding via Neon HTTP
+  // Guarded raw integer — Drizzle's parameterized binding via Neon HTTP
   // returns empty rows for arithmetic on bigint columns when the param is a
-  // plain JS number; raw inlining works reliably. `days` is internal, not
-  // user input, so this is safe.
+  // plain JS number; raw inlining works reliably.
   const d = cleanPositiveInt(days, 30, 10_000);
   const rows = await db.execute<{
     day: string;
@@ -666,8 +850,7 @@ export async function getDailyVolume(days = 30) {
       FROM events
       WHERE event_type='settled'
         AND timestamp IS NOT NULL
-        AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
-        AND (input_tokens IS NULL OR input_tokens > 0 OR output_tokens > 0)
+        AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "daily volume window days")} * 86400
       GROUP BY 1
     )
     SELECT v.day,
@@ -713,7 +896,7 @@ export interface ProviderRow {
   operator_address: string | null;
 }
 
-export async function lookupProvider(
+async function lookupProviderUncached(
   address: string | null,
 ): Promise<ProviderRow | null> {
   if (!address) return null;
@@ -741,6 +924,8 @@ export async function lookupProvider(
   };
 }
 
+export const lookupProvider = cache(lookupProviderUncached);
+
 // Batch helper: lookup many addresses at once (avoids N+1 queries on the
 // buyer profile page).
 export async function lookupProviders(
@@ -754,14 +939,11 @@ export async function lookupProviders(
   if (lc.length === 0) return new Map();
   // Inline the address list — array params via Neon HTTP have been unreliable.
   // Each address is a strict 0x + 40 hex chars, so we sanitize and inline.
-  const safe = lc
-    .filter((a) => /^0x[0-9a-f]{40}$/.test(a))
-    .map((a) => `'${a}'`)
-    .join(",");
-  if (!safe) return new Map();
+  const safe = lc.filter((a) => /^0x[0-9a-f]{40}$/.test(a));
+  if (safe.length === 0) return new Map();
   const rows = (
     await db.execute<any>(
-      sql`SELECT * FROM provider_directory WHERE address IN (${sql.raw(safe)})`,
+      sql`SELECT * FROM provider_directory WHERE address IN (${rawAddressList(safe, "provider lookup addresses")})`,
     )
   ).rows;
   const m = new Map<string, ProviderRow>();
@@ -810,7 +992,7 @@ export async function lookupAddress(
   const sellerR = await db.execute<{ seller_address: string }>(sql`
     SELECT seller_address FROM events
     WHERE seller_address = ${normalized}
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     LIMIT 1
   `);
   if (sellerR.rows.length > 0) {
@@ -853,22 +1035,26 @@ function shapeSellerRow(row: any): SellerRow {
 export async function listSellers(opts: {
   limit?: number;
   offset?: number;
-  sort?: "volume" | "sessions" | "buyers" | "ghosts" | "first_seen";
+  sort?: SellerSort;
   dir?: "asc" | "desc";
 } = {}): Promise<SellerRow[]> {
   const limit = cleanPositiveInt(opts.limit, 25, 100);
   const offset = cleanNonNegativeInt(opts.offset);
-  const sortColMap: Record<string, string> = {
+  const sortColMap: Record<SellerSort, string> = {
     volume: "total_earned_usdc",
     sessions: "total_sessions",
     buyers: "unique_buyers",
     ghosts: "ghost_sessions",
     first_seen: "first_seen_ts",
   };
-  const sortCol = sortColMap[opts.sort ?? ""] ?? "total_earned_usdc";
+  const sortCol = sortColMap[opts.sort ?? SELLER_DEFAULT_SORT] ?? sortColMap[SELLER_DEFAULT_SORT];
   // first_seen defaults to asc; everything else defaults to desc
   const dir = cleanDirection(opts.dir, opts.sort === "first_seen" ? "asc" : "desc");
   const orderExpr = `${sortCol} ${dir.toUpperCase()}`;
+  const allowedOrderExprs = Object.values(sortColMap).flatMap((col) => [
+    `${col} ASC`,
+    `${col} DESC`,
+  ]);
 
   const r = await db.execute<any>(sql`
     SELECT
@@ -876,18 +1062,24 @@ export async function listSellers(opts: {
       COUNT(DISTINCT buyer_address)::int                                     AS unique_buyers,
       COUNT(*) FILTER (WHERE event_type = 'settled')::int                    AS total_sessions,
       COALESCE(SUM(delta_usdc) FILTER (WHERE event_type = 'settled'), 0)::float AS total_earned_usdc,
-      COUNT(*) FILTER (WHERE event_type = 'closed' AND (settled_amount_usdc IS NULL OR settled_amount_usdc = 0))::int AS ghost_sessions,
+      COUNT(*) FILTER (
+        WHERE event_type = 'closed'
+          AND COALESCE(settled_amount_usdc,0) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM events s WHERE s.channel_id = events.channel_id AND s.event_type='settled'
+          )
+      )::int AS ghost_sessions,
       MIN(timestamp)                                                         AS first_seen_ts,
       MAX(timestamp)                                                         AS last_seen_ts,
       MIN(block_number)                                                      AS first_seen_block,
       MAX(block_number)                                                      AS last_seen_block
     FROM events
     WHERE seller_address IS NOT NULL
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     GROUP BY seller_address
-    ORDER BY ${sql.raw(orderExpr)}
-    LIMIT ${sql.raw(String(limit))}
-    OFFSET ${sql.raw(String(offset))}
+    ORDER BY ${rawSqlFragment(orderExpr, allowedOrderExprs, "seller order clause")}
+    LIMIT ${rawPositiveInteger(limit, "seller limit")}
+    OFFSET ${rawNonNegativeInteger(offset, "seller offset")}
   `);
   return r.rows.map(shapeSellerRow);
 }
@@ -897,12 +1089,12 @@ export async function countSellers(): Promise<number> {
     SELECT COUNT(DISTINCT seller_address)::int AS n
     FROM events
     WHERE seller_address IS NOT NULL
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
 
-export async function getSeller(address: string): Promise<SellerRow | null> {
+async function getSellerUncached(address: string): Promise<SellerRow | null> {
   if (!isExplorerAddress(address)) return null;
   const r = await db.execute<any>(sql`
     SELECT
@@ -910,20 +1102,28 @@ export async function getSeller(address: string): Promise<SellerRow | null> {
       COUNT(DISTINCT buyer_address)::int                                     AS unique_buyers,
       COUNT(*) FILTER (WHERE event_type = 'settled')::int                    AS total_sessions,
       COALESCE(SUM(delta_usdc) FILTER (WHERE event_type = 'settled'), 0)::float AS total_earned_usdc,
-      COUNT(*) FILTER (WHERE event_type = 'closed' AND (settled_amount_usdc IS NULL OR settled_amount_usdc = 0))::int AS ghost_sessions,
+      COUNT(*) FILTER (
+        WHERE event_type = 'closed'
+          AND COALESCE(settled_amount_usdc,0) = 0
+          AND NOT EXISTS (
+            SELECT 1 FROM events s WHERE s.channel_id = events.channel_id AND s.event_type='settled'
+          )
+      )::int AS ghost_sessions,
       MIN(timestamp)                                                         AS first_seen_ts,
       MAX(timestamp)                                                         AS last_seen_ts,
       MIN(block_number)                                                      AS first_seen_block,
       MAX(block_number)                                                      AS last_seen_block
     FROM events
     WHERE seller_address = ${address.toLowerCase()}
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     GROUP BY seller_address
   `);
   const row = r.rows[0];
   if (!row || row.address == null) return null;
   return shapeSellerRow(row);
 }
+
+export const getSeller = cache(getSellerUncached);
 
 export async function getSellerDailyVolume(address: string, days = 30) {
   if (!isExplorerAddress(address)) return [];
@@ -940,7 +1140,7 @@ export async function getSellerDailyVolume(address: string, days = 30) {
     WHERE seller_address = ${address.toLowerCase()}
       AND event_type = 'settled'
       AND timestamp IS NOT NULL AND timestamp > 0 AND timestamp < 32503680000
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(d))} * 86400
+      AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "seller daily window days")} * 86400
     GROUP BY bucket
     ORDER BY bucket ASC
   `);
@@ -962,7 +1162,7 @@ export async function getSellerHourlyVolume(address: string, hours = 24) {
     WHERE seller_address = ${address.toLowerCase()}
       AND event_type = 'settled'
       AND timestamp IS NOT NULL
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+      AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(h, "seller hourly window hours")} * 3600
     GROUP BY bucket
     ORDER BY bucket ASC
   `);
@@ -988,7 +1188,7 @@ export async function getSellerBuyerSummary(
       AND event_type = 'settled'
     GROUP BY buyer_address
     ORDER BY total_usdc DESC
-    LIMIT ${sql.raw(String(safeLimit))}
+    LIMIT ${rawPositiveInteger(safeLimit, "seller buyer summary limit")}
   `);
   return rows.rows;
 }
@@ -1014,7 +1214,7 @@ export async function getHourlyVolume(hours = 24): Promise<
     FROM events
     WHERE event_type='settled'
       AND timestamp IS NOT NULL
-      AND timestamp > extract(epoch from now())::bigint - ${sql.raw(String(h))} * 3600
+      AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(h, "hourly volume window hours")} * 3600
     GROUP BY day
     ORDER BY day ASC
   `);
@@ -1045,7 +1245,7 @@ export async function getRecentEvents(limit = 20): Promise<RecentEventRow[]> {
            channel_id, delta_usdc, settled_amount_usdc, timestamp
     FROM events
     ORDER BY block_number DESC, log_index DESC
-    LIMIT ${sql.raw(String(safeLimit))}
+    LIMIT ${rawPositiveInteger(safeLimit, "recent events limit")}
   `);
   return r.rows.map((e: any) => ({
     tx_hash: e.tx_hash,
@@ -1102,21 +1302,25 @@ function shapeChannelRow(row: any): ChannelRow {
 export async function listChannels(opts: {
   limit?: number;
   offset?: number;
-  sort?: "amount" | "settled" | "events" | "opened" | "last_activity";
+  sort?: ChannelSort;
   dir?: "asc" | "desc";
 } = {}): Promise<ChannelRow[]> {
   const limit = cleanPositiveInt(opts.limit, 25, 100);
   const offset = cleanNonNegativeInt(opts.offset);
-  const sortColMap: Record<string, string> = {
+  const sortColMap: Record<ChannelSort, string> = {
     amount: "max_amount_usdc",
     settled: "settled_amount_usdc",
     events: "event_count",
     opened: "opened_ts",
     last_activity: "last_ts",
   };
-  const sortCol = sortColMap[opts.sort ?? ""] ?? "opened_ts";
+  const sortCol = sortColMap[opts.sort ?? CHANNEL_DEFAULT_SORT] ?? sortColMap[CHANNEL_DEFAULT_SORT];
   const dir = cleanDirection(opts.dir, "desc");
   const orderExpr = `${sortCol} ${dir.toUpperCase()}`;
+  const allowedOrderExprs = Object.values(sortColMap).flatMap((col) => [
+    `${col} ASC`,
+    `${col} DESC`,
+  ]);
 
   const r = await db.execute<any>(sql`
     SELECT
@@ -1135,11 +1339,11 @@ export async function listChannels(opts: {
       COUNT(*)::int                 AS event_count
     FROM events
     WHERE channel_id IS NOT NULL
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     GROUP BY channel_id
-    ORDER BY ${sql.raw(orderExpr)}
-    LIMIT ${sql.raw(String(limit))}
-    OFFSET ${sql.raw(String(offset))}
+    ORDER BY ${rawSqlFragment(orderExpr, allowedOrderExprs, "channel order clause")}
+    LIMIT ${rawPositiveInteger(limit, "channel limit")}
+    OFFSET ${rawNonNegativeInteger(offset, "channel offset")}
   `);
   return r.rows.map(shapeChannelRow);
 }
@@ -1149,13 +1353,14 @@ export async function countChannels(): Promise<number> {
     SELECT COUNT(DISTINCT channel_id)::int AS n
     FROM events
     WHERE channel_id IS NOT NULL
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
 
-export async function getChannel(id: string): Promise<ChannelRow | null> {
+async function getChannelUncached(id: string): Promise<ChannelRow | null> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(id)) return null;
+  const channelId = id.toLowerCase();
   const r = await db.execute<any>(sql`
     SELECT
       channel_id,
@@ -1172,8 +1377,8 @@ export async function getChannel(id: string): Promise<ChannelRow | null> {
       bool_or(event_type = 'reserved') AS reserved,
       COUNT(*)::int                 AS event_count
     FROM events
-    WHERE channel_id = ${id}
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+    WHERE channel_id = ${channelId}
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     GROUP BY channel_id
   `);
   const row = r.rows[0];
@@ -1181,21 +1386,24 @@ export async function getChannel(id: string): Promise<ChannelRow | null> {
   return shapeChannelRow(row);
 }
 
+export const getChannel = cache(getChannelUncached);
+
 export async function getChannelEvents(
   channelId: string,
   limit = 100,
 ) {
   if (!/^0x[0-9a-fA-F]{64}$/.test(channelId)) return [];
+  const id = channelId.toLowerCase();
   const safeLimit = cleanPositiveInt(limit, 100, 200);
   const r = await db.execute<any>(sql`
     SELECT tx_hash, log_index, block_number, event_type, buyer_address, seller_address,
            channel_id, delta_usdc, settled_amount_usdc, input_tokens, output_tokens,
            request_count, timestamp
     FROM events
-    WHERE channel_id = ${channelId}
-      AND event_type IN (${sql.raw(CHANNEL_EVENT_TYPES_SQL)})
+    WHERE channel_id = ${id}
+      AND event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     ORDER BY block_number ASC, log_index ASC
-    LIMIT ${sql.raw(String(safeLimit))}
+    LIMIT ${rawPositiveInteger(safeLimit, "channel events limit")}
   `);
   return r.rows.map((e: any) => ({
     tx_hash: e.tx_hash,
@@ -1311,7 +1519,7 @@ export async function listServices(): Promise<ServiceRow[]> {
 
 // Lookup a service by either canonical key or any raw alias.
 // Returns aggregated providers across all aliases of the canonical model.
-export async function getService(input: string): Promise<ServiceProviderRow | null> {
+async function getServiceUncached(input: string): Promise<ServiceProviderRow | null> {
   const { key: canonicalKey, display: canonicalDisplay } = canonicalize(input);
 
   const allProviders = (await db.execute<any>(sql`
@@ -1378,6 +1586,8 @@ export async function getService(input: string): Promise<ServiceProviderRow | nu
     provider_details: [...byAddress.values()],
   };
 }
+
+export const getService = cache(getServiceUncached);
 
 // ---------------------------------------------------------------------------
 // Flat (service, provider) listing for the marketplace UX
@@ -1500,49 +1710,64 @@ export interface DirectoryProviderRow {
   operatorAddress: string | null;
 }
 
-export type ProviderSortKey =
-  | "volume"
-  | "sessions"
-  | "ghost"
-  | "joined"
-  | "reputation";
+export type ProviderSortKey = ProviderSort;
 
-export async function listProviders(opts: {
+interface ProviderListOptions {
   sort?: ProviderSortKey;
   // Raw service strings to match against pd.services (JSON-text array).
   // Pass an array (not a canonical key) so callers can expand a canonical
   // group into all of its aliases before querying.
   serviceAliases?: string[];
   active7d?: boolean;
-} = {}): Promise<DirectoryProviderRow[]> {
+  limit?: number;
+  offset?: number;
+  address?: string;
+}
+
+function providerWhereClause(opts: ProviderListOptions) {
+  const filters = [sql`1=1`];
+  if (opts.address) {
+    if (!/^0x[0-9a-f]{40}$/.test(opts.address)) return sql`1=0`;
+    filters.push(sql`pd.address = ${opts.address}`);
+  }
+  if (opts.serviceAliases && opts.serviceAliases.length > 0) {
+    // services is stored as a JSON text array, e.g. '["llm.chat.gpt-4o","..."]'
+    const aliasClauses = opts.serviceAliases
+      .filter((a) => typeof a === "string" && a.length > 0)
+      .slice(0, 100)
+      .map((a) => sql`pd.services LIKE ${`%"${a.slice(0, 120)}"%`}`);
+    if (aliasClauses.length > 0) {
+      filters.push(sql`(${sql.join(aliasClauses, sql` OR `)})`);
+    }
+  }
+  if (opts.active7d) {
+    // Provider has >=1 settled event in last 7 days.
+    filters.push(
+      sql`agg.last_settled_ts >= EXTRACT(EPOCH FROM NOW()) - 604800`,
+    );
+  }
+  return sql.join(filters, sql` AND `);
+}
+
+export async function listProviders(opts: ProviderListOptions = {}): Promise<DirectoryProviderRow[]> {
   // Reputation is computed in JS post-fetch (see lib/reputation.ts), so the
   // SQL sort uses a coarse proxy that puts revenue-active sellers first.
   // Fine ordering is then applied in app/providers/page.tsx.
   const sortColMap: Record<ProviderSortKey, string> = {
     volume: "COALESCE(agg.total_volume, 0) DESC",
+    score: "COALESCE(agg.total_volume, 0) DESC",
     sessions: "COALESCE(agg.session_count, 0) DESC",
     ghost: "CASE WHEN COALESCE(agg.closed_count,0)>0 THEN COALESCE(agg.ghost_count,0)::float/agg.closed_count ELSE 0 END DESC",
     joined: "agg.first_settled_ts ASC NULLS LAST",
     reputation: "COALESCE(agg.total_volume, 0) DESC",
+    recent: "pd.updated_at DESC NULLS LAST",
   };
-  const orderExpr = sortColMap[opts.sort ?? "volume"] ?? sortColMap.volume;
+  const orderExpr = sortColMap[opts.sort ?? PROVIDER_DEFAULT_SORT] ?? sortColMap[PROVIDER_DEFAULT_SORT];
+  const allowedOrderExprs = Object.values(sortColMap);
 
-  // Build WHERE filters with parameterized bindings (NEVER sql.raw on user input).
-  const filters = [sql`1=1`];
-  if (opts.serviceAliases && opts.serviceAliases.length > 0) {
-    // services is stored as a JSON text array, e.g. '["llm.chat.gpt-4o","..."]'
-    const aliasClauses = opts.serviceAliases.map(
-      (a) => sql`pd.services LIKE ${`%"${a}"%`}`,
-    );
-    filters.push(sql`(${sql.join(aliasClauses, sql` OR `)})`);
-  }
-  if (opts.active7d) {
-    // Provider has ≥1 settled event in last 7 days
-    filters.push(
-      sql`agg.last_settled_ts >= EXTRACT(EPOCH FROM NOW()) - 604800`,
-    );
-  }
-  const whereClause = sql.join(filters, sql` AND `);
+  const whereClause = providerWhereClause(opts);
+  const limit = opts.limit == null ? null : cleanPositiveInt(opts.limit, 100, 1000);
+  const offset = opts.offset == null ? null : cleanNonNegativeInt(opts.offset);
 
   const rows = (await db.execute<any>(sql`
     SELECT
@@ -1566,7 +1791,14 @@ export async function listProviders(opts: {
         seller_address,
         COUNT(DISTINCT CASE WHEN event_type='settled' THEN channel_id END)::int      AS session_count,
         COALESCE(SUM(CASE WHEN event_type='settled' THEN delta_usdc ELSE 0 END),0)::float AS total_volume,
-        COUNT(DISTINCT CASE WHEN event_type='closed' AND COALESCE(settled_amount_usdc,0)=0 THEN channel_id END)::int AS ghost_count,
+        COUNT(DISTINCT CASE
+          WHEN event_type='closed'
+            AND COALESCE(settled_amount_usdc,0)=0
+            AND NOT EXISTS (
+              SELECT 1 FROM events s WHERE s.channel_id = events.channel_id AND s.event_type='settled'
+            )
+          THEN channel_id
+        END)::int AS ghost_count,
         COUNT(DISTINCT CASE WHEN event_type='closed' THEN channel_id END)::int       AS closed_count,
         MIN(timestamp) FILTER (WHERE event_type='settled')::bigint                  AS first_settled_ts,
         MAX(timestamp) FILTER (WHERE event_type='settled')::bigint                  AS last_settled_ts
@@ -1575,7 +1807,9 @@ export async function listProviders(opts: {
       GROUP BY seller_address
     ) agg ON agg.seller_address = pd.address
     WHERE ${whereClause}
-    ORDER BY ${sql.raw(orderExpr)}
+    ORDER BY ${rawSqlFragment(orderExpr, allowedOrderExprs, "provider order clause")}
+    ${limit == null ? sql`` : sql`LIMIT ${rawPositiveInteger(limit, "provider limit")}`}
+    ${offset == null ? sql`` : sql`OFFSET ${rawNonNegativeInteger(offset, "provider offset")}`}
   `)).rows;
 
   return rows.map((r: any) => ({
@@ -1594,6 +1828,30 @@ export async function listProviders(opts: {
     trustScore: r.trust_score != null ? Number(r.trust_score) : null,
     operatorAddress: r.operator_address ?? null,
   }));
+}
+
+export async function countProviders(opts: ProviderListOptions = {}): Promise<number> {
+  const whereClause = providerWhereClause(opts);
+  const rows = await db.execute<{ n: number }>(sql`
+    SELECT COUNT(*)::int AS n
+    FROM provider_directory pd
+    LEFT JOIN (
+      SELECT
+        seller_address,
+        MAX(timestamp) FILTER (WHERE event_type='settled')::bigint AS last_settled_ts
+      FROM events
+      WHERE seller_address IS NOT NULL
+      GROUP BY seller_address
+    ) agg ON agg.seller_address = pd.address
+    WHERE ${whereClause}
+  `);
+  return Number(rows.rows[0]?.n ?? 0);
+}
+
+export async function getProvider(address: string): Promise<DirectoryProviderRow | null> {
+  const normalized = address.toLowerCase();
+  const rows = await listProviders({ address: normalized, limit: 1 });
+  return rows[0] ?? null;
 }
 
 // Facet values + counts for the /providers filter bar. Service strings are
@@ -1663,14 +1921,14 @@ export async function listHolders(opts: {
   const limit = cleanPositiveInt(opts.limit, 50, 200);
   const offset = cleanNonNegativeInt(opts.offset);
   const { ANTS_NON_USER_ADDRESSES } = await import("./antseed");
-  const excludeSql = ANTS_NON_USER_ADDRESSES.map((a) => `'${a}'`).join(",");
+  const excludeSql = rawAddressList(ANTS_NON_USER_ADDRESSES, "non-user ANTS addresses");
 
   const r = await db.execute<any>(sql`
     WITH circulating AS (
       SELECT COALESCE(SUM(balance + staked_balance), 0) AS total
       FROM ants_holders
       WHERE balance + staked_balance > 0
-        AND address NOT IN (${sql.raw(excludeSql)})
+        AND address NOT IN (${excludeSql})
     )
     SELECT
       address,
@@ -1688,10 +1946,10 @@ export async function listHolders(opts: {
       updated_at
     FROM ants_holders
     WHERE balance + staked_balance > 0
-      AND address NOT IN (${sql.raw(excludeSql)})
+      AND address NOT IN (${excludeSql})
     ORDER BY (balance + staked_balance) DESC
-    LIMIT ${sql.raw(String(limit))}
-    OFFSET ${sql.raw(String(offset))}
+    LIMIT ${rawPositiveInteger(limit, "holders limit")}
+    OFFSET ${rawNonNegativeInteger(offset, "holders offset")}
   `);
 
   return r.rows.map((x: any) => ({
@@ -1711,12 +1969,12 @@ export async function listHolders(opts: {
 
 export async function countHolders(): Promise<number> {
   const { ANTS_NON_USER_ADDRESSES } = await import("./antseed");
-  const excludeSql = ANTS_NON_USER_ADDRESSES.map((a) => `'${a}'`).join(",");
+  const excludeSql = rawAddressList(ANTS_NON_USER_ADDRESSES, "non-user ANTS addresses");
   const r = await db.execute<{ n: number }>(sql`
     SELECT COUNT(*)::int AS n
     FROM ants_holders
     WHERE balance + staked_balance > 0
-      AND address NOT IN (${sql.raw(excludeSql)})
+      AND address NOT IN (${excludeSql})
   `);
   return Number(r.rows[0]?.n ?? 0);
 }

@@ -43,10 +43,9 @@ export interface RunResult {
     importance: number;
     filename: string;
     written: boolean;
-    // Full rendered card body (markdown). Exposed so the Vercel cron route
-    // can include it in the JSON response — operators can copy-paste the
-    // post directly from logs without running the local CLI. The CLI
-    // ignores this field since it writes the same content to disk.
+    // Full rendered card body (markdown). Kept for local/operator callers;
+    // HTTP cron routes must not serialize it because it includes writer
+    // guidance that can be persisted in logs.
     body: string;
   }>;
 }

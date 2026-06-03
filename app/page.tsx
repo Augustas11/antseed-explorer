@@ -76,10 +76,11 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: { range?: string };
+  searchParams: Promise<{ range?: string }>;
 }) {
   // No page-load sync on Vercel — cron handles indexing.
-  const range = searchParams.range || "30d";
+  const query = await searchParams;
+  const range = query.range || "30d";
   const rangeLabel =
     range === "24h"
       ? "last 24h"

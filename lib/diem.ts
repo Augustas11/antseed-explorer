@@ -15,6 +15,7 @@ const CACHE_TTL_MS = 10 * 60_000;
 const DB_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
 const DIEM_SNAPSHOT_KEY = "diem_pool_snapshot";
 const ENUMERATE_POOL_USERS = process.env.DIEM_ENUMERATE_USERS === "1";
+const DEADLINE_GUARD_MS = 500;
 
 const diemStakingAbi = parseAbi([
   "function staked(address user) view returns (uint256)",
@@ -30,6 +31,8 @@ export interface DiemPoolUserSnapshot {
   exactAddresses: boolean;
 }
 
+// Per-process memo only; the persisted indexer_state snapshot is the
+// cross-instance source of truth for serverless/runtime restarts.
 let activeStakersCache:
   | { at: number; snapshot: DiemPoolUserSnapshot }
   | null = null;
@@ -49,20 +52,47 @@ interface PersistedDiemSnapshot {
   snapshot: DiemPoolUserSnapshot;
 }
 
+const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
+export function sanitizeDiemPoolSnapshot(
+  value: unknown,
+): DiemPoolUserSnapshot | null {
+  const snapshot = value as Partial<DiemPoolUserSnapshot>;
+  if (!snapshot || typeof snapshot !== "object") return null;
+  if (
+    typeof snapshot.count !== "number" ||
+    !Number.isSafeInteger(snapshot.count) ||
+    snapshot.count < 0 ||
+    !Array.isArray(snapshot.addresses)
+  ) {
+    return null;
+  }
+
+  const addresses = Array.from(
+    new Set(
+      snapshot.addresses
+        .filter((address): address is string => typeof address === "string")
+        .map((address) => address.toLowerCase())
+        .filter((address) => ADDRESS_RE.test(address)),
+    ),
+  );
+  const exactAddresses = snapshot.exactAddresses === true;
+  return {
+    addresses: exactAddresses ? addresses : [],
+    count: exactAddresses ? addresses.length : snapshot.count,
+    exactAddresses,
+  };
+}
+
 async function readDbSnapshot(): Promise<PersistedDiemSnapshot | null> {
   try {
     const raw = await getState(DIEM_SNAPSHOT_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedDiemSnapshot;
-    if (
-      typeof parsed?.at !== "number" ||
-      !parsed.snapshot ||
-      typeof parsed.snapshot.count !== "number" ||
-      !Array.isArray(parsed.snapshot.addresses)
-    ) {
-      return null;
-    }
-    return parsed;
+    if (typeof parsed?.at !== "number" || !Number.isFinite(parsed.at)) return null;
+    const snapshot = sanitizeDiemPoolSnapshot(parsed.snapshot);
+    if (!snapshot) return null;
+    return { at: parsed.at, snapshot };
   } catch (e: any) {
     console.warn("[diem] failed to read DB snapshot", e?.message ?? e);
     return null;
@@ -80,12 +110,25 @@ async function writeDbSnapshot(snapshot: DiemPoolUserSnapshot, at: number) {
   }
 }
 
+interface FetchLiveSnapshotOptions {
+  deadlineMs?: number;
+  countOnly?: boolean;
+}
+
+function hasDeadline(startedAt: number, deadlineMs: number | undefined): boolean {
+  return deadlineMs == null || Date.now() - startedAt < deadlineMs - DEADLINE_GUARD_MS;
+}
+
 // Live RPC path — only used by the cron refresher and as a one-time bootstrap
-// when the DB snapshot is missing. Never called on the SSR hot path once the
-// snapshot exists.
-async function fetchLiveSnapshot(): Promise<DiemPoolUserSnapshot | null> {
+// when the DB snapshot is missing. SSR callers never run the unbounded
+// enumeration branch.
+async function fetchLiveSnapshot(
+  opts: FetchLiveSnapshotOptions = {},
+): Promise<DiemPoolUserSnapshot | null> {
+  const startedAt = Date.now();
   let stakerCount: number;
   try {
+    if (!hasDeadline(startedAt, opts.deadlineMs)) return null;
     stakerCount = Number(
       await publicClient.readContract({
         address: DIEM_STAKING_PROXY,
@@ -98,11 +141,14 @@ async function fetchLiveSnapshot(): Promise<DiemPoolUserSnapshot | null> {
     return null;
   }
 
-  if (!ENUMERATE_POOL_USERS) {
+  if (opts.countOnly || !ENUMERATE_POOL_USERS) {
     return { addresses: [], count: stakerCount, exactAddresses: false };
   }
 
   try {
+    if (!hasDeadline(startedAt, opts.deadlineMs)) {
+      return { addresses: [], count: stakerCount, exactAddresses: false };
+    }
     const head = await publicClient.getBlockNumber();
     const stakers = new Set<string>();
 
@@ -111,6 +157,9 @@ async function fetchLiveSnapshot(): Promise<DiemPoolUserSnapshot | null> {
       fromBlock <= head;
       fromBlock += LOG_BATCH_SIZE
     ) {
+      if (!hasDeadline(startedAt, opts.deadlineMs)) {
+        return { addresses: [], count: stakerCount, exactAddresses: false };
+      }
       const toBlock =
         fromBlock + LOG_BATCH_SIZE - 1n > head
           ? head
@@ -130,6 +179,9 @@ async function fetchLiveSnapshot(): Promise<DiemPoolUserSnapshot | null> {
     const candidates = [...stakers];
     const active: string[] = [];
     for (let i = 0; i < candidates.length; i += 100) {
+      if (!hasDeadline(startedAt, opts.deadlineMs)) {
+        return { addresses: [], count: stakerCount, exactAddresses: false };
+      }
       const chunk = candidates.slice(i, i + 100);
       const balances = (await publicClient.multicall({
         allowFailure: true,
@@ -167,8 +219,10 @@ async function fetchLiveSnapshot(): Promise<DiemPoolUserSnapshot | null> {
 
 // Refresh the persisted DIEM snapshot. Called from the 5-min cron so the SSR
 // hot path never has to do an RPC. Safe to call ad-hoc; idempotent.
-export async function refreshDiemPoolSnapshot(): Promise<DiemPoolUserSnapshot | null> {
-  const snapshot = await fetchLiveSnapshot();
+export async function refreshDiemPoolSnapshot(
+  opts: { deadlineMs?: number } = {},
+): Promise<DiemPoolUserSnapshot | null> {
+  const snapshot = await fetchLiveSnapshot(opts);
   if (!snapshot) return null;
   const now = Date.now();
   await writeDbSnapshot(snapshot, now);
@@ -192,23 +246,22 @@ export async function getActiveDiemPoolUsers(): Promise<DiemPoolUserSnapshot> {
       return persisted.snapshot;
     }
 
-    // Bootstrap or stale path: try a live RPC. Treat RPC failure as a soft
-    // miss — base.drpc.org has gone unresponsive in the past (~8s timeout +
-    // 1 retry = up to 16s) and we'd rather show stale-but-served numbers
-    // than crash the homepage.
-    const live = await fetchLiveSnapshot();
+    if (persisted) {
+      // Stale snapshot: serve bounded data immediately. The cron refresher is
+      // the only path allowed to run event-log enumeration.
+      activeStakersCache = { at: now, snapshot: persisted.snapshot };
+      return persisted.snapshot;
+    }
+    if (activeStakersCache) return activeStakersCache.snapshot;
+
+    // Bootstrap with no DB snapshot: only allow the cheap stakerCount call.
+    // This prevents a cold SSR render from walking the staking event history.
+    const live = await fetchLiveSnapshot({ countOnly: true, deadlineMs: 2_000 });
     if (live) {
       await writeDbSnapshot(live, now);
       activeStakersCache = { at: now, snapshot: live };
       return live;
     }
-
-    if (persisted) {
-      // RPC down but we have an older DB snapshot — serve it rather than zero.
-      activeStakersCache = { at: now, snapshot: persisted.snapshot };
-      return persisted.snapshot;
-    }
-    if (activeStakersCache) return activeStakersCache.snapshot;
 
     const empty: DiemPoolUserSnapshot = {
       addresses: [],

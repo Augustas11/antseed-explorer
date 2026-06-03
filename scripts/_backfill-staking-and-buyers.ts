@@ -1,10 +1,9 @@
 // Combined one-shot backfill:
 //
-//  Phase 1 — Staking: replay all Staked/Unstaked events from the
-//  AntseedStaking deployment block and write correct staked_balance values
-//  into ants_holders. Resets all staked_balance to 0 first so re-runs are
-//  idempotent. Advances the staking cursor on completion so the cron picks up
-//  only new blocks.
+//  Phase 1 — Staking is quarantined. The live indexer now maintains
+//  staked_balance through the idempotent ants_holder_deltas ledger; this
+//  legacy script mutates ants_holders directly and must not be used for
+//  staking backfills.
 //
 //  Phase 2 — Buyer profiles: recompute buyer_profile rows for every address
 //  that ever sent a Deposited event (tx.from, post-backfill-deposits). Closes
@@ -20,6 +19,7 @@ import { createPublicClient, http } from "viem";
 import { base } from "viem/chains";
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
+import { rawNumericString } from "../lib/sqlSafe";
 import {
   ANTSEED_STAKING_DEPLOYMENT_BLOCK,
   CONTRACTS,
@@ -79,6 +79,22 @@ async function backfillStaking() {
   console.log("\n[phase-1/staking] starting");
   console.log("[phase-1/staking] contract=", STAKING);
   console.log("[phase-1/staking] deployment_block=", ANTSEED_STAKING_DEPLOYMENT_BLOCK.toString());
+  if (process.env.UNSAFE_LEGACY_STAKING_BACKFILL !== "1") {
+    console.log("[phase-1/staking] SKIPPED: legacy direct staked_balance mutation is quarantined; live staking is ledger-backed via ants_holder_deltas");
+    return 0;
+  }
+
+  const ledgerRows = await db.execute<{ n: number }>(sql`
+    SELECT COUNT(*)::int AS n
+    FROM ants_holder_deltas
+    WHERE delta_kind = 'staked'
+  `);
+  const ledgerCount = Number(ledgerRows.rows[0]?.n ?? 0);
+  if (ledgerCount > 0) {
+    throw new Error(
+      `unsafe staking backfill refused: ants_holder_deltas already has ${ledgerCount} staked ledger rows; do not mutate ants_holders directly`,
+    );
+  }
 
   // Reset cursor so the cron re-syncs from scratch if the script is killed mid-run.
   await db.execute(sql`DELETE FROM indexer_state WHERE key = 'last_indexed_block_staking'`);
@@ -134,11 +150,12 @@ async function backfillStaking() {
       for (const [addr, delta] of deltas) {
         if (delta === 0n) continue;
         const deltaStr = delta.toString();
+        const deltaLiteral = rawNumericString(deltaStr, "staking delta");
         await db.execute(sql`
           INSERT INTO ants_holders (address, balance, staked_balance, updated_at)
-          VALUES (${addr}, '0', ${sql.raw(`'${deltaStr}'::numeric`)}, ${now})
+          VALUES (${addr}, '0', ${deltaLiteral}, ${now})
           ON CONFLICT (address) DO UPDATE SET
-            staked_balance = GREATEST('0'::numeric, ants_holders.staked_balance + ${sql.raw(`'${deltaStr}'::numeric`)}),
+            staked_balance = GREATEST('0'::numeric, ants_holders.staked_balance + ${deltaLiteral}),
             updated_at = ${now}
         `);
       }

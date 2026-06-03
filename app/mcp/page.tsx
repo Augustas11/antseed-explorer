@@ -26,7 +26,7 @@ const INSTALL_SNIPPET = `{
       "command": "npx",
       "args": ["-y", "@antfeed/mcp"],
       "env": {
-        "ANTFEED_EXPLORER_URL": "https://antfeed.org",
+        "ANTFEED_EXPLORER_URL": "https://www.antfeed.org",
         "ANTSEED_BUYER_URL": "http://localhost:8377"
       }
     }
@@ -41,7 +41,7 @@ const READ_ONLY_TOOLS: { name: string; inputs: string; output: string }[] = [
   },
   {
     name: "list_providers",
-    inputs: "offset?, limit?, sort? (score | recent)",
+    inputs: "cursor?, limit?, sort? (score | recent)",
     output: "provider directory with displayName, services, per-service pricing, region, USDC earned, ghost rate",
   },
   {
@@ -161,7 +161,7 @@ export default function McpPage() {
               <td>
                 <code className="font-mono text-xs">ANTFEED_EXPLORER_URL</code>
               </td>
-              <td className="text-xs font-mono">https://antfeed.org</td>
+              <td className="text-xs font-mono">https://www.antfeed.org</td>
               <td className="text-xs text-muted">Base URL for the explorer REST API.</td>
             </tr>
             <tr>

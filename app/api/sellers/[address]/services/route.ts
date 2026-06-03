@@ -1,16 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listProviders } from "@/lib/queries";
+import { getProvider } from "@/lib/queries";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { trackMcpUsage } from "@/lib/mcp-usage";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+
+const RESPONSE_HEADERS = {
+  "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=3600",
+};
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: Promise<{ address: string }> | { address: string } },
+  { params }: { params: Promise<{ address: string }> },
 ) {
   trackMcpUsage(req, "sellers_services");
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
@@ -21,21 +24,16 @@ export async function GET(
     );
   }
 
-  const resolved = await params;
-  const raw = resolved.address ?? "";
+  const { address: raw = "" } = await params;
   if (!ADDRESS_RE.test(raw)) {
     return NextResponse.json(
       { error: "invalid_address", message: "address must be 0x + 40 hex chars" },
-      { status: 400 },
+      { status: 400, headers: RESPONSE_HEADERS },
     );
   }
   const address = raw.toLowerCase();
 
-  // listProviders() is the canonical source — finds the directory row + on-chain
-  // aggregates. The provider list is small (≤ a few hundred), so a full scan is
-  // acceptable; if it grows we can add a getProvider(address) helper.
-  const all = await listProviders({ sort: "volume" });
-  const row = all.find((p) => p.address.toLowerCase() === address);
+  const row = await getProvider(address);
 
   if (!row) {
     return NextResponse.json(
@@ -45,7 +43,7 @@ export async function GET(
           "This address is not in the AntFeed provider directory. The directory is refreshed hourly from network.antseed.com.",
         address,
       },
-      { status: 404 },
+      { status: 404, headers: RESPONSE_HEADERS },
     );
   }
 
@@ -56,5 +54,5 @@ export async function GET(
     services: row.services,
     pricing: row.pricing,
     updatedAt: row.updatedAt,
-  });
+  }, { headers: RESPONSE_HEADERS });
 }

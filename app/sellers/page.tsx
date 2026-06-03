@@ -23,14 +23,15 @@ function pageParam(value: string | undefined): number {
 export default async function SellersPage({
   searchParams,
 }: {
-  searchParams: SP;
+  searchParams: Promise<SP>;
 }) {
-  const page = pageParam(searchParams.page);
+  const query = await searchParams;
+  const page = pageParam(query.page);
   const limit = 25;
   const offset = (page - 1) * limit;
-  const sortParam = searchParams.sort || "volume";
+  const sortParam = query.sort || "volume";
   const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
-  const dir = searchParams.dir === "asc" ? "asc" : "desc";
+  const dir = query.dir === "asc" ? "asc" : "desc";
 
   const [rows, total] = await Promise.all([
     listSellers({ limit, offset, sort, dir }),

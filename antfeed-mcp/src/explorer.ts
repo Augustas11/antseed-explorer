@@ -2,6 +2,7 @@ import {
   BuyerProfileResponseZ,
   BuyerScoreResponseZ,
   BuyersPageZ,
+  ChannelRowZ,
   ChannelsPageZ,
   DauTrendResponseZ,
   GasResponseZ,
@@ -17,6 +18,7 @@ import type {
   DirectoryProviderRow,
   GasResponse,
   NetworkStatsResponse,
+  ProviderSort,
   ServicePricing,
 } from "./schemas.js";
 import { readJsonCapped } from "./http.js";
@@ -140,7 +142,7 @@ export class ExplorerClient {
     try {
       res = await this.fetchImpl(url, {
         signal: controller.signal,
-        redirect: "follow",
+        redirect: "manual",
         headers: { Accept: "application/json", "User-Agent": this.userAgent },
       });
     } catch (err) {
@@ -153,6 +155,7 @@ export class ExplorerClient {
       clearTimeout(timer);
     }
 
+    rejectRedirect(res, url);
     if (!res.ok) {
       if (res.status === 429) {
         throw new ExplorerError("RATE_LIMITED", `Explorer rate limit hit on ${pathOf(url)}`);
@@ -200,7 +203,7 @@ export class ExplorerClient {
   }
 
   async listProvidersDirectory(
-    params: { offset?: number; limit?: number; sort?: "volume" | "sessions" | "ghost" } = {},
+    params: { offset?: number; limit?: number; sort?: ProviderSort } = {},
   ): Promise<ProvidersPage> {
     const url = this.buildUrl("/api/providers", {
       offset: params.offset,
@@ -221,7 +224,7 @@ export class ExplorerClient {
     try {
       res = await this.fetchImpl(url, {
         signal: controller.signal,
-        redirect: "follow",
+        redirect: "manual",
         headers: { Accept: "application/json", "User-Agent": this.userAgent },
       });
     } catch (err) {
@@ -233,13 +236,13 @@ export class ExplorerClient {
     } finally {
       clearTimeout(timer);
     }
+    rejectRedirect(res, url);
     if (res.status === 404) return null;
     if (res.status === 429) throw new ExplorerError("RATE_LIMITED", "Explorer rate limit hit on /api/sellers/.../services");
     if (!res.ok) throw new ExplorerError(`EXPLORER_HTTP_${res.status}`, `Explorer returned ${res.status} on /api/sellers/.../services`);
 
     let raw: unknown;
     try {
-      const { readJsonCapped } = await import("./http.js");
       raw = await readJsonCapped(res, this.maxBytes);
     } catch (err) {
       const e = err as { code?: string };
@@ -264,6 +267,18 @@ export class ExplorerClient {
     const parsed = ChannelsPageZ.safeParse(raw);
     if (!parsed.success) throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/channels response did not match expected shape");
     return parsed.data as ChannelsPage;
+  }
+
+  async getChannel(channelId: string): Promise<ChannelRow | null> {
+    const url = this.buildUrl(`/api/channels/${channelId.toLowerCase()}`, {});
+    const res = await this.fetchRaw(url);
+    if (res.status === 404) return null;
+    const raw = await this.consumeJson(res, url);
+    const parsed = ChannelRowZ.safeParse(raw);
+    if (!parsed.success) {
+      throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/channels/{id} response did not match expected shape");
+    }
+    return parsed.data as ChannelRow;
   }
 
   async getNetworkStats(): Promise<NetworkStatsResponse> {
@@ -331,9 +346,10 @@ export class ExplorerClient {
     try {
       const res = await this.fetchImpl(url, {
         signal: controller.signal,
-        redirect: "follow",
+        redirect: "manual",
         headers: { Accept: "application/json", "User-Agent": this.userAgent },
       });
+      rejectRedirect(res, url);
       if (res.status === 429) throw new ExplorerError("RATE_LIMITED", `Explorer rate limit hit on ${pathOf(url)}`);
       // 404 surfaced to the caller (lets buyer/score endpoints return null).
       if (!res.ok && res.status !== 404) {
@@ -371,5 +387,11 @@ function pathOf(url: string): string {
     return u.pathname + (u.search || "");
   } catch {
     return url;
+  }
+}
+
+function rejectRedirect(res: Response, url: string) {
+  if (res.status >= 300 && res.status < 400) {
+    throw new ExplorerError("EXPLORER_REDIRECT", `Explorer redirected ${pathOf(url)}`);
   }
 }
