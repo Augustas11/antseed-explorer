@@ -1,5 +1,5 @@
 import { parseAbi, parseAbiItem } from "viem";
-import { publicClient } from "./chain";
+import { createPublicClientWithTimeout, publicClient } from "./chain";
 import { getState, setState } from "./db";
 
 export const DIEM_TOKEN = "0xf4d97f2da56e8c3098f3a8d538db630a2606a024";
@@ -16,6 +16,8 @@ const DB_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
 const DIEM_SNAPSHOT_KEY = "diem_pool_snapshot";
 const ENUMERATE_POOL_USERS = process.env.DIEM_ENUMERATE_USERS === "1";
 const DEADLINE_GUARD_MS = 500;
+const RPC_MIN_BUDGET_MS = 750;
+const RPC_MAX_TIMEOUT_MS = 4_000;
 
 const diemStakingAbi = parseAbi([
   "function staked(address user) view returns (uint256)",
@@ -119,6 +121,27 @@ function hasDeadline(startedAt: number, deadlineMs: number | undefined): boolean
   return deadlineMs == null || Date.now() - startedAt < deadlineMs - DEADLINE_GUARD_MS;
 }
 
+function remainingRpcBudgetMs(
+  startedAt: number,
+  deadlineMs: number | undefined,
+): number | null {
+  if (deadlineMs == null) return null;
+  return deadlineMs - (Date.now() - startedAt) - DEADLINE_GUARD_MS;
+}
+
+function rpcClientForDeadline(
+  startedAt: number,
+  deadlineMs: number | undefined,
+): typeof publicClient | null {
+  const remaining = remainingRpcBudgetMs(startedAt, deadlineMs);
+  if (remaining == null) return publicClient;
+  if (remaining < RPC_MIN_BUDGET_MS) return null;
+  return createPublicClientWithTimeout(
+    Math.max(1, Math.min(RPC_MAX_TIMEOUT_MS, remaining)),
+    0,
+  );
+}
+
 // Live RPC path — only used by the cron refresher and as a one-time bootstrap
 // when the DB snapshot is missing. SSR callers never run the unbounded
 // enumeration branch.
@@ -128,9 +151,10 @@ async function fetchLiveSnapshot(
   const startedAt = Date.now();
   let stakerCount: number;
   try {
-    if (!hasDeadline(startedAt, opts.deadlineMs)) return null;
+    const client = rpcClientForDeadline(startedAt, opts.deadlineMs);
+    if (!client) return null;
     stakerCount = Number(
-      await publicClient.readContract({
+      await client.readContract({
         address: DIEM_STAKING_PROXY,
         abi: diemStakingAbi,
         functionName: "stakerCount",
@@ -149,7 +173,9 @@ async function fetchLiveSnapshot(
     if (!hasDeadline(startedAt, opts.deadlineMs)) {
       return { addresses: [], count: stakerCount, exactAddresses: false };
     }
-    const head = await publicClient.getBlockNumber();
+    const headClient = rpcClientForDeadline(startedAt, opts.deadlineMs);
+    if (!headClient) return { addresses: [], count: stakerCount, exactAddresses: false };
+    const head = await headClient.getBlockNumber();
     const stakers = new Set<string>();
 
     for (
@@ -157,14 +183,15 @@ async function fetchLiveSnapshot(
       fromBlock <= head;
       fromBlock += LOG_BATCH_SIZE
     ) {
-      if (!hasDeadline(startedAt, opts.deadlineMs)) {
+      const logsClient = rpcClientForDeadline(startedAt, opts.deadlineMs);
+      if (!logsClient) {
         return { addresses: [], count: stakerCount, exactAddresses: false };
       }
       const toBlock =
         fromBlock + LOG_BATCH_SIZE - 1n > head
           ? head
           : fromBlock + LOG_BATCH_SIZE - 1n;
-      const logs = await publicClient.getLogs({
+      const logs = await logsClient.getLogs({
         address: DIEM_STAKING_PROXY,
         fromBlock,
         toBlock,
@@ -179,11 +206,12 @@ async function fetchLiveSnapshot(
     const candidates = [...stakers];
     const active: string[] = [];
     for (let i = 0; i < candidates.length; i += 100) {
-      if (!hasDeadline(startedAt, opts.deadlineMs)) {
+      const balancesClient = rpcClientForDeadline(startedAt, opts.deadlineMs);
+      if (!balancesClient) {
         return { addresses: [], count: stakerCount, exactAddresses: false };
       }
       const chunk = candidates.slice(i, i + 100);
-      const balances = (await publicClient.multicall({
+      const balances = (await balancesClient.multicall({
         allowFailure: true,
         contracts: chunk.map((user) => ({
           address: DIEM_STAKING_PROXY,
@@ -279,6 +307,20 @@ export async function getActiveDiemPoolUsers(): Promise<DiemPoolUserSnapshot> {
   } finally {
     inflight = null;
   }
+}
+
+export async function getDiemPoolSnapshotMetadata(): Promise<{
+  at: number | null;
+  exactAddresses: boolean;
+  count: number;
+}> {
+  const persisted = await readDbSnapshot();
+  if (!persisted) return { at: null, exactAddresses: false, count: 0 };
+  return {
+    at: persisted.at,
+    exactAddresses: persisted.snapshot.exactAddresses,
+    count: persisted.snapshot.count,
+  };
 }
 
 export async function listActiveDiemPoolUsers(): Promise<string[]> {

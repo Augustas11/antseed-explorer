@@ -209,6 +209,7 @@ export const DirectoryProviderRowZ = z
     ghostCount: z.number().int().nonnegative(),
     closedCount: z.number().int().nonnegative(),
     updatedAt: z.number().int().nullable(),
+    operatorAddress: ETH_ADDRESS.nullable(),
   })
   .passthrough();
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getProvider } from "@/lib/queries";
+import { getProviderCatalog } from "@/lib/queries";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { trackMcpUsage } from "@/lib/mcp-usage";
 
@@ -33,7 +33,7 @@ export async function GET(
   }
   const address = raw.toLowerCase();
 
-  const row = await getProvider(address);
+  const row = await getProviderCatalog(address);
 
   if (!row) {
     return NextResponse.json(

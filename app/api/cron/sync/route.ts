@@ -42,7 +42,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ...result,
       diem: diem ? { count: diem.count, exactAddresses: diem.exactAddresses } : null,
-      hero: hero ? { at: hero.at } : null,
+      hero: hero
+        ? {
+            at: hero.at,
+            sourceLastSyncTs: hero.source.lastSyncTs,
+            sourceLastIndexedBlock: hero.source.lastIndexedBlock,
+          }
+        : null,
     });
   } catch (e: any) {
     console.error("[cron/sync] failed", e);

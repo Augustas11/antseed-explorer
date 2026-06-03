@@ -10,7 +10,15 @@ assert.equal(
   false,
   "script-src must not allow unsafe-inline",
 );
+assert.equal(
+  /style-src 'self' 'unsafe-inline'/.test(nextConfig + middleware),
+  false,
+  "style-src must not broadly allow unsafe-inline",
+);
 assert.match(middleware, /script-src 'self' 'nonce-\$\{nonce\}'/);
+assert.match(middleware, /"style-src 'self'"/);
+assert.match(middleware, /"style-src-elem 'self'"/);
+assert.match(middleware, /"style-src-attr 'unsafe-inline'"/);
 assert.match(middleware, /requestHeaders\.set\("content-security-policy", policy\)/);
 assert.match(middleware, /Content-Security-Policy/);
 assert.match(layout, /nonce=\{nonce\}/);

@@ -37,6 +37,7 @@ const USDC_DECIMALS_BIGINT = 1_000_000n;
 const MAX_SAFE_USDC_ATOMS = BigInt(Number.MAX_SAFE_INTEGER) * USDC_DECIMALS_BIGINT;
 const PROVIDER_REFRESH_MS = 60 * 60 * 1000; // 1h
 const PROVIDER_FETCH_TIMEOUT_MS = 5_000;
+const PROVIDER_DIRECTORY_MAX_BODY_BYTES = 1_000_000;
 const PENDING_BUYERS_KEY = "buyers_recompute_pending";
 
 const channelsAddress = (process.env.CHANNELS_ADDRESS ||
@@ -690,7 +691,54 @@ const PROVIDER_TEXT_LIMITS = {
   service: 120,
 };
 const MAX_PROVIDER_SERVICES = 100;
+const MAX_PROVIDER_DIRECTORY_PEERS = 5_000;
 const MAX_PRICE_USD_PER_MILLION = 1_000_000;
+
+export async function readCappedJsonResponse(
+  res: Response,
+  maxBytes = PROVIDER_DIRECTORY_MAX_BODY_BYTES,
+): Promise<unknown> {
+  const contentLength = res.headers.get("content-length");
+  if (contentLength && Number(contentLength) > maxBytes) {
+    throw new Error("provider directory response too large");
+  }
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (res.body) {
+    const reader = res.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          throw new Error("provider directory response too large");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    total = buf.byteLength;
+    if (total > maxBytes) {
+      throw new Error("provider directory response too large");
+    }
+    chunks.push(buf);
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(body));
+}
 
 function textOrNull(value: unknown, maxLen: number): string | null {
   if (typeof value !== "string") return null;
@@ -747,6 +795,7 @@ export function sanitizeProviderDirectoryPeer(
   peer: unknown,
   now: number,
 ): SanitizedProviderPeer | null {
+  if (!peer || typeof peer !== "object") return null;
   const rawPeer = peer as Record<string, any>;
   const peerId = textOrNull(rawPeer?.peerId, PROVIDER_TEXT_LIMITS.peerId)?.toLowerCase();
   if (!peerId || peerId.length < 40) return null;
@@ -807,7 +856,7 @@ export async function refreshProviderDirectory() {
       signal: ctl.signal,
     });
     if (!res.ok) return;
-    const data = (await res.json()) as { peers?: any[] };
+    const data = (await readCappedJsonResponse(res)) as { peers?: any[] };
     if (!Array.isArray(data.peers)) return;
     const now = Date.now();
     const rows: any[] = [];
@@ -816,7 +865,7 @@ export async function refreshProviderDirectory() {
     // indexer builds) need to be deleted so the seller profile resolves
     // to the contract that actually settles on AntseedChannels.
     const supersededOperators: string[] = [];
-    for (const peer of data.peers) {
+    for (const peer of data.peers.slice(0, MAX_PROVIDER_DIRECTORY_PEERS)) {
       const sanitized = sanitizeProviderDirectoryPeer(peer, now);
       if (!sanitized) continue;
       rows.push(sanitized.row);

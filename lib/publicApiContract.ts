@@ -47,6 +47,7 @@ export const DEFAULT_SORT_DIRECTION = "desc";
 export const EXPORT_FORMATS = ["csv", "json"] as const;
 
 export const PUBLIC_OPENAPI_ROUTE_EXCLUSIONS = [
+  "/api/cron/hero",
   "/api/cron/signals",
   "/api/cron/sync",
   "/api/keys",
