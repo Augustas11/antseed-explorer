@@ -82,6 +82,18 @@ export const indexerState = pgTable("indexer_state", {
   value: text("value").notNull(),
 });
 
+export const rateLimitBuckets = pgTable(
+  "rate_limit_buckets",
+  {
+    bucketKey: text("bucket_key").primaryKey(),
+    count: integer("count").notNull().default(0),
+    windowStart: bigint("window_start", { mode: "number" }).notNull(),
+  },
+  (t) => ({
+    windowIdx: index("rate_limit_buckets_window_idx").on(t.windowStart),
+  }),
+);
+
 export const providerDirectory = pgTable("provider_directory", {
   address: text("address").primaryKey(),
   displayName: text("display_name"),

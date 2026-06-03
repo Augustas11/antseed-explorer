@@ -16,9 +16,9 @@ import {
   isNotNull,
   sql,
 } from "drizzle-orm";
-import { cache } from "react";
+import { cache as reactCache } from "react";
 import { canonicalize, groupServices, type ServiceGroup } from "./services-canonical";
-import { getActiveDiemPoolUsers } from "./diem";
+import { getActiveDiemPoolUsers, getDiemPoolSnapshotMetadata } from "./diem";
 import {
   rawAddressList,
   rawFiniteNumber,
@@ -37,8 +37,24 @@ import {
   type ProviderSort,
   type SellerSort,
 } from "./publicApiContract";
+import {
+  validateHeroSnapshot,
+  type HeroSnapshot,
+  type HeroSnapshotSource,
+  type HeroSparklinePoint,
+  type HeroStats,
+} from "./heroSnapshot";
+export {
+  validateHeroSnapshot,
+  type HeroSnapshot,
+  type HeroSnapshotSource,
+  type HeroSparklinePoint,
+  type HeroStats,
+} from "./heroSnapshot";
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const cache: typeof reactCache =
+  typeof reactCache === "function" ? reactCache : (((fn: any) => fn) as typeof reactCache);
 const CHANNEL_EVENT_TYPES = [
   "reserved",
   "settled",
@@ -240,18 +256,19 @@ export async function getBuyerSessions(address: string, limit = 25) {
   `);
   return r.rows.map((e: any) => ({
     tx_hash: e.tx_hash,
-    log_index: e.log_index,
-    block_number: e.block_number,
+    log_index: e.log_index != null ? Number(e.log_index) : null,
+    block_number: Number(e.block_number),
     event_type: e.event_type,
     buyer_address: e.buyer_address,
     seller_address: e.seller_address,
     channel_id: e.channel_id,
-    delta_usdc: e.delta_usdc,
-    settled_amount_usdc: e.settled_amount_usdc,
-    input_tokens: e.input_tokens,
-    output_tokens: e.output_tokens,
-    request_count: e.request_count,
-    timestamp: e.timestamp,
+    delta_usdc: e.delta_usdc != null ? Number(e.delta_usdc) : null,
+    settled_amount_usdc:
+      e.settled_amount_usdc != null ? Number(e.settled_amount_usdc) : null,
+    input_tokens: e.input_tokens != null ? Number(e.input_tokens) : null,
+    output_tokens: e.output_tokens != null ? Number(e.output_tokens) : null,
+    request_count: e.request_count != null ? Number(e.request_count) : null,
+    timestamp: e.timestamp != null ? Number(e.timestamp) : null,
   }));
 }
 
@@ -410,83 +427,10 @@ export async function getNetworkStats() {
   };
 }
 
-export interface HeroStats {
-  // Network Revenue — settled USDC across the network
-  totalRevenueUsdc: number;
-  recentRevenueUsdc: number;
-  priorRevenueUsdc: number;
-  // Tokens Consumed — sum of input+output from settled metadata
-  totalTokens: number;
-  totalTokensInput: number;
-  totalTokensOutput: number;
-  recentTokens: number;
-  priorTokens: number;
-  // Paying Users — distinct addresses that paid USDC, claimed $ANTS, or are
-  // active in the Diem provider-capacity pool.
-  totalPayingUsers: number;
-  recentPayingUsers: number;
-  priorPayingUsers: number;
-  // Sub-counts so the UI can attribute the headline to its sources.
-  usdcPayers: number;
-  antsClaimers: number;
-  diemPoolUsers: number;
-}
-
-export interface HeroSnapshot {
-  at: number;
-  stats: HeroStats;
-  sparklines: HeroSparklinePoint[];
-}
-
 const HERO_SNAPSHOT_KEY = "hero_snapshot";
 const HERO_SNAPSHOT_CACHE_TTL_MS = 30_000;
 
 let heroSnapshotCache: { at: number; snapshot: HeroSnapshot } | null = null;
-
-function emptyHeroStats(): HeroStats {
-  return {
-    totalRevenueUsdc: 0,
-    recentRevenueUsdc: 0,
-    priorRevenueUsdc: 0,
-    totalTokens: 0,
-    totalTokensInput: 0,
-    totalTokensOutput: 0,
-    recentTokens: 0,
-    priorTokens: 0,
-    totalPayingUsers: 0,
-    recentPayingUsers: 0,
-    priorPayingUsers: 0,
-    usdcPayers: 0,
-    antsClaimers: 0,
-    diemPoolUsers: 0,
-  };
-}
-
-function emptyHeroSparklines(): HeroSparklinePoint[] {
-  const today = new Date();
-  return Array.from({ length: 30 }, (_v, i) => {
-    const d = new Date(today);
-    d.setUTCDate(today.getUTCDate() - (29 - i));
-    return {
-      day: d.toISOString().slice(0, 10),
-      revenue: 0,
-      tokens: 0,
-      paying_users: 0,
-    };
-  });
-}
-
-function validateHeroSnapshot(value: unknown): HeroSnapshot | null {
-  const parsed = value as Partial<HeroSnapshot>;
-  if (
-    typeof parsed?.at !== "number" ||
-    !parsed.stats ||
-    !Array.isArray(parsed.sparklines)
-  ) {
-    return null;
-  }
-  return parsed as HeroSnapshot;
-}
 
 async function readHeroSnapshot(): Promise<HeroSnapshot | null> {
   const now = Date.now();
@@ -512,15 +456,28 @@ async function writeHeroSnapshot(snapshot: HeroSnapshot) {
 }
 
 export async function refreshHeroSnapshot(): Promise<HeroSnapshot> {
-  const stats = await computeHeroStats();
-  const sparklines = await computeHeroSparklines();
-  const snapshot = { at: Date.now(), stats, sparklines };
+  const [stats, sparklines, network, diem] = await Promise.all([
+    computeHeroStats(),
+    computeHeroSparklines(),
+    getNetworkStats(),
+    getDiemPoolSnapshotMetadata(),
+  ]);
+  const snapshot: HeroSnapshot = {
+    at: Date.now(),
+    source: heroSnapshotSource(network, diem),
+    stats,
+    sparklines,
+  };
   await writeHeroSnapshot(snapshot);
   return snapshot;
 }
 
-export async function getHeroStats(): Promise<HeroStats> {
-  return (await readHeroSnapshot())?.stats ?? emptyHeroStats();
+export async function getHeroSnapshot(): Promise<HeroSnapshot | null> {
+  return readHeroSnapshot();
+}
+
+export async function getHeroStats(): Promise<HeroStats | null> {
+  return (await readHeroSnapshot())?.stats ?? null;
 }
 
 async function computeHeroStats(): Promise<HeroStats> {
@@ -653,14 +610,30 @@ async function computeHeroStats(): Promise<HeroStats> {
     usdcPayers: Number(x.usdc_payers ?? 0),
     antsClaimers: Number(x.ants_claimers ?? 0),
     diemPoolUsers: Number(x.diem_pool_users ?? 0),
+    diemExactAddresses: diemPool.exactAddresses,
   };
 }
 
-export interface HeroSparklinePoint {
-  day: string;
-  revenue: number;
-  tokens: number;
-  paying_users: number;
+function heroSnapshotSource(
+  network: Awaited<ReturnType<typeof getNetworkStats>>,
+  diem: Awaited<ReturnType<typeof getDiemPoolSnapshotMetadata>>,
+): HeroSnapshotSource {
+  const indexedBlocks = [
+    network.lastIndexedBlock,
+    network.lastIndexedBlockStats,
+    network.lastIndexedBlockAnts,
+    network.lastIndexedBlockEmissions,
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+  return {
+    lastSyncTs: network.lastSyncTs,
+    lastHeadBlock: network.lastHeadBlock,
+    lastIndexedBlock: indexedBlocks.length ? Math.max(...indexedBlocks) : null,
+    lastIndexedBlockStats: network.lastIndexedBlockStats,
+    lastIndexedBlockAnts: network.lastIndexedBlockAnts,
+    lastIndexedBlockEmissions: network.lastIndexedBlockEmissions,
+    diemSnapshotAt: diem.at,
+    diemExactAddresses: diem.exactAddresses,
+  };
 }
 
 export interface TokenBucket {
@@ -674,8 +647,8 @@ export interface TokenBucket {
 // draw the sparkline under each hero card; not enough resolution for real
 // charts, just shape signal. Tokens come from MetadataRecorded events
 // (canonical, matches the hero card source).
-export async function getHeroSparklines(): Promise<HeroSparklinePoint[]> {
-  return (await readHeroSnapshot())?.sparklines ?? emptyHeroSparklines();
+export async function getHeroSparklines(): Promise<HeroSparklinePoint[] | null> {
+  return (await readHeroSnapshot())?.sparklines ?? null;
 }
 
 async function computeHeroSparklines(): Promise<HeroSparklinePoint[]> {
@@ -891,6 +864,7 @@ export interface ProviderRow {
   services: string[];
   pricing: Record<string, any>;
   description: string | null;
+  updated_at: number | null;
   // Non-null when `address` is a seller delegation contract; holds the
   // operator EVM address derived from peerId[:40]. See refreshProviderDirectory.
   operator_address: string | null;
@@ -920,6 +894,7 @@ async function lookupProviderUncached(
     services: parseJson<string[]>(r.services) ?? [],
     pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
     description: r.description ?? null,
+    updated_at: r.updated_at != null ? Number(r.updated_at) : null,
     operator_address: r.operator_address ?? null,
   };
 }
@@ -957,6 +932,7 @@ export async function lookupProviders(
       services: parseJson<string[]>(r.services) ?? [],
       pricing: parseJson<Record<string, any>>(r.pricing) ?? {},
       description: r.description ?? null,
+      updated_at: r.updated_at != null ? Number(r.updated_at) : null,
       operator_address: r.operator_address ?? null,
     });
   }
@@ -1848,10 +1824,27 @@ export async function countProviders(opts: ProviderListOptions = {}): Promise<nu
   return Number(rows.rows[0]?.n ?? 0);
 }
 
-export async function getProvider(address: string): Promise<DirectoryProviderRow | null> {
-  const normalized = address.toLowerCase();
-  const rows = await listProviders({ address: normalized, limit: 1 });
-  return rows[0] ?? null;
+export interface ProviderCatalogRow {
+  address: string;
+  displayName: string | null;
+  region: string | null;
+  services: string[];
+  pricing: DirectoryProviderRow["pricing"];
+  updatedAt: number | null;
+}
+
+export async function getProviderCatalog(address: string): Promise<ProviderCatalogRow | null> {
+  if (!isExplorerAddress(address)) return null;
+  const row = await lookupProvider(address);
+  if (!row) return null;
+  return {
+    address: row.address,
+    displayName: row.display_name ?? null,
+    region: row.region ?? null,
+    services: row.services,
+    pricing: row.pricing,
+    updatedAt: row.updated_at,
+  };
 }
 
 // Facet values + counts for the /providers filter bar. Service strings are

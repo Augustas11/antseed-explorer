@@ -60,5 +60,15 @@ export const publicClient = createPublicClient({
   transport: http(RPC_URL, { timeout: RPC_TIMEOUT_MS, retryCount: 1 }),
 });
 
+export function createPublicClientWithTimeout(
+  timeoutMs: number,
+  retryCount = 0,
+): typeof publicClient {
+  return createPublicClient({
+    chain,
+    transport: http(RPC_URL, { timeout: timeoutMs, retryCount }),
+  }) as typeof publicClient;
+}
+
 export const explorerBaseUrl =
   CHAIN_ID === 84532 ? "https://sepolia.basescan.org" : "https://basescan.org";

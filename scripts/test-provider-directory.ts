@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { sanitizeProviderDirectoryPeer } from "../lib/indexer";
+import { readFileSync } from "node:fs";
+import { readCappedJsonResponse, sanitizeProviderDirectoryPeer } from "../lib/indexer";
 
 const now = 1_700_000_000_000;
 const operatorHex = "a".repeat(40);
@@ -65,6 +66,7 @@ assert.equal("svc-1" in parsedPricing, false);
 
 assert.equal(sanitizeProviderDirectoryPeer({ peerId: "not-hex" }, now), null);
 assert.equal(sanitizeProviderDirectoryPeer({ peerId: `${"c".repeat(39)}` }, now), null);
+assert.equal(sanitizeProviderDirectoryPeer("not-an-object", now), null);
 
 const noContract = sanitizeProviderDirectoryPeer(
   { peerId: `${operatorHex}tail`, trustScore: -10, providers: [] },
@@ -93,4 +95,50 @@ assert.equal(controlText.row.region, null);
 
 assert.equal(sanitizeProviderDirectoryPeer({ peerId: `${operatorHex}\ntrail` }, now), null);
 
-console.log("Provider directory sanitizer checks passed");
+const queries = readFileSync("lib/queries.ts", "utf8");
+const getProviderBody = queries.match(
+  /export async function getProviderCatalog\(address: string\): Promise<ProviderCatalogRow \| null> \{([\s\S]*?)\n\}/,
+)?.[1] ?? "";
+assert.match(getProviderBody, /lookupProvider\(address\)/);
+assert.doesNotMatch(
+  getProviderBody,
+  /listProviders\(/,
+  "single-provider lookup must not use the full provider aggregate listing",
+);
+assert.doesNotMatch(
+  getProviderBody,
+  /sessionCount|totalVolumeUsdc|ghostCount|closedCount/,
+  "catalog-only provider lookup must not fabricate aggregate metrics",
+);
+
+async function checkCappedReader() {
+  assert.deepEqual(
+    await readCappedJsonResponse(
+      new Response(JSON.stringify({ peers: [{ peerId: `${operatorHex}tail` }] })),
+      1024,
+    ),
+    { peers: [{ peerId: `${operatorHex}tail` }] },
+  );
+
+  await assert.rejects(
+    readCappedJsonResponse(
+      new Response("{}", { headers: { "content-length": "1025" } }),
+      1024,
+    ),
+    /too large/,
+  );
+
+  await assert.rejects(
+    readCappedJsonResponse(new Response(`{"peers":["${"x".repeat(2048)}"]}`), 1024),
+    /too large/,
+  );
+}
+
+checkCappedReader()
+  .then(() => {
+    console.log("Provider directory sanitizer checks passed");
+  })
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });

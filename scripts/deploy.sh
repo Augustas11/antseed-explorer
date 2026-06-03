@@ -118,7 +118,7 @@ if [ -f "$SQLITE" ] && [ -n "$DB_URL_INPUT" ]; then
   fi
 fi
 
-# ---------- 9. Smoke test + cron-job.org instructions ----------
+# ---------- 9. Smoke test + Vercel cron instructions ----------
 echo
 say "Smoke-testing /api/stats…"
 sleep 2
@@ -136,18 +136,16 @@ ${b}${green}━━━━━━━━━━━━━━━━━━━━━━�
 ${b}DONE.${r}
 
   App:      ${cyan}$DEPLOY_URL${r}
-  Cron URL: ${cyan}$DEPLOY_URL/api/cron/sync${r}
+  Cron URL: ${cyan}$DEPLOY_URL/api/cron/sync${r} ${dim}(managed by vercel.json every 5 min)${r}
   Secret:   stored in $SECRET_FILE (mode 600)
 
-${b}One thing left — wire up minute-level cron (~2 min):${r}
+${b}Post-deploy checks:${r}
 
-  1. Open ${cyan}https://cron-job.org${r}, sign up free.
-  2. Create Cronjob:
-       URL:       $DEPLOY_URL/api/cron/sync
-       Schedule:  Every 1 minute
-       Method:    GET
-       Headers:   Authorization: Bearer $CRON_SECRET
-  3. Save. Within 60s the dashboard at $DEPLOY_URL will start advancing.
+  1. Confirm Vercel shows the /api/cron/sync schedule from vercel.json.
+  2. Verify shared rate-limit storage before production traffic:
+       DATABASE_URL=... npm run check:rate-limit-storage
+  3. For an authenticated hero repair only, call:
+       curl -H "Authorization: Bearer $CRON_SECRET" "$DEPLOY_URL/api/cron/hero?repair=1"
 
 To re-deploy after code changes:
   git push      ${dim}# Vercel auto-deploys on push to main${r}

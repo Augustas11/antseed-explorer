@@ -127,6 +127,23 @@ POST /api/sync?force=1               Manual indexer pass (Bearer sync secret req
 
 ---
 
+## Operations
+
+- Vercel cron is the scheduled indexer owner. `vercel.json` runs `/api/cron/sync`
+  every five minutes; do not add an external minute-level cron for the same
+  endpoint.
+- `/api/cron/hero` is an authenticated manual repair endpoint only. Call it
+  with `?repair=1` after confirming `/api/cron/sync` cannot refresh the hero
+  snapshot.
+- Runtime contract checks require an explicit target:
+  `API_RUNTIME_BASE_URL=http://localhost:3000 npm run test:api-runtime` and
+  `CSP_RUNTIME_URL=http://localhost:3000 npm run test:csp-runtime`.
+- Verify shared public API rate-limit storage after migrations with
+  `npm run check:rate-limit-storage`; otherwise the app falls back to
+  per-instance limits until the table exists.
+
+---
+
 ## Project layout
 
 ```

@@ -71,6 +71,10 @@ function exportedHttpMethods(file: string): string[] {
 
 async function main() {
 const spec = (await (await getOpenApi()).json()) as any;
+const queriesSource = readFileSync("lib/queries.ts", "utf8");
+const readContractSource = readFileSync("app/api/read-contract/route.ts", "utf8");
+const apiRuntimeSource = readFileSync("scripts/test-api-runtime.ts", "utf8");
+const cspRuntimeSource = readFileSync("scripts/test-csp-runtime.ts", "utf8");
 
 const addressA = `0x${"a".repeat(40)}`;
 const addressB = `0x${"b".repeat(40)}`;
@@ -161,6 +165,12 @@ assertSchemaFields("/api/gas 200", responseSchema("/api/gas"), PUBLIC_RESPONSE_F
 assertSchemaFields("/api/read-contract 200", responseSchema("/api/read-contract", "post"), PUBLIC_RESPONSE_FIELDS.ReadContractResponse);
 assertSchemaFields("/api/sync 200", responseSchema("/api/sync", "post"), PUBLIC_RESPONSE_FIELDS.SyncResponse);
 
+assert.match(readContractSource, /MAX_BODY_BYTES/);
+assert.match(readContractSource, /readCappedJsonBody/);
+assert.doesNotMatch(readContractSource, /req\.json\(\)/);
+assert.doesNotMatch(apiRuntimeSource, /https:\/\/www\.antfeed\.org/);
+assert.doesNotMatch(cspRuntimeSource, /https:\/\/www\.antfeed\.org/);
+
 function queryEnum(route: string, name: string): unknown[] | undefined {
   return (spec as any).paths[route].get.parameters.find(
     (param: any) => param.name === name,
@@ -181,6 +191,21 @@ assert.deepEqual(queryEnum("/api/channels", "dir"), [...SORT_DIRECTIONS]);
 assert.deepEqual(queryEnum("/api/buyers", "format"), [...EXPORT_FORMATS]);
 assert.deepEqual(queryEnum("/api/sellers", "format"), [...EXPORT_FORMATS]);
 assert.deepEqual(queryEnum("/api/channels", "format"), [...EXPORT_FORMATS]);
+
+const getBuyerSessionsBody = queriesSource.match(
+  /export async function getBuyerSessions[\s\S]*?\n}\n\nexport async function getBuyerMonthlyVolume/,
+)?.[0];
+assert.ok(getBuyerSessionsBody, "getBuyerSessions must remain discoverable to contract checks");
+assert.match(
+  getBuyerSessionsBody,
+  /block_number:\s*Number\(e\.block_number\)/,
+  "buyer detail sessions must serialize block_number as a number",
+);
+assert.match(
+  getBuyerSessionsBody,
+  /timestamp:\s*e\.timestamp != null \? Number\(e\.timestamp\) : null/,
+  "buyer detail sessions must serialize timestamp as a number or null",
+);
 
 assert.deepEqual(schemaProperties("ScoreResponse").tier, {
   type: "string",
@@ -241,6 +266,7 @@ const provider = {
   ghostCount: 0,
   closedCount: 1,
   updatedAt: 1_700_000_000_000,
+  operatorAddress: null,
 };
 
 SellersPageZ.parse({ sellers: [seller], total: 1, limit: 100, offset: 0 });
@@ -248,6 +274,17 @@ BuyersPageZ.parse({ buyers: [buyer], total: 1, limit: 100, offset: 0 });
 ChannelsPageZ.parse({ channels: [channel], total: 1, limit: 100, offset: 0 });
 ChannelRowZ.parse(channel);
 ProvidersPageZ.parse({ providers: [provider], total: 1, limit: 100, offset: 0 });
+assert.throws(
+  () =>
+    ProvidersPageZ.parse({
+      providers: [{ ...provider, operatorAddress: undefined }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    }),
+  { name: "ZodError" },
+  "MCP provider schema must require every public DirectoryProviderRow field",
+);
 SellerServicesResponseZ.parse({
   address: addressB,
   displayName: "Dark Signal",

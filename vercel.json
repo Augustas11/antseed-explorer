@@ -11,6 +11,9 @@
     }
   ],
   "functions": {
+    "app/api/cron/hero/route.ts": {
+      "maxDuration": 60
+    },
     "app/api/cron/sync/route.ts": {
       "maxDuration": 60
     },

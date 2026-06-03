@@ -1,12 +1,11 @@
-// Fixed-window rate limiter. Primary path uses Neon/indexer_state atomic
+// Fixed-window rate limiter. Primary path uses Neon/rate_limit_buckets atomic
 // counters so limits hold across serverless instances; in-process buckets are
 // retained as a DB-unavailable fallback.
 
 import { db } from "./db";
-import { apiKeys } from "./schema";
+import { apiKeys, rateLimitBuckets } from "./schema";
 import { eq, sql } from "drizzle-orm";
 import { hashApiKey, hashIdentifier, isApiKeyShape } from "./apiKeys";
-import { rawNonNegativeInteger } from "./sqlSafe";
 
 const FREE_LIMIT = 60;    // req/min, no key
 const KEY_LIMIT = 300;    // req/min, validated API key
@@ -71,10 +70,8 @@ async function maybePruneSharedBuckets() {
   const cutoffWindow = Math.floor((now - WINDOW_MS * 2) / WINDOW_MS) * WINDOW_MS;
   try {
     await db.execute(sql`
-      DELETE FROM indexer_state
-      WHERE key LIKE 'rate:v1:%'
-        AND split_part(key, ':', 5) ~ '^[0-9]+$'
-        AND split_part(key, ':', 5)::bigint < ${rawNonNegativeInteger(cutoffWindow, "rate limit cutoff")}
+      DELETE FROM rate_limit_buckets
+      WHERE window_start < ${cutoffWindow}
     `);
   } catch {
     // Non-fatal; stale buckets are small rows and the next request can retry.
@@ -92,18 +89,15 @@ async function checkShared(
   const bucketKey = `${SHARED_BUCKET_PREFIX}:${kind}:${hashIdentifier(id)}:${windowStart}`;
   try {
     await maybePruneSharedBuckets();
-    const r = await db.execute<{ value: string }>(sql`
-      INSERT INTO indexer_state (key, value)
-      VALUES (${bucketKey}, '1')
-      ON CONFLICT (key) DO UPDATE SET
-        value = CASE
-          WHEN indexer_state.value ~ '^[0-9]+$'
-          THEN (indexer_state.value::int + 1)::text
-          ELSE '1'
-        END
-      RETURNING value
-    `);
-    const count = Number(r.rows[0]?.value ?? 0);
+    const r = await db
+      .insert(rateLimitBuckets)
+      .values({ bucketKey, count: 1, windowStart })
+      .onConflictDoUpdate({
+        target: rateLimitBuckets.bucketKey,
+        set: { count: sql`${rateLimitBuckets.count} + 1` },
+      })
+      .returning({ count: rateLimitBuckets.count });
+    const count = Number(r[0]?.count ?? 0);
     if (!Number.isFinite(count) || count <= 0) return null;
     return { allowed: count <= limit, retryAfter: count <= limit ? 0 : retryAfter };
   } catch {
@@ -155,9 +149,11 @@ export async function checkRateLimit(
 }
 
 export function getClientIp(req: Request): string {
-  // Prefer x-real-ip (set by Vercel edge directly to the client IP).
+  // Trust x-real-ip only on Vercel, where the platform edge owns this header.
+  // In local/self-hosted contexts a caller can spoof it, so collapse anonymous
+  // traffic into the shared unknown bucket instead.
   const realIp = req.headers.get("x-real-ip");
-  if (realIp) return realIp.trim();
+  if (process.env.VERCEL === "1" && realIp) return realIp.trim();
   // Do not trust raw X-Forwarded-For when the platform-trusted header is absent.
   return "unknown";
 }

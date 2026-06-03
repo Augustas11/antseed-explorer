@@ -3,8 +3,7 @@ import type { Metadata } from "next";
 import {
   getDailyTokens,
   getDailyVolume,
-  getHeroSparklines,
-  getHeroStats,
+  getHeroSnapshot,
   getHourlyTokens,
   getHourlyVolume,
   getNetworkStats,
@@ -27,6 +26,7 @@ import Sparkline from "./components/Sparkline";
 import TimeRangePills from "./components/TimeRangePills";
 import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
+import { getHeroSnapshotStatus } from "@/lib/heroSnapshot";
 
 export const dynamic = "force-dynamic";
 
@@ -90,11 +90,8 @@ export default async function HomePage({
       ? "all time"
       : "last 30d";
 
-  // Parallel fanout: all queries are independent. Older versions of this file
-  // serialized due to a Neon HTTP cold-start bug, but the heavy contributor to
-  // SSR latency (Base RPC inside getHeroStats / getHeroSparklines) now reads
-  // from a DB-cached snapshot in lib/diem.ts, so the remaining queries are
-  // pure Neon HTTP and run fine concurrently.
+  // Hero cards read one DB-cached snapshot. Missing or corrupt snapshots render
+  // as unavailable instead of false zeroes; cron refreshes the cache off-path.
   const dailyP =
     range === "24h"
       ? getHourlyVolume(24)
@@ -111,18 +108,23 @@ export default async function HomePage({
       : range === "all"
       ? getDailyTokens(9999)
       : getDailyTokens(30);
-  const [stats, hero, sparks, daily, tokens, recent, top] = await Promise.all([
+  const [stats, heroSnapshot, daily, tokens, recent, top] = await Promise.all([
     getNetworkStats(),
-    getHeroStats(),
-    getHeroSparklines(),
+    getHeroSnapshot(),
     dailyP,
     tokensP,
     getRecentEvents(20),
     listBuyers({ limit: 10, sort: "score" }),
   ]);
+  const hero = heroSnapshot?.stats ?? null;
+  const heroStatus = heroSnapshot ? getHeroSnapshotStatus(heroSnapshot) : null;
+  const heroStale = heroStatus?.stale === true;
+  const sparks = heroSnapshot?.sparklines ?? [];
   const revenueSpark = sparks.map((p) => ({ x: p.day, y: p.revenue }));
   const tokensSpark = sparks.map((p) => ({ x: p.day, y: p.tokens }));
   const usersSpark = sparks.map((p) => ({ x: p.day, y: p.paying_users }));
+  const snapshotPending = "Snapshot pending refresh";
+  const snapshotStatus = heroStale ? "Snapshot stale; refresh pending" : snapshotPending;
 
   const isMock = !!process.env.SEED_MODE;
 
@@ -156,42 +158,55 @@ export default async function HomePage({
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <HeroCard
           label="Network Revenue"
-          value={fmtUsd(hero.totalRevenueUsdc)}
-          sublabel="Settled USDC, all-time"
-          delta={pctDelta(hero.recentRevenueUsdc, hero.priorRevenueUsdc)}
+          value={hero ? fmtUsd(hero.totalRevenueUsdc) : "—"}
+          sublabel={hero ? (heroStale ? snapshotStatus : "Settled USDC, all-time") : snapshotPending}
+          delta={hero ? pctDelta(hero.recentRevenueUsdc, hero.priorRevenueUsdc) : null}
           tooltip="Sum of delta from every ChannelSettled event."
           sparkline={<Sparkline data={revenueSpark} />}
         />
         <HeroCard
           label="Tokens Consumed"
-          value={fmtCompact(hero.totalTokens)}
-          sublabel={`${fmtCompact(hero.totalTokensInput)} in · ${fmtCompact(
-            hero.totalTokensOutput,
-          )} out`}
-          delta={pctDelta(hero.recentTokens, hero.priorTokens)}
+          value={hero ? fmtCompact(hero.totalTokens) : "—"}
+          sublabel={
+            hero
+              ? `${fmtCompact(hero.totalTokensInput)} in · ${fmtCompact(
+                  hero.totalTokensOutput,
+                )} out${heroStale ? " · stale" : ""}`
+              : snapshotPending
+          }
+          delta={hero ? pctDelta(hero.recentTokens, hero.priorTokens) : null}
           tooltip="Input + output tokens recorded by AntseedStats — the canonical per-inference accounting."
           sparkline={<Sparkline data={tokensSpark} color="#5fb4d8" />}
         />
         <HeroCard
           label="Paying Users"
-          value={fmtNum(hero.totalPayingUsers)}
+          value={hero ? `${hero.diemExactAddresses ? "" : "~"}${fmtNum(hero.totalPayingUsers)}` : "—"}
           sublabel={
-            <>
-              {fmtNum(hero.usdcPayers)} paid USDC ·{" "}
-              {fmtNum(hero.antsClaimers)} claimed $ANTS
-              {" · "}
-              <a
-                href="https://diem.antseed.com/"
-                target="_blank"
-                rel="noreferrer"
-                className="text-accent hover:underline underline-offset-2"
-              >
-                {fmtNum(hero.diemPoolUsers)} in DIEM
-              </a>
-            </>
+            hero ? (
+              <>
+                {fmtNum(hero.usdcPayers)} paid USDC ·{" "}
+                {fmtNum(hero.antsClaimers)} claimed $ANTS
+                {" · "}
+                <a
+                  href="https://diem.antseed.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent hover:underline underline-offset-2"
+                >
+                  {fmtNum(hero.diemPoolUsers)} in DIEM
+                </a>
+                {heroStale ? " · stale" : ""}
+              </>
+            ) : (
+              snapshotPending
+            )
           }
-          delta={pctDelta(hero.recentPayingUsers, hero.priorPayingUsers)}
-          tooltip="Unique wallets across three groups: deposited USDC, claimed $ANTS, or active in the DIEM pool. The three sub-counts can overlap — a wallet that did two of those things is counted once in the total but once in each sub-count."
+          delta={hero ? pctDelta(hero.recentPayingUsers, hero.priorPayingUsers) : null}
+          tooltip={
+            hero?.diemExactAddresses === false
+              ? "Approximate wallets across deposited USDC, claimed $ANTS, and DIEM. DIEM currently provides a count only, so DIEM wallets cannot be de-duplicated against the other groups."
+              : "Unique wallets across three groups: deposited USDC, claimed $ANTS, or active in the DIEM pool. The three sub-counts can overlap — a wallet that did two of those things is counted once in the total but once in each sub-count."
+          }
           sparkline={<Sparkline data={usersSpark} color="#f5b656" />}
         />
       </section>

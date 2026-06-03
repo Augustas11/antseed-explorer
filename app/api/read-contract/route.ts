@@ -8,6 +8,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const channelsAddress = CONTRACTS.AntseedChannels as `0x${string}`;
+const MAX_BODY_BYTES = 16 * 1024;
+
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super("request body too large");
+  }
+}
 
 // Allowlisted function names only — prevents arbitrary contract calls.
 type AllowedFn = "getChannel" | "balanceOf";
@@ -36,6 +43,43 @@ function serializeBigInt(v: unknown): unknown {
   return v;
 }
 
+async function readCappedJsonBody(req: NextRequest): Promise<any | null> {
+  const length = req.headers.get("content-length");
+  if (length && Number(length) > MAX_BODY_BYTES) {
+    throw new RequestBodyTooLargeError();
+  }
+  if (!req.body) return null;
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_BODY_BYTES) {
+        throw new RequestBodyTooLargeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buf.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(buf));
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const rl = await checkRateLimit(getClientIp(req), req.headers.get("x-api-key"));
   if (!rl.allowed) {
@@ -45,7 +89,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json().catch(() => null);
+  let body: any | null = null;
+  try {
+    body = await readCappedJsonBody(req);
+  } catch (e) {
+    if (e instanceof RequestBodyTooLargeError) {
+      return NextResponse.json({ error: "request_too_large" }, { status: 413 });
+    }
+    throw e;
+  }
   if (!body || typeof body.fnName !== "string") {
     return NextResponse.json({ error: "invalid_request" }, { status: 400 });
   }
