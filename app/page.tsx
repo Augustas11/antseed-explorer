@@ -38,6 +38,14 @@ export async function generateMetadata(): Promise<Metadata> {
 
   const stats = await getNetworkStats().catch(() => null);
   const imageUrl = stats ? homeOgImageUrl(stats) : `${SITE_URL}/og/home`;
+  // One stable www identity for the home page. Previously there was neither a
+  // canonical nor an og:url, so antfeed.org and www.antfeed.org were treated as
+  // separate pages and X/Twitter kept independent unfurl caches for each —
+  // different shares showed different-age cards. A fixed canonical + og:url
+  // (paired with the apex->www redirect in next.config.js) collapses them to a
+  // single cache entry. Freshness comes from the metric-versioned, no-store
+  // image URL below, which serves live numbers whenever the crawler scrapes.
+  const homeUrl = `${SITE_URL}/`;
   const image = {
     url: imageUrl,
     width: 1200,
@@ -48,10 +56,12 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     title,
     description,
+    alternates: { canonical: homeUrl },
     openGraph: {
       title,
       description,
       type: "website",
+      url: homeUrl,
       images: [image],
     },
     twitter: {

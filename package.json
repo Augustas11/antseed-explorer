@@ -14,6 +14,7 @@
     "sync": "tsx scripts/sync-cli.ts",
     "signals": "tsx scripts/detect-signals.ts",
     "signals:dry": "tsx scripts/detect-signals.ts --dry",
+    "refresh-og": "tsx scripts/refresh-og.ts",
     "test:indexer": "node --import tsx scripts/test-indexer-window.ts && node --import tsx scripts/test-indexer-metadata.ts",
     "test:contracts": "node --import tsx scripts/test-api-contract.ts && node --import tsx scripts/test-sql-safe.ts && node --import tsx scripts/test-csv.ts && node --import tsx scripts/test-diem-snapshot.ts && node --import tsx scripts/test-provider-directory.ts && node --import tsx scripts/test-format.ts && node --import tsx scripts/test-security-headers.ts",
     "vercel-build": "tsx scripts/migrate.ts && next build"
