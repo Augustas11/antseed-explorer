@@ -24,14 +24,16 @@ export async function GET(req: NextRequest) {
     // Leave explicit headroom for provider + DIEM refresh under the 60s cap.
     const result = await sync({ force: true, deadlineMs: 45_000 });
     await refreshProviderDirectory();
-    // Persist the DIEM pool snapshot so the SSR home page never has to do a
-    // Base RPC enumeration. Errors are swallowed inside the refresher.
-    const diemBudget = remaining(1_000);
+    // DIEM + hero snapshots are SSR-warm-up jobs — they don't need to refresh
+    // every 15 min. Gate them to the top of each hour so the cron tick that
+    // actually does this work runs ~24×/day instead of 96×/day.
+    const heavyTick = new Date().getUTCMinutes() < 15;
+    const diemBudget = heavyTick ? remaining(1_000) : 0;
     const diem =
       diemBudget >= 2_000
         ? await refreshDiemPoolSnapshot({ deadlineMs: diemBudget })
         : null;
-    const heroBudget = remaining(1_000);
+    const heroBudget = heavyTick ? remaining(1_000) : 0;
     const hero =
       heroBudget >= 3_000
         ? await refreshHeroSnapshot().catch((e) => {
