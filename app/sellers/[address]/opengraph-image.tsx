@@ -8,6 +8,13 @@ export const alt = "Seller profile — AntSeed Explorer";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
+const imageOptions = {
+  ...size,
+  headers: {
+    "Cache-Control": "public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400",
+  },
+};
+
 export default async function SellerOG({
   params,
 }: {
@@ -35,7 +42,7 @@ export default async function SellerOG({
           AntSeed Explorer
         </div>
       ),
-      { ...size },
+      imageOptions,
     );
   }
 }
@@ -62,7 +69,7 @@ async function renderSellerOG(address: string) {
           </div>
         </div>
       ),
-      { ...size },
+      imageOptions,
     );
   }
 
@@ -96,7 +103,7 @@ async function renderSellerOG(address: string) {
           </div>
         </div>
       ),
-      { ...size },
+      imageOptions,
     );
   }
 
@@ -185,7 +192,7 @@ async function renderSellerOG(address: string) {
         </div>
       </div>
     ),
-    { ...size },
+    imageOptions,
   );
 }
 

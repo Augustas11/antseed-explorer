@@ -9,6 +9,13 @@ export const alt = "Buyer profile — AntSeed Demand Explorer";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
+const imageOptions = {
+  ...size,
+  headers: {
+    "Cache-Control": "public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400",
+  },
+};
+
 export default async function BuyerOG({
   params,
 }: {
@@ -31,7 +38,7 @@ export default async function BuyerOG({
           AntSeed Demand Explorer
         </div>
       ),
-      { ...size },
+      imageOptions,
     );
   }
 }
@@ -51,7 +58,7 @@ async function renderBuyerOG(address: string) {
           <div style={{ color: "#7cf2c8", fontSize: 32 }}>AntSeed Demand Explorer</div>
         </div>
       ),
-      { ...size },
+      imageOptions,
     );
   }
 
@@ -81,7 +88,7 @@ async function renderBuyerOG(address: string) {
           </div>
         </div>
       ),
-      { ...size },
+      imageOptions,
     );
   }
 
@@ -190,7 +197,7 @@ async function renderBuyerOG(address: string) {
         </div>
       </div>
     ),
-    { ...size },
+    imageOptions,
   );
 }
 

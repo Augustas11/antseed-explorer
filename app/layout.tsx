@@ -2,6 +2,7 @@ import "./globals.css";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { getSiteOrigin } from "@/lib/site";
 import SearchBar from "./components/SearchBar";
 import ThemeToggle from "./components/ThemeToggle";
 import MobileMenu from "./components/MobileMenu";
@@ -9,11 +10,13 @@ import Providers from "./components/Providers";
 import { DOCS_HREF, NAV_ITEMS } from "./lib/nav-items";
 import { Analytics } from "@vercel/analytics/next";
 
-export const metadata: Metadata = {
-  metadataBase: new URL("https://www.antfeed.org"),
-  title: "AntSeed Demand Explorer",
-  description: "On-chain buyer intelligence for the AntSeed P2P AI network",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  return {
+    metadataBase: new URL(await getSiteOrigin()),
+    title: "AntSeed Demand Explorer",
+    description: "On-chain buyer intelligence for the AntSeed P2P AI network",
+  };
+}
 
 // Anti-flash: set html class from localStorage before React hydrates.
 const themeScript = `(function(){var t=localStorage.getItem('theme');if(t&&t!=='dark')document.documentElement.className=t;})();`;

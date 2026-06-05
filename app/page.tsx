@@ -27,25 +27,21 @@ import TimeRangePills from "./components/TimeRangePills";
 import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
 import { getHeroSnapshotStatus } from "@/lib/heroSnapshot";
+import { getSiteOrigin, siteUrl } from "@/lib/site";
 
 export const dynamic = "force-dynamic";
-
-const SITE_URL = "https://www.antfeed.org";
 
 export async function generateMetadata(): Promise<Metadata> {
   const title = "AntSeed Demand Explorer";
   const description = "On-chain buyer intelligence for the AntSeed P2P AI network";
+  const siteOrigin = await getSiteOrigin();
 
   const stats = await getNetworkStats().catch(() => null);
-  const imageUrl = stats ? homeOgImageUrl(stats) : `${SITE_URL}/og/home`;
-  // One stable www identity for the home page. Previously there was neither a
-  // canonical nor an og:url, so antfeed.org and www.antfeed.org were treated as
-  // separate pages and X/Twitter kept independent unfurl caches for each —
-  // different shares showed different-age cards. A fixed canonical + og:url
-  // (paired with the apex->www redirect in next.config.js) collapses them to a
-  // single cache entry. Freshness comes from the metric-versioned, no-store
-  // image URL below, which serves live numbers whenever the crawler scrapes.
-  const homeUrl = `${SITE_URL}/`;
+  const imageUrl = stats ? homeOgImageUrl(siteOrigin, stats) : siteUrl(siteOrigin, "/og/home");
+  // Production should set NEXT_PUBLIC_SITE_URL=https://www.antfeed.org so X sees
+  // one canonical cache identity; previews and local dev fall back to request
+  // headers so their metadata remains fetchable.
+  const homeUrl = siteUrl(siteOrigin, "/");
   const image = {
     url: imageUrl,
     width: 1200,
@@ -319,7 +315,10 @@ export default async function HomePage({
   );
 }
 
-function homeOgImageUrl(stats: Awaited<ReturnType<typeof getNetworkStats>>): string {
+function homeOgImageUrl(
+  siteOrigin: string,
+  stats: Awaited<ReturnType<typeof getNetworkStats>>,
+): string {
   const params = new URLSearchParams({
     buyers: String(stats.totalBuyers),
     usdc: String(stats.totalVolumeUsdc),
@@ -329,5 +328,5 @@ function homeOgImageUrl(stats: Awaited<ReturnType<typeof getNetworkStats>>): str
         `${stats.totalBuyers}-${stats.totalVolumeUsdc}-${stats.totalSessions}`,
     ),
   });
-  return `${SITE_URL}/og/home?${params.toString()}`;
+  return `${siteUrl(siteOrigin, "/og/home")}?${params.toString()}`;
 }

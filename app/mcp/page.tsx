@@ -1,24 +1,32 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import CopyButton from "./CopyButton";
+import { getSiteOrigin, siteUrl } from "@/lib/site";
 
-export const metadata: Metadata = {
-  title: "AntFeed MCP — discover and transact on AntSeed from any AI agent",
-  description:
-    "Model Context Protocol server for the AntFeed Explorer. One line in your Claude Code / Cursor / Claude Desktop config and your agent can list providers, look up addresses, inspect sessions, and open AntSeed channels.",
-  openGraph: {
-    title: "AntFeed MCP",
-    description: "Discover and transact on the AntSeed P2P AI network from any AI agent.",
-    url: "https://www.antfeed.org/mcp",
-    siteName: "AntSeed Demand Explorer",
-    type: "website",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "AntFeed MCP",
-    description: "Discover and transact on the AntSeed P2P AI network from any AI agent.",
-  },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const title = "AntFeed MCP — discover and transact on AntSeed from any AI agent";
+  const description =
+    "Model Context Protocol server for the AntFeed Explorer. One line in your Claude Code / Cursor / Claude Desktop config and your agent can list providers, look up addresses, inspect sessions, and open AntSeed channels.";
+  const ogTitle = "AntFeed MCP";
+  const ogDescription = "Discover and transact on the AntSeed P2P AI network from any AI agent.";
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title: ogTitle,
+      description: ogDescription,
+      url: siteUrl(await getSiteOrigin(), "/mcp"),
+      siteName: "AntSeed Demand Explorer",
+      type: "website",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: ogTitle,
+      description: ogDescription,
+    },
+  };
+}
 
 const INSTALL_SNIPPET = `{
   "mcpServers": {

@@ -7,8 +7,7 @@ import {
 } from "@/lib/og/home-card";
 
 export const runtime = "edge";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+export const revalidate = 60;
 
 export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
@@ -22,7 +21,10 @@ export async function GET(req: Request) {
     React.createElement(HomeOgCard, metrics),
     HOME_OG_SIZE,
   );
-  image.headers.set("Cache-Control", "no-store, max-age=0");
+  image.headers.set(
+    "Cache-Control",
+    "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
+  );
   return image;
 }
 

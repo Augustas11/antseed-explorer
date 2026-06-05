@@ -6,6 +6,13 @@ export const alt = "AntFeed MCP — discover and transact on AntSeed from any AI
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
+const imageOptions = {
+  ...size,
+  headers: {
+    "Cache-Control": "public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400",
+  },
+};
+
 export default async function McpOG() {
   return new ImageResponse(
     (
@@ -108,6 +115,6 @@ export default async function McpOG() {
         </div>
       </div>
     ),
-    { ...size },
+    imageOptions,
   );
 }

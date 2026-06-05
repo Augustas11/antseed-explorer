@@ -1,27 +1,34 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import CopyButton from "@/app/mcp/CopyButton";
+import { siteUrl, getSiteOrigin } from "@/lib/site";
 
-export const metadata: Metadata = {
-  title: "Route Claude Code through the AntSeed P2P network",
-  description:
-    "Set up Claude Code (and Aider) to route inference through AntSeed in under five minutes. No API key, USDC settlement, automatic provider selection.",
-  openGraph: {
-    title: "Route Claude Code through AntSeed",
-    description:
-      "Point your coding agent at the AntSeed P2P network. Five-minute setup, USDC settlement, no API key required.",
-    url: "https://www.antfeed.org/blog/claude-code-on-antseed",
-    siteName: "AntSeed Demand Explorer",
-    type: "article",
-    publishedTime: "2026-05-25T00:00:00Z",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Route Claude Code through AntSeed",
-    description:
-      "Point your coding agent at the AntSeed P2P network. Five-minute setup, USDC settlement, no API key required.",
-  },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const title = "Route Claude Code through the AntSeed P2P network";
+  const description =
+    "Set up Claude Code (and Aider) to route inference through AntSeed in under five minutes. No API key, USDC settlement, automatic provider selection.";
+  const ogTitle = "Route Claude Code through AntSeed";
+  const ogDescription =
+    "Point your coding agent at the AntSeed P2P network. Five-minute setup, USDC settlement, no API key required.";
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title: ogTitle,
+      description: ogDescription,
+      url: siteUrl(await getSiteOrigin(), "/blog/claude-code-on-antseed"),
+      siteName: "AntSeed Demand Explorer",
+      type: "article",
+      publishedTime: "2026-05-25T00:00:00Z",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: ogTitle,
+      description: ogDescription,
+    },
+  };
+}
 
 const ENV_CLAUDE_CODE = `export ANTHROPIC_BASE_URL=http://localhost:8377
 claude`;
