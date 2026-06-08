@@ -861,6 +861,49 @@ export interface EpochAnalytics {
   buckets: EpochRevenueBucket[];
 }
 
+export interface LatestClaimedEpochAnchor {
+  epoch: number;
+  timestamp: number;
+}
+
+export async function getLatestClaimedEpochAnchor(): Promise<LatestClaimedEpochAnchor | null> {
+  const rows = await db.execute<{
+    epoch: number | null;
+    timestamp: number | null;
+  }>(sql`
+    WITH claim_rows AS (
+      SELECT raw_log, timestamp
+      FROM events
+      WHERE event_type = 'ants_claim'
+        AND raw_log IS NOT NULL
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+    ),
+    claim_epochs AS (
+      SELECT claim_rows.timestamp, claim_epoch.epoch_text::int AS epoch
+      FROM claim_rows
+      CROSS JOIN LATERAL jsonb_array_elements_text(
+        claim_rows.raw_log::jsonb -> 'args' -> 'epochs'
+      ) AS claim_epoch(epoch_text)
+      WHERE claim_epoch.epoch_text ~ '^[0-9]+$'
+    ),
+    latest AS (
+      SELECT MAX(epoch)::int AS epoch FROM claim_epochs
+    )
+    SELECT latest.epoch, MIN(claim_epochs.timestamp)::bigint AS timestamp
+    FROM latest
+    JOIN claim_epochs ON claim_epochs.epoch = latest.epoch
+    WHERE latest.epoch IS NOT NULL
+    GROUP BY latest.epoch
+  `);
+  const row = rows.rows[0];
+  const epoch = Number(row?.epoch);
+  const timestamp = Number(row?.timestamp);
+  if (!Number.isSafeInteger(epoch) || epoch < 0) return null;
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0) return null;
+  return { epoch, timestamp };
+}
+
 export async function getEpochAnalytics(clock: {
   currentEpoch: number;
   startTs: number;
