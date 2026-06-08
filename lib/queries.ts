@@ -2142,3 +2142,63 @@ export async function countHolders(): Promise<number> {
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
+
+export interface AntsOverview {
+  maxSupplyAnts: number;
+  mintedAnts: number;
+  availableAnts: number;
+  claimedAnts: number;
+  claimedAccounts: number;
+  lockedAnts: number;
+  unclaimedAnts: number;
+  treasuryUsdc: number;
+}
+
+export async function getAntsOverview(): Promise<AntsOverview> {
+  const maxSupplyAnts = 1_040_000_000;
+  const rows = await db.execute<{
+    claimed_ants: number | string | null;
+    claimed_accounts: number;
+    locked_ants: number | string | null;
+    treasury_usdc: number;
+  }>(sql`
+    WITH claims AS (
+      SELECT
+        COALESCE(SUM(((raw_log::jsonb -> 'args' ->> 'amount')::numeric / 1e18)), 0)::float AS claimed_ants,
+        COUNT(DISTINCT buyer_address)::int AS claimed_accounts
+      FROM events
+      WHERE event_type = 'ants_claim'
+        AND raw_log IS NOT NULL
+        AND raw_log::jsonb -> 'args' ->> 'amount' IS NOT NULL
+    ),
+    locked AS (
+      SELECT COALESCE(SUM(staked_balance / 1e18), 0)::float AS locked_ants
+      FROM ants_holders
+      WHERE staked_balance > 0
+    ),
+    treasury AS (
+      SELECT COALESCE(SUM(platform_fee_usdc), 0)::float AS treasury_usdc
+      FROM events
+      WHERE event_type = 'settled'
+    )
+    SELECT
+      claims.claimed_ants,
+      claims.claimed_accounts,
+      locked.locked_ants,
+      treasury.treasury_usdc
+    FROM claims, locked, treasury
+  `);
+  const row = rows.rows[0];
+  const claimedAnts = Number(row?.claimed_ants ?? 0);
+  const lockedAnts = Number(row?.locked_ants ?? 0);
+  return {
+    maxSupplyAnts,
+    mintedAnts: claimedAnts,
+    availableAnts: Math.max(0, maxSupplyAnts - claimedAnts),
+    claimedAnts,
+    claimedAccounts: Number(row?.claimed_accounts ?? 0),
+    lockedAnts,
+    unclaimedAnts: Math.max(0, maxSupplyAnts - claimedAnts),
+    treasuryUsdc: Number(row?.treasury_usdc ?? 0),
+  };
+}
