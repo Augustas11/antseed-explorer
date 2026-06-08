@@ -179,6 +179,13 @@ export default async function BuyerProfilePage({
         </div>
       </section>
 
+      <section className="panel px-4 py-3 text-sm text-muted">
+        This buyer transacts via MCP/SDK.{" "}
+        <Link href="/mcp" className="text-accent hover:underline">
+          Install MCP →
+        </Link>
+      </section>
+
       <section className="panel p-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-medium">Activity over time — {rangeLabel}</h2>

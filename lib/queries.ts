@@ -19,6 +19,7 @@ import {
 import { cache as reactCache } from "react";
 import { canonicalize, groupServices, type ServiceGroup } from "./services-canonical";
 import { getActiveDiemPoolUsers, getDiemPoolSnapshotMetadata } from "./diem";
+import { createTtlCache } from "./ttlCache";
 import {
   rawAddressList,
   rawFiniteNumber,
@@ -53,6 +54,7 @@ export {
 } from "./heroSnapshot";
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const ADDRESS_PREFIX_RE = /^0x[0-9a-f]{4,40}$/;
 const cache: typeof reactCache =
   typeof reactCache === "function" ? reactCache : (((fn: any) => fn) as typeof reactCache);
 const CHANNEL_EVENT_TYPES = [
@@ -68,6 +70,7 @@ const CHANNEL_EVENT_TYPES_SQL = rawStringLiteralList(
   (value) => /^[a-z_]+$/.test(value),
   "channel event types",
 );
+const HOT_PAGE_AGGREGATE_CACHE_TTL_MS = 5 * 60_000;
 
 function cleanPositiveInt(value: unknown, fallback: number, max: number): number {
   const n = Number(value);
@@ -839,6 +842,243 @@ export async function getDailyVolume(days = 30) {
   return rows.rows;
 }
 
+export interface EpochRevenueBucket {
+  epoch: number;
+  label: string;
+  volume: number;
+  sessions: number;
+}
+
+export interface EpochAnalytics {
+  currentEpoch: number;
+  startTs: number;
+  endTs: number;
+  durationSec: number;
+  epochRevenueUsdc: number;
+  activeSellers: number;
+  source: "contract" | "time-fallback";
+  todo: string | null;
+  buckets: EpochRevenueBucket[];
+}
+
+export async function getEpochAnalytics(clock: {
+  currentEpoch: number;
+  startTs: number;
+  endTs: number;
+  durationSec: number;
+  source: "contract" | "time-fallback";
+  todo: string | null;
+}): Promise<EpochAnalytics> {
+  const currentEpoch = cleanNonNegativeInt(clock.currentEpoch, 0, 10_000);
+  const durationSec = cleanPositiveInt(clock.durationSec, 7 * 86400, 366 * 86400);
+  const epochZeroTs = clock.startTs - currentEpoch * durationSec;
+  const minEpoch = Math.max(0, currentEpoch - 23);
+  const maxEpoch = currentEpoch;
+  const rows = await db.execute<{
+    epoch: number;
+    volume: number;
+    sessions: number;
+    active_sellers: number;
+  }>(sql`
+    WITH params AS (
+      SELECT
+        ${rawNonNegativeInteger(epochZeroTs, "epoch zero timestamp")}::bigint AS epoch_zero,
+        ${rawPositiveInteger(durationSec, "epoch duration seconds")}::bigint AS epoch_seconds,
+        ${rawNonNegativeInteger(minEpoch, "minimum epoch")}::int AS min_epoch,
+        ${rawNonNegativeInteger(maxEpoch, "maximum epoch")}::int AS max_epoch
+    ),
+    epochs AS (
+      SELECT generate_series(min_epoch, max_epoch)::int AS epoch FROM params
+    ),
+    settled AS (
+      SELECT
+        floor((timestamp - params.epoch_zero)::numeric / params.epoch_seconds)::int AS epoch,
+        COALESCE(delta_usdc, 0)::float AS delta_usdc,
+        seller_address
+      FROM events, params
+      WHERE event_type = 'settled'
+        AND timestamp IS NOT NULL
+        AND timestamp >= params.epoch_zero + params.min_epoch * params.epoch_seconds
+        AND timestamp < params.epoch_zero + (params.max_epoch + 1) * params.epoch_seconds
+    )
+    SELECT
+      epochs.epoch,
+      COALESCE(SUM(settled.delta_usdc), 0)::float AS volume,
+      COUNT(settled.delta_usdc)::int AS sessions,
+      COUNT(DISTINCT settled.seller_address)::int AS active_sellers
+    FROM epochs
+    LEFT JOIN settled ON settled.epoch = epochs.epoch
+    GROUP BY epochs.epoch
+    ORDER BY epochs.epoch ASC
+  `);
+  const buckets = rows.rows.map((row) => ({
+    epoch: Number(row.epoch),
+    label: `E${Number(row.epoch)}`,
+    volume: Number(row.volume ?? 0),
+    sessions: Number(row.sessions ?? 0),
+  }));
+  const current = rows.rows.find((row) => Number(row.epoch) === currentEpoch);
+  return {
+    currentEpoch,
+    startTs: clock.startTs,
+    endTs: clock.endTs,
+    durationSec,
+    epochRevenueUsdc: Number(current?.volume ?? 0),
+    activeSellers: Number(current?.active_sellers ?? 0),
+    source: clock.source,
+    todo: clock.todo,
+    buckets,
+  };
+}
+
+export interface DailyMetricsRow {
+  day: string;
+  dau: number;
+  newUsers: number;
+  settledUsdc: number;
+  feesUsdc: number;
+  settles: number;
+  requests: number;
+  tokens: number;
+}
+
+export async function getDailyMetricsTable(days: number): Promise<DailyMetricsRow[]> {
+  const d = cleanPositiveInt(days, 14, 90);
+  const rows = await db.execute<{
+    day: string;
+    dau: number;
+    new_users: number;
+    settled_usdc: number;
+    fees_usdc: number;
+    settles: number;
+    requests: string | number | null;
+    tokens: string | number | null;
+  }>(sql`
+    WITH days AS (
+      SELECT generate_series(
+        date_trunc('day', to_timestamp(extract(epoch from now())::bigint - (${rawPositiveInteger(d, "daily metrics days")} - 1) * 86400)),
+        date_trunc('day', to_timestamp(extract(epoch from now())::bigint)),
+        interval '1 day'
+      )::date AS day
+    ),
+    settled AS (
+      SELECT
+        to_timestamp(timestamp)::date AS day,
+        COALESCE(SUM(delta_usdc), 0)::float AS settled_usdc,
+        COALESCE(SUM(platform_fee_usdc), 0)::float AS fees_usdc,
+        COUNT(*)::int AS settles
+      FROM events
+      WHERE event_type = 'settled'
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "daily metrics settle window days")} * 86400
+      GROUP BY 1
+    ),
+    metadata AS (
+      SELECT
+        to_timestamp(timestamp)::date AS day,
+        COALESCE(SUM(request_count), 0)::bigint AS requests,
+        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0)::bigint AS tokens
+      FROM events
+      WHERE event_type = 'metadata_recorded'
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "daily metrics token window days")} * 86400
+      GROUP BY 1
+    )
+    SELECT
+      to_char(days.day, 'YYYY-MM-DD') AS day,
+      COALESCE(daily_dau.dau, 0)::int AS dau,
+      COALESCE(daily_dau.new_users, 0)::int AS new_users,
+      COALESCE(settled.settled_usdc, 0)::float AS settled_usdc,
+      COALESCE(settled.fees_usdc, 0)::float AS fees_usdc,
+      COALESCE(settled.settles, 0)::int AS settles,
+      COALESCE(metadata.requests, 0)::bigint AS requests,
+      COALESCE(metadata.tokens, 0)::bigint AS tokens
+    FROM days
+    LEFT JOIN daily_dau ON daily_dau.day = days.day
+    LEFT JOIN settled ON settled.day = days.day
+    LEFT JOIN metadata ON metadata.day = days.day
+    ORDER BY days.day DESC
+  `);
+  return rows.rows.map((row) => ({
+    day: row.day,
+    dau: Number(row.dau ?? 0),
+    newUsers: Number(row.new_users ?? 0),
+    settledUsdc: Number(row.settled_usdc ?? 0),
+    feesUsdc: Number(row.fees_usdc ?? 0),
+    settles: Number(row.settles ?? 0),
+    requests: safeTokenCount(row.requests, "daily metrics requests"),
+    tokens: safeTokenCount(row.tokens, "daily metrics tokens"),
+  }));
+}
+
+export interface BuyerFunnelStage {
+  key: "depositors" | "first_session" | "repeat_session" | "active_7d";
+  label: string;
+  count: number;
+  dropoffPct: number | null;
+}
+
+async function computeBuyerFunnel(): Promise<BuyerFunnelStage[]> {
+  const rows = await db.execute<{
+    depositors: number;
+    first_session: number;
+    repeat_session: number;
+    active_7d: number;
+  }>(sql`
+    WITH depositors AS (
+      SELECT DISTINCT buyer_address AS buyer
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+    ),
+    settled AS (
+      SELECT
+        buyer_address AS buyer,
+        COUNT(*)::int AS sessions,
+        MIN(timestamp)::bigint AS first_ts,
+        MAX(timestamp)::bigint AS last_ts
+      FROM events
+      WHERE event_type = 'settled'
+        AND buyer_address IS NOT NULL
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+      GROUP BY buyer_address
+    )
+    SELECT
+      (SELECT COUNT(*)::int FROM depositors) AS depositors,
+      (SELECT COUNT(*)::int FROM settled WHERE sessions >= 1) AS first_session,
+      (SELECT COUNT(*)::int FROM settled WHERE sessions >= 2) AS repeat_session,
+      (SELECT COUNT(*)::int FROM settled WHERE sessions >= 2 AND last_ts - first_ts >= 7 * 86400) AS active_7d
+  `);
+  const row = rows.rows[0] ?? {
+    depositors: 0,
+    first_session: 0,
+    repeat_session: 0,
+    active_7d: 0,
+  };
+  const counts = [
+    { key: "depositors" as const, label: "Depositors", count: Number(row.depositors ?? 0) },
+    { key: "first_session" as const, label: "First session", count: Number(row.first_session ?? 0) },
+    { key: "repeat_session" as const, label: "≥2 sessions", count: Number(row.repeat_session ?? 0) },
+    { key: "active_7d" as const, label: "≥7-day active", count: Number(row.active_7d ?? 0) },
+  ];
+  return counts.map((stage, index) => {
+    if (index === 0) return { ...stage, dropoffPct: null };
+    const previous = counts[index - 1]?.count ?? 0;
+    return {
+      ...stage,
+      dropoffPct: previous > 0 ? ((previous - stage.count) / previous) * 100 : null,
+    };
+  });
+}
+
+export const getBuyerFunnel = createTtlCache(
+  computeBuyerFunnel,
+  HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
+).get;
+
 export async function getProfileDrift() {
   const rows = await db.execute<{ events_usdc: number; profiles_usdc: number }>(sql`
     SELECT
@@ -972,6 +1212,13 @@ export async function lookupAddress(
     LIMIT 1
   `);
   if (sellerR.rows.length > 0) {
+    return { type: "seller", address: normalized };
+  }
+
+  const providerR = await db.execute<{ address: string }>(sql`
+    SELECT address FROM provider_directory WHERE address = ${normalized} LIMIT 1
+  `);
+  if (providerR.rows.length > 0) {
     return { type: "seller", address: normalized };
   }
 
@@ -1402,6 +1649,24 @@ export async function getChannelEvents(
 // ServiceRow + service queries
 // ---------------------------------------------------------------------------
 
+type ServicePricing = { inputUsdPerMillion?: number; outputUsdPerMillion?: number };
+
+function servicePricingCost(pricing: ServicePricing | null): number {
+  const input = pricing?.inputUsdPerMillion ?? Number.POSITIVE_INFINITY;
+  const output = pricing?.outputUsdPerMillion ?? Number.POSITIVE_INFINITY;
+  return input + output;
+}
+
+function isBetterServicePricing(
+  candidate: ServicePricing | null,
+  current: ServicePricing | null,
+): boolean {
+  const candidateCost = servicePricingCost(candidate);
+  const currentCost = servicePricingCost(current);
+  if (candidateCost !== currentCost) return candidateCost < currentCost;
+  return current == null && candidate != null;
+}
+
 export interface ServiceRow {
   // The canonical key (e.g. "claude-opus-4-6"). Used as the URL slug for
   // /services/[name] so links survive raw-alias spelling changes upstream.
@@ -1420,19 +1685,21 @@ export interface ServiceProviderRow extends ServiceRow {
   provider_details: Array<{
     address: string;
     display_name: string | null;
-    pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
+    peer_id: string | null;
+    pricing: ServicePricing | null;
+    pricing_service: string | null;
     advertised_as: string[];
   }>;
 }
 
-type PricingMap = Record<string, { inputUsdPerMillion?: number; outputUsdPerMillion?: number }>;
+type PricingMap = Record<string, ServicePricing>;
 
 // Rolled-up service listing keyed by canonical model. Multiple raw service
 // strings ("Claude Opus 4.6" / "claude-opus-4-6") collapse into one row;
 // providers and prices are aggregated across all aliases.
 export async function listServices(): Promise<ServiceRow[]> {
   const allProviders = (await db.execute<any>(sql`
-    SELECT address, display_name, services, pricing FROM provider_directory
+    SELECT address, display_name, peer_id, services, pricing FROM provider_directory
   `)).rows;
 
   // canonical key -> rollup buckets
@@ -1499,7 +1766,7 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
   const { key: canonicalKey, display: canonicalDisplay } = canonicalize(input);
 
   const allProviders = (await db.execute<any>(sql`
-    SELECT address, display_name, services, pricing FROM provider_directory
+    SELECT address, display_name, peer_id, services, pricing FROM provider_directory
   `)).rows;
 
   // Dedup providers by address; collect every alias they advertise that maps
@@ -1507,7 +1774,9 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
   type Detail = {
     address: string;
     display_name: string | null;
-    pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
+    peer_id: string | null;
+    pricing: ServicePricing | null;
+    pricing_service: string | null;
     advertised_as: string[];
   };
   const byAddress = new Map<string, Detail>();
@@ -1528,19 +1797,19 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
       const existing = byAddress.get(provider.address);
       if (existing) {
         existing.advertised_as.push(svc);
-        // Keep the cheapest price seen for this provider's display row
-        if (
-          svcPricing?.inputUsdPerMillion != null &&
-          (existing.pricing?.inputUsdPerMillion == null ||
-            svcPricing.inputUsdPerMillion < existing.pricing.inputUsdPerMillion)
-        ) {
+        // Keep the cheapest price seen for this provider's display row and
+        // remember the raw advertised service that owns that pricing entry.
+        if (isBetterServicePricing(svcPricing, existing.pricing)) {
           existing.pricing = svcPricing;
+          existing.pricing_service = svc;
         }
       } else {
         byAddress.set(provider.address, {
           address: provider.address,
           display_name: provider.display_name ?? null,
+          peer_id: provider.peer_id ?? null,
           pricing: svcPricing,
+          pricing_service: svc,
           advertised_as: [svc],
         });
       }
@@ -1656,6 +1925,49 @@ export async function lookupByProviderName(
     LIMIT 1
   `);
   return rows.rows[0]?.address ?? null;
+}
+
+export interface AddressPrefixMatchRow extends Record<string, unknown> {
+  address: string;
+}
+
+function cleanAddressPrefix(prefix: string): string | null {
+  const normalized = prefix.toLowerCase();
+  return ADDRESS_PREFIX_RE.test(normalized) ? normalized : null;
+}
+
+export async function searchBuyersByPrefix(
+  prefix: string,
+  limit = 8,
+): Promise<AddressPrefixMatchRow[]> {
+  const normalized = cleanAddressPrefix(prefix);
+  if (!normalized) return [];
+  const safeLimit = cleanPositiveInt(limit, 8, 20);
+  const rows = await db.execute<AddressPrefixMatchRow>(sql`
+    SELECT address
+    FROM buyer_profiles
+    WHERE address LIKE ${`${normalized}%`}
+    ORDER BY trust_score DESC, address ASC
+    LIMIT ${rawPositiveInteger(safeLimit, "buyer prefix limit")}
+  `);
+  return rows.rows;
+}
+
+export async function searchSellersByPrefix(
+  prefix: string,
+  limit = 8,
+): Promise<AddressPrefixMatchRow[]> {
+  const normalized = cleanAddressPrefix(prefix);
+  if (!normalized) return [];
+  const safeLimit = cleanPositiveInt(limit, 8, 20);
+  const rows = await db.execute<AddressPrefixMatchRow>(sql`
+    SELECT address
+    FROM provider_directory
+    WHERE address LIKE ${`${normalized}%`}
+    ORDER BY trust_score DESC NULLS LAST, updated_at DESC NULLS LAST, address ASC
+    LIMIT ${rawPositiveInteger(safeLimit, "seller prefix limit")}
+  `);
+  return rows.rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -1897,6 +2209,7 @@ export async function listProviderFacets(): Promise<{
 
 export interface HolderRow {
   address: string;
+  kind: "buyer" | "seller" | "none";
   balance_wei: string;
   balance_ants: number;
   staked_balance_wei: string;
@@ -1922,31 +2235,65 @@ export async function listHolders(opts: {
       FROM ants_holders
       WHERE balance + staked_balance > 0
         AND address NOT IN (${excludeSql})
+    ),
+    holder_page AS (
+      SELECT
+        address,
+        balance + staked_balance                 AS total_balance,
+        balance::text                            AS balance_wei,
+        (balance / 1e18)::float                  AS balance_ants,
+        staked_balance::text                     AS staked_balance_wei,
+        (staked_balance / 1e18)::float           AS staked_balance_ants,
+        CASE
+          WHEN (SELECT total FROM circulating) > 0
+          THEN ((balance + staked_balance) * 100.0 / (SELECT total FROM circulating))::float
+          ELSE 0
+        END                                       AS pct_supply,
+        first_seen_block,
+        last_seen_block,
+        updated_at
+      FROM ants_holders
+      WHERE balance + staked_balance > 0
+        AND address NOT IN (${excludeSql})
+      ORDER BY (balance + staked_balance) DESC
+      LIMIT ${rawPositiveInteger(limit, "holders limit")}
+      OFFSET ${rawNonNegativeInteger(offset, "holders offset")}
+    ),
+    seller_matches AS (
+      SELECT pd.address
+      FROM provider_directory pd
+      INNER JOIN holder_page hp ON hp.address = pd.address
+      UNION
+      SELECT DISTINCT e.seller_address AS address
+      FROM events e
+      INNER JOIN holder_page hp ON hp.address = e.seller_address
+      WHERE e.seller_address IS NOT NULL
+        AND e.event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     )
     SELECT
-      address,
-      balance::text                            AS balance_wei,
-      (balance / 1e18)::float                  AS balance_ants,
-      staked_balance::text                     AS staked_balance_wei,
-      (staked_balance / 1e18)::float           AS staked_balance_ants,
+      hp.address,
       CASE
-        WHEN (SELECT total FROM circulating) > 0
-        THEN ((balance + staked_balance) * 100.0 / (SELECT total FROM circulating))::float
-        ELSE 0
-      END                                       AS pct_supply,
-      first_seen_block,
-      last_seen_block,
-      updated_at
-    FROM ants_holders
-    WHERE balance + staked_balance > 0
-      AND address NOT IN (${excludeSql})
-    ORDER BY (balance + staked_balance) DESC
-    LIMIT ${rawPositiveInteger(limit, "holders limit")}
-    OFFSET ${rawNonNegativeInteger(offset, "holders offset")}
+        WHEN bp.address IS NOT NULL THEN 'buyer'
+        WHEN sm.address IS NOT NULL THEN 'seller'
+        ELSE 'none'
+      END                                       AS kind,
+      hp.balance_wei,
+      hp.balance_ants,
+      hp.staked_balance_wei,
+      hp.staked_balance_ants,
+      hp.pct_supply,
+      hp.first_seen_block,
+      hp.last_seen_block,
+      hp.updated_at
+    FROM holder_page hp
+    LEFT JOIN buyer_profiles bp ON bp.address = hp.address
+    LEFT JOIN seller_matches sm ON sm.address = hp.address
+    ORDER BY hp.total_balance DESC
   `);
 
   return r.rows.map((x: any) => ({
     address: x.address,
+    kind: x.kind === "buyer" || x.kind === "seller" ? x.kind : "none",
     balance_wei: String(x.balance_wei ?? "0"),
     balance_ants: Number(x.balance_ants ?? 0),
     staked_balance_wei: String(x.staked_balance_wei ?? "0"),
@@ -1971,3 +2318,68 @@ export async function countHolders(): Promise<number> {
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
+
+export interface AntsOverview {
+  maxSupplyAnts: number;
+  mintedAnts: number;
+  availableAnts: number;
+  claimedAnts: number;
+  claimedAccounts: number;
+  lockedAnts: number;
+  unclaimedAnts: number;
+  treasuryUsdc: number;
+}
+
+async function computeAntsOverview(): Promise<AntsOverview> {
+  const maxSupplyAnts = 1_040_000_000;
+  const rows = await db.execute<{
+    claimed_ants: number | string | null;
+    claimed_accounts: number;
+    locked_ants: number | string | null;
+    treasury_usdc: number;
+  }>(sql`
+    WITH claims AS (
+      SELECT
+        COALESCE(SUM(((raw_log::jsonb -> 'args' ->> 'amount')::numeric / 1e18)), 0)::float AS claimed_ants,
+        COUNT(DISTINCT buyer_address)::int AS claimed_accounts
+      FROM events
+      WHERE event_type = 'ants_claim'
+        AND raw_log IS NOT NULL
+        AND raw_log::jsonb -> 'args' ->> 'amount' IS NOT NULL
+    ),
+    locked AS (
+      SELECT COALESCE(SUM(staked_balance / 1e18), 0)::float AS locked_ants
+      FROM ants_holders
+      WHERE staked_balance > 0
+    ),
+    treasury AS (
+      SELECT COALESCE(SUM(platform_fee_usdc), 0)::float AS treasury_usdc
+      FROM events
+      WHERE event_type = 'settled'
+    )
+    SELECT
+      claims.claimed_ants,
+      claims.claimed_accounts,
+      locked.locked_ants,
+      treasury.treasury_usdc
+    FROM claims, locked, treasury
+  `);
+  const row = rows.rows[0];
+  const claimedAnts = Number(row?.claimed_ants ?? 0);
+  const lockedAnts = Number(row?.locked_ants ?? 0);
+  return {
+    maxSupplyAnts,
+    mintedAnts: claimedAnts,
+    availableAnts: Math.max(0, maxSupplyAnts - claimedAnts),
+    claimedAnts,
+    claimedAccounts: Number(row?.claimed_accounts ?? 0),
+    lockedAnts,
+    unclaimedAnts: Math.max(0, maxSupplyAnts - claimedAnts),
+    treasuryUsdc: Number(row?.treasury_usdc ?? 0),
+  };
+}
+
+export const getAntsOverview = createTtlCache(
+  computeAntsOverview,
+  HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
+).get;

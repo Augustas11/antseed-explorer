@@ -19,6 +19,11 @@ export function fmtNum(n: number | null | undefined) {
   return n.toLocaleString();
 }
 
+export function clampPage(value: unknown): number {
+  const n = Number(value ?? 1);
+  return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
+}
+
 export function fmtRelative(ts: number | null) {
   if (!ts) return "never";
   const sec = Math.floor((Date.now() / 1000) - ts);

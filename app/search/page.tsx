@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { lookupAddress, lookupByServiceName, lookupByProviderName } from "@/lib/queries";
 import { resolveEnsName } from "@/lib/ens";
+import { resolveSearchDestination, resolveSearchMatches } from "@/lib/searchResolver";
 
 export const dynamic = "force-dynamic";
 
@@ -29,16 +29,11 @@ export default async function SearchPage({
     );
   }
 
-  // Channel id (64 hex chars)
-  if (/^0x[0-9a-f]{64}$/i.test(q)) {
-    redirect(`/channels/${q}`);
-  }
+  const destination = await resolveSearchDestination(raw);
+  if (destination) redirect(destination);
 
   // Ethereum address (40 hex chars)
   if (/^0x[0-9a-f]{40}$/i.test(q)) {
-    const result = await lookupAddress(q);
-    if (result?.type === "buyer") redirect(`/buyers/${q}`);
-    if (result?.type === "seller") redirect(`/sellers/${q}`);
     return (
       <div className="space-y-4 max-w-lg mx-auto mt-16">
         <h1 className="text-2xl font-semibold">Address not indexed</h1>
@@ -58,9 +53,8 @@ export default async function SearchPage({
   if (q.includes(".")) {
     const resolved = await resolveEnsName(q);
     if (resolved) {
-      const result = await lookupAddress(resolved);
-      if (result?.type === "buyer") redirect(`/buyers/${resolved}`);
-      if (result?.type === "seller") redirect(`/sellers/${resolved}`);
+      const resolvedDestination = await resolveSearchDestination(resolved);
+      if (resolvedDestination) redirect(resolvedDestination);
       return (
         <div className="space-y-4 max-w-lg mx-auto mt-16">
           <h1 className="text-2xl font-semibold">Address not indexed</h1>
@@ -84,16 +78,28 @@ export default async function SearchPage({
     );
   }
 
-  // Service name match (e.g. "claude-3-5-sonnet", "gpt-4o")
-  const serviceName = await lookupByServiceName(q);
-  if (serviceName) {
-    redirect(`/services/${encodeURIComponent(serviceName)}`);
-  }
-
-  // Provider display_name match (e.g. "Alice's Node")
-  const providerAddress = await lookupByProviderName(q);
-  if (providerAddress) {
-    redirect(`/sellers/${providerAddress}`);
+  const matches = await resolveSearchMatches(raw, 8);
+  if (matches.length > 0) {
+    return (
+      <div className="space-y-4 max-w-lg mx-auto mt-16">
+        <h1 className="text-2xl font-semibold">Search results</h1>
+        <div className="panel divide-y divide-edge">
+          {matches.map((match) => (
+            <Link
+              key={`${match.type}:${match.href}`}
+              href={match.href}
+              className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-accent/5"
+            >
+              <span>
+                <span className="block text-sm text-ink">{match.label}</span>
+                <span className="block text-xs text-muted">{match.detail}</span>
+              </span>
+              <span className="text-xs text-accent">Open →</span>
+            </Link>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   // Unrecognised format

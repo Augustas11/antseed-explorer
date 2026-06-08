@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { listBuyers, countBuyers, lookupProviders } from "@/lib/queries";
-import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
+import { listBuyers, countBuyers, getBuyerFunnel, lookupProviders } from "@/lib/queries";
+import { clampPage, fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import TimestampDisplay from "../components/TimestampDisplay";
 import { ScoreBadge, QualifiedBadge } from "../components/Badges";
 import SortableHeader from "../components/SortableHeader";
@@ -27,11 +27,6 @@ const sortLabels: Record<string, string> = {
 
 const SORTS = new Set(Object.keys(sortLabels));
 
-function pageParam(value: string | undefined): number {
-  const n = Number(value ?? 1);
-  return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
-}
-
 function scoreParam(value: string | undefined): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
@@ -43,7 +38,7 @@ export default async function BuyersPage({
   searchParams: Promise<SP>;
 }) {
   const query = await searchParams;
-  const page = pageParam(query.page);
+  const page = clampPage(query.page);
   const limit = 25;
   const offset = (page - 1) * limit;
   const qualifiedOnly = query.qualified === "1";
@@ -52,9 +47,10 @@ export default async function BuyersPage({
   const sort = SORTS.has(sortParam) ? (sortParam as any) : "volume";
   const dir = query.dir === "asc" ? "asc" : "desc";
 
-  const [rows, total] = await Promise.all([
+  const [rows, total, funnel] = await Promise.all([
     listBuyers({ limit, offset, qualifiedOnly, minScore, sort }),
     countBuyers({ qualifiedOnly, minScore }),
+    getBuyerFunnel(),
   ]);
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
@@ -125,6 +121,39 @@ export default async function BuyersPage({
         </div>
       </div>
 
+      <section className="panel p-4 space-y-4">
+        <div>
+          <h2 className="font-medium">Buyer conversion funnel</h2>
+          <p className="text-xs text-muted mt-1">
+            Demand-side progression from funded buyers to durable marketplace usage.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          {funnel.map((stage, index) => (
+            <div key={stage.key} className="rounded border border-edge bg-bg p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs uppercase tracking-wide text-muted">{stage.label}</div>
+                <div className="text-xs text-muted">Step {index + 1}</div>
+              </div>
+              <div className="mt-2 text-2xl font-semibold">{fmtNum(stage.count)}</div>
+              <div className="mt-2 h-1.5 rounded bg-edge overflow-hidden">
+                <div
+                  className="h-full rounded bg-accent"
+                  style={{
+                    width: `${funnel[0]?.count ? Math.max(3, (stage.count / funnel[0].count) * 100) : 0}%`,
+                  }}
+                />
+              </div>
+              <div className="mt-2 text-xs text-muted">
+                {stage.dropoffPct == null
+                  ? "Start"
+                  : `${Math.max(0, stage.dropoffPct).toFixed(1)}% drop-off`}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Desktop table */}
       <div className="panel hidden sm:block">
         {rows.length === 0 ? (
@@ -194,15 +223,20 @@ export default async function BuyersPage({
                   </SortableHeader>
                 </th>
                 <th>
-                  <SortableHeader
-                    field="score"
-                    current={sort}
-                    dir={dir}
-                    basePath="/buyers"
-                    extraParams={sharedParams}
-                  >
-                    Trust
-                  </SortableHeader>
+                  <span className="inline-flex items-center gap-2">
+                    <SortableHeader
+                      field="score"
+                      current={sort}
+                      dir={dir}
+                      basePath="/buyers"
+                      extraParams={sharedParams}
+                    >
+                      Trust
+                    </SortableHeader>
+                    <Link href="/score" className="text-accent hover:underline">
+                      ?
+                    </Link>
+                  </span>
                 </th>
                 <th></th>
               </tr>

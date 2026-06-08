@@ -3,13 +3,16 @@ import type { Metadata } from "next";
 import {
   getDailyTokens,
   getDailyVolume,
+  getDailyMetricsTable,
   getHeroSnapshot,
   getHourlyTokens,
   getHourlyVolume,
+  getEpochAnalytics,
   getNetworkStats,
   getRecentEvents,
   listBuyers,
 } from "@/lib/queries";
+import { getEpochClock } from "@/lib/epoch";
 import {
   fmtCompact,
   fmtNum,
@@ -19,8 +22,9 @@ import {
   shortAddr,
 } from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "./components/Badges";
-import { TokensChart, VolumeChart } from "./components/Charts";
+import { EpochRevenueChart, TokensChart, VolumeChart } from "./components/Charts";
 import { DauChart } from "./components/DauChart";
+import EpochCountdown from "./components/EpochCountdown";
 import HeroCard from "./components/HeroCard";
 import Sparkline from "./components/Sparkline";
 import TimeRangePills from "./components/TimeRangePills";
@@ -28,6 +32,7 @@ import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
 import { getHeroSnapshotStatus } from "@/lib/heroSnapshot";
 import { getSiteOrigin, siteUrl } from "@/lib/site";
+import { INSTALL_SNIPPET } from "@/lib/mcpSnippet";
 
 export const dynamic = "force-dynamic";
 
@@ -72,11 +77,12 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string }>;
+  searchParams: Promise<{ range?: string; days?: string }>;
 }) {
   // No page-load sync on Vercel — cron handles indexing.
   const query = await searchParams;
   const range = query.range || "30d";
+  const dailyMetricDays = Math.max(14, Math.min(90, Number(query.days) || 14));
   const rangeLabel =
     range === "24h"
       ? "last 24h"
@@ -104,14 +110,18 @@ export default async function HomePage({
       : range === "all"
       ? getDailyTokens(9999)
       : getDailyTokens(30);
-  const [stats, heroSnapshot, daily, tokens, recent, top] = await Promise.all([
+  const epochClockP = getEpochClock();
+  const [stats, heroSnapshot, daily, tokens, dailyMetrics, recent, top, epochClock] = await Promise.all([
     getNetworkStats(),
     getHeroSnapshot(),
     dailyP,
     tokensP,
+    getDailyMetricsTable(dailyMetricDays),
     getRecentEvents(20),
     listBuyers({ limit: 10, sort: "score" }),
+    epochClockP,
   ]);
+  const epoch = await getEpochAnalytics(epochClock);
   const hero = heroSnapshot?.stats ?? null;
   const heroStatus = heroSnapshot ? getHeroSnapshotStatus(heroSnapshot) : null;
   const heroStale = heroStatus?.stale === true;
@@ -133,22 +143,58 @@ export default async function HomePage({
         </div>
       )}
 
-      <section>
-        <h1 className="text-3xl font-semibold tracking-tight">
-          AntSeed network economics
-        </h1>
-        <p className="text-muted mt-2 max-w-2xl">
-          Settled USDC, tokens consumed, and paying users on the AntSeed P2P AI
-          services network. All metrics derived from on-chain events on Base.
-        </p>
-        <Link
-          href="/mcp"
-          className="inline-flex items-center gap-2 mt-4 px-3 py-1.5 rounded-full border border-accent/30 bg-accent/5 text-xs text-accent hover:bg-accent/10 transition-colors"
-        >
-          <span className="font-medium">Use from any AI agent</span>
-          <span className="text-muted">— one-line MCP install</span>
-          <span aria-hidden="true">→</span>
-        </Link>
+      <section className="space-y-5">
+        <div className="max-w-3xl">
+          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
+            AntSeed for AI agents
+          </h1>
+          <p className="text-muted mt-3 max-w-2xl">
+            On-chain buyer intelligence + a one-line MCP install so your agent
+            can transact on the AntSeed marketplace.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link href="/mcp" className="btn-accent">
+            Install MCP →
+          </Link>
+          <Link href="/docs" className="btn">
+            Read the docs →
+          </Link>
+        </div>
+        <details className="panel p-4 max-w-3xl group">
+          <summary className="cursor-pointer text-sm font-medium text-accent">
+            Show config
+          </summary>
+          <pre className="mt-3 bg-bg border border-edge rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed">
+            <code>{INSTALL_SNIPPET}</code>
+          </pre>
+        </details>
+      </section>
+
+      <section className="panel px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className="font-medium text-ink">Current epoch #{epoch.currentEpoch}</span>
+          <span className="text-muted">·</span>
+          <span>
+            ends in{" "}
+            <span className="text-ink">
+              <EpochCountdown endTs={epoch.endTs} initialNow={Date.now()} />
+            </span>
+          </span>
+          <span className="text-muted">·</span>
+          <span>
+            epoch revenue <span className="text-ink">{fmtUsd(epoch.epochRevenueUsdc)}</span>
+          </span>
+          <span className="text-muted">·</span>
+          <span>
+            active sellers <span className="text-ink">{fmtNum(epoch.activeSellers)}</span>
+          </span>
+          {epoch.todo && (
+            <span className="text-xs text-muted">
+              · 7-day boundary fallback
+            </span>
+          )}
+        </div>
       </section>
 
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -216,6 +262,15 @@ export default async function HomePage({
           <VolumeChart data={daily} />
         </div>
         <div className="panel p-4">
+          <div className="mb-3">
+            <h2 className="font-medium">Epoch revenue</h2>
+            <p className="text-xs text-muted mt-0.5">
+              Settled USDC by reward epoch.
+            </p>
+          </div>
+          <EpochRevenueChart data={epoch.buckets} />
+        </div>
+        <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-medium">Tokens consumed — {rangeLabel}</h2>
             <TimeRangePills current={range} basePath="/" />
@@ -226,6 +281,55 @@ export default async function HomePage({
 
       <section>
         <DauChart />
+      </section>
+
+      <section className="panel overflow-hidden">
+        <div className="flex items-center justify-between gap-3 p-4 border-b border-edge">
+          <div>
+            <h2 className="font-medium">Daily metrics</h2>
+            <p className="text-xs text-muted mt-0.5">
+              UTC daily demand, settlement, and token usage.
+            </p>
+          </div>
+          {dailyMetricDays < 90 && (
+            <Link
+              href={`/?${new URLSearchParams({ range, days: "90" }).toString()}`}
+              className="text-xs text-accent hover:underline shrink-0"
+            >
+              Show more →
+            </Link>
+          )}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>DAU</th>
+                <th>New users</th>
+                <th>Settled USDC</th>
+                <th>Fees</th>
+                <th>Settles</th>
+                <th>Requests</th>
+                <th>Tokens</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dailyMetrics.map((row) => (
+                <tr key={row.day}>
+                  <td className="font-mono text-xs text-muted">{row.day}</td>
+                  <td>{fmtNum(row.dau)}</td>
+                  <td>{fmtNum(row.newUsers)}</td>
+                  <td>{fmtUsd(row.settledUsdc)}</td>
+                  <td>{fmtUsd(row.feesUsdc)}</td>
+                  <td>{fmtNum(row.settles)}</td>
+                  <td>{fmtNum(row.requests)}</td>
+                  <td>{fmtCompact(row.tokens)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <ActivityFeed events={recent} />

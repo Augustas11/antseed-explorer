@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="OpenAI">
+  <rect width="48" height="48" rx="10" fill="currentColor" opacity=".12"/>
+  <path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M24 11v8m0 10v8m11.3-19.5-6.9 4m-8.7 5-6.9 4m22.5 0-6.9-4m-8.7-5-6.9-4"/>
+  <circle cx="24" cy="24" r="5" fill="currentColor"/>
+</svg>

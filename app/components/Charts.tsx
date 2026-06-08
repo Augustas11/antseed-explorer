@@ -160,3 +160,69 @@ export function ActivityChart({
     </ResponsiveContainer>
   );
 }
+
+export function EpochRevenueChart({
+  data,
+}: {
+  data: { label: string; volume: number; sessions: number }[];
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={data}>
+        <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} />
+        <XAxis dataKey="label" stroke={chartTheme.axis} fontSize={11} />
+        <YAxis stroke={chartTheme.axis} fontSize={11} />
+        <Tooltip
+          contentStyle={{
+            background: "#12141a",
+            border: "1px solid #1f2230",
+            borderRadius: 8,
+          }}
+        />
+        <Bar dataKey="volume" name="USDC settled" fill={chartTheme.bar2} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+export function AntsSupplyChart({
+  data,
+}: {
+  data: {
+    name: string;
+    minted?: number;
+    available?: number;
+    claimed?: number;
+    locked?: number;
+    unclaimed?: number;
+  }[];
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={data} layout="vertical" margin={{ left: 20, right: 20 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} />
+        <XAxis
+          type="number"
+          stroke={chartTheme.axis}
+          fontSize={11}
+          tickFormatter={(v) => fmtCompact(v)}
+        />
+        <YAxis type="category" dataKey="name" stroke={chartTheme.axis} fontSize={11} width={92} />
+        <Tooltip
+          contentStyle={{
+            background: "#12141a",
+            border: "1px solid #1f2230",
+            borderRadius: 8,
+          }}
+          formatter={(value: number, name: string) => [fmtCompact(value), name]}
+        />
+        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Bar stackId="supply" dataKey="minted" name="Minted" fill={chartTheme.bar} />
+        <Bar stackId="supply" dataKey="available" name="Available" fill={chartTheme.grid} />
+        <Bar stackId="claim" dataKey="claimed" name="Claimed liquid" fill={chartTheme.bar3} />
+        <Bar stackId="claim" dataKey="locked" name="Locked" fill={chartTheme.bar2} />
+        <Bar stackId="claim" dataKey="unclaimed" name="Unclaimed" fill={chartTheme.grid} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}

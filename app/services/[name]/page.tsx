@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getService } from "@/lib/queries";
 import { fmtNum, shortAddr } from "@/lib/format";
+import AgentSnippet from "../../components/AgentSnippet";
 import VerifiedLabel from "../../components/VerifiedLabel";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +32,21 @@ export default async function ServiceDetailPage({
   const input = decodeURIComponent(name);
   const service = await getService(input);
   if (!service) notFound();
+  const cheapestProvider = service.provider_details
+    .filter((provider) => provider.peer_id)
+    .sort((a, b) => {
+      const aCost =
+        (a.pricing?.inputUsdPerMillion ?? Number.POSITIVE_INFINITY) +
+        (a.pricing?.outputUsdPerMillion ?? Number.POSITIVE_INFINITY);
+      const bCost =
+        (b.pricing?.inputUsdPerMillion ?? Number.POSITIVE_INFINITY) +
+        (b.pricing?.outputUsdPerMillion ?? Number.POSITIVE_INFINITY);
+      return aCost - bCost;
+    })[0];
+  const snippetService =
+    cheapestProvider?.pricing_service ??
+    cheapestProvider?.advertised_as[0] ??
+    service.name;
 
   return (
     <div className="space-y-6">
@@ -80,6 +96,11 @@ export default async function ServiceDetailPage({
           </div>
         </div>
       </section>
+
+      <AgentSnippet
+        peerId={cheapestProvider?.peer_id}
+        service={snippetService}
+      />
 
       <section className="panel">
         <div className="px-4 py-3 border-b border-edge">
