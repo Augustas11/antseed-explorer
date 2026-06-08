@@ -2225,7 +2225,7 @@ export interface AntsOverview {
   treasuryUsdc: number;
 }
 
-export async function getAntsOverview(): Promise<AntsOverview> {
+async function computeAntsOverview(): Promise<AntsOverview> {
   const maxSupplyAnts = 1_040_000_000;
   const rows = await db.execute<{
     claimed_ants: number | string | null;
@@ -2273,3 +2273,8 @@ export async function getAntsOverview(): Promise<AntsOverview> {
     treasuryUsdc: Number(row?.treasury_usdc ?? 0),
   };
 }
+
+export const getAntsOverview = createTtlCache(
+  computeAntsOverview,
+  HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
+).get;
