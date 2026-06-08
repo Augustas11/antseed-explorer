@@ -54,6 +54,7 @@ export {
 } from "./heroSnapshot";
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const ADDRESS_PREFIX_RE = /^0x[0-9a-f]{4,40}$/;
 const cache: typeof reactCache =
   typeof reactCache === "function" ? reactCache : (((fn: any) => fn) as typeof reactCache);
 const CHANNEL_EVENT_TYPES = [
@@ -1898,6 +1899,49 @@ export async function lookupByProviderName(
     LIMIT 1
   `);
   return rows.rows[0]?.address ?? null;
+}
+
+export interface AddressPrefixMatchRow extends Record<string, unknown> {
+  address: string;
+}
+
+function cleanAddressPrefix(prefix: string): string | null {
+  const normalized = prefix.toLowerCase();
+  return ADDRESS_PREFIX_RE.test(normalized) ? normalized : null;
+}
+
+export async function searchBuyersByPrefix(
+  prefix: string,
+  limit = 8,
+): Promise<AddressPrefixMatchRow[]> {
+  const normalized = cleanAddressPrefix(prefix);
+  if (!normalized) return [];
+  const safeLimit = cleanPositiveInt(limit, 8, 20);
+  const rows = await db.execute<AddressPrefixMatchRow>(sql`
+    SELECT address
+    FROM buyer_profiles
+    WHERE address LIKE ${`${normalized}%`}
+    ORDER BY trust_score DESC, address ASC
+    LIMIT ${rawPositiveInteger(safeLimit, "buyer prefix limit")}
+  `);
+  return rows.rows;
+}
+
+export async function searchSellersByPrefix(
+  prefix: string,
+  limit = 8,
+): Promise<AddressPrefixMatchRow[]> {
+  const normalized = cleanAddressPrefix(prefix);
+  if (!normalized) return [];
+  const safeLimit = cleanPositiveInt(limit, 8, 20);
+  const rows = await db.execute<AddressPrefixMatchRow>(sql`
+    SELECT address
+    FROM provider_directory
+    WHERE address LIKE ${`${normalized}%`}
+    ORDER BY trust_score DESC NULLS LAST, updated_at DESC NULLS LAST, address ASC
+    LIMIT ${rawPositiveInteger(safeLimit, "seller prefix limit")}
+  `);
+  return rows.rows;
 }
 
 // ---------------------------------------------------------------------------

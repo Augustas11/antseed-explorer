@@ -5,6 +5,8 @@ import {
   listServices,
   lookupAddress,
   lookupByProviderName,
+  searchBuyersByPrefix,
+  searchSellersByPrefix,
 } from "./queries";
 import { shortAddr } from "./format";
 
@@ -66,7 +68,7 @@ async function txMatches(q: string): Promise<SearchMatch[]> {
   ];
 }
 
-async function addressMatches(q: string): Promise<SearchMatch[]> {
+async function addressMatches(q: string, limit: number): Promise<SearchMatch[]> {
   const normalized = q.toLowerCase();
   if (isExplorerAddress(normalized)) {
     const result = await lookupAddress(normalized);
@@ -82,40 +84,26 @@ async function addressMatches(q: string): Promise<SearchMatch[]> {
     ];
   }
 
-  if (!/^0x[0-9a-f]{4,40}$/i.test(normalized)) return [];
-  const like = `${normalized}%`;
+  const prefixMatch = /^0x([0-9a-f]{0,40})$/i.exec(normalized);
+  if (!prefixMatch || prefixMatch[1].length < 4) return [];
   const [buyers, sellers] = await Promise.all([
-    db.execute<{ address: string }>(sql`
-      SELECT address
-      FROM buyer_profiles
-      WHERE address LIKE ${like}
-      ORDER BY trust_score DESC
-      LIMIT 4
-    `),
-    db.execute<{ seller_address: string }>(sql`
-      SELECT seller_address
-      FROM events
-      WHERE seller_address LIKE ${like}
-        AND seller_address IS NOT NULL
-      GROUP BY seller_address
-      ORDER BY COUNT(*) DESC
-      LIMIT 4
-    `),
+    searchBuyersByPrefix(normalized, limit),
+    searchSellersByPrefix(normalized, limit),
   ]);
 
   return [
-    ...buyers.rows.map((row): SearchMatch => ({
+    ...buyers.map((row): SearchMatch => ({
       type: "buyer",
       label: shortAddr(row.address),
       detail: "Buyer address",
       href: `/buyers/${row.address}`,
       exact: false,
     })),
-    ...sellers.rows.map((row): SearchMatch => ({
+    ...sellers.map((row): SearchMatch => ({
       type: "seller",
-      label: shortAddr(row.seller_address),
+      label: shortAddr(row.address),
       detail: "Seller address",
-      href: `/sellers/${row.seller_address}`,
+      href: `/sellers/${row.address}`,
       exact: false,
     })),
   ];
@@ -168,7 +156,7 @@ export async function resolveSearchMatches(
   if (!q) return [];
   const normalized = q.toLowerCase();
   const matches = await Promise.all([
-    addressMatches(normalized),
+    addressMatches(normalized, limit),
     channelMatches(normalized),
     txMatches(normalized),
     providerNameMatch(q),
