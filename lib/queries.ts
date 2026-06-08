@@ -1010,6 +1010,67 @@ export async function getDailyMetricsTable(days: number): Promise<DailyMetricsRo
   }));
 }
 
+export interface BuyerFunnelStage {
+  key: "depositors" | "first_session" | "repeat_session" | "active_7d";
+  label: string;
+  count: number;
+  dropoffPct: number | null;
+}
+
+export async function getBuyerFunnel(): Promise<BuyerFunnelStage[]> {
+  const rows = await db.execute<{
+    depositors: number;
+    first_session: number;
+    repeat_session: number;
+    active_7d: number;
+  }>(sql`
+    WITH depositors AS (
+      SELECT DISTINCT buyer_address AS buyer
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+    ),
+    settled AS (
+      SELECT
+        buyer_address AS buyer,
+        COUNT(*)::int AS sessions,
+        MIN(timestamp)::bigint AS first_ts,
+        MAX(timestamp)::bigint AS last_ts
+      FROM events
+      WHERE event_type = 'settled'
+        AND buyer_address IS NOT NULL
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+      GROUP BY buyer_address
+    )
+    SELECT
+      (SELECT COUNT(*)::int FROM depositors) AS depositors,
+      (SELECT COUNT(*)::int FROM settled WHERE sessions >= 1) AS first_session,
+      (SELECT COUNT(*)::int FROM settled WHERE sessions >= 2) AS repeat_session,
+      (SELECT COUNT(*)::int FROM settled WHERE sessions >= 2 AND last_ts - first_ts >= 7 * 86400) AS active_7d
+  `);
+  const row = rows.rows[0] ?? {
+    depositors: 0,
+    first_session: 0,
+    repeat_session: 0,
+    active_7d: 0,
+  };
+  const counts = [
+    { key: "depositors" as const, label: "Depositors", count: Number(row.depositors ?? 0) },
+    { key: "first_session" as const, label: "First session", count: Number(row.first_session ?? 0) },
+    { key: "repeat_session" as const, label: "≥2 sessions", count: Number(row.repeat_session ?? 0) },
+    { key: "active_7d" as const, label: "≥7-day active", count: Number(row.active_7d ?? 0) },
+  ];
+  return counts.map((stage, index) => {
+    if (index === 0) return { ...stage, dropoffPct: null };
+    const previous = counts[index - 1]?.count ?? 0;
+    return {
+      ...stage,
+      dropoffPct: previous > 0 ? ((previous - stage.count) / previous) * 100 : null,
+    };
+  });
+}
+
 export async function getProfileDrift() {
   const rows = await db.execute<{ events_usdc: number; profiles_usdc: number }>(sql`
     SELECT
