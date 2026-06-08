@@ -523,7 +523,7 @@ function truncateRawLog(log: any, maxBytes: number): string {
 }
 
 // ============================================================================
-// Profile recompute — single SQL pass per buyer.
+// Buyer aggregate recompute — single SQL pass per funded buyer wallet.
 // ============================================================================
 
 // Cap on in-flight recomputeBuyer() calls. Each call issues Neon HTTP queries,
@@ -582,23 +582,23 @@ export async function recomputeBuyer(address: string) {
   const a = aggResult.rows[0];
   if (!a) return;
 
-  const profile = {
+  const aggregate = {
     address: addr,
     totalSessions: Number(a.settled_sessions) || 0,
     totalSettledUsdc: Number(a.total_settled) || 0,
     uniqueSellers: Number(a.unique_sellers) || 0,
     ghostSessions: Number(a.ghost_sessions) || 0,
   };
-  const score = calculateTrustScore(profile);
+  const score = calculateTrustScore(aggregate);
 
   await db
     .insert(buyerProfiles)
     .values({
       address: addr,
-      totalSessions: profile.totalSessions,
-      totalSettledUsdc: profile.totalSettledUsdc,
-      uniqueSellers: profile.uniqueSellers,
-      ghostSessions: profile.ghostSessions,
+      totalSessions: aggregate.totalSessions,
+      totalSettledUsdc: aggregate.totalSettledUsdc,
+      uniqueSellers: aggregate.uniqueSellers,
+      ghostSessions: aggregate.ghostSessions,
       firstSeenBlock: a.first_block ? Number(a.first_block) : null,
       lastSeenBlock: a.last_block ? Number(a.last_block) : null,
       firstSeenTs: a.first_ts ? Number(a.first_ts) : null,
@@ -610,10 +610,10 @@ export async function recomputeBuyer(address: string) {
     .onConflictDoUpdate({
       target: buyerProfiles.address,
       set: {
-        totalSessions: profile.totalSessions,
-        totalSettledUsdc: profile.totalSettledUsdc,
-        uniqueSellers: profile.uniqueSellers,
-        ghostSessions: profile.ghostSessions,
+        totalSessions: aggregate.totalSessions,
+        totalSettledUsdc: aggregate.totalSettledUsdc,
+        uniqueSellers: aggregate.uniqueSellers,
+        ghostSessions: aggregate.ghostSessions,
         firstSeenBlock: a.first_block ? Number(a.first_block) : null,
         lastSeenBlock: a.last_block ? Number(a.last_block) : null,
         firstSeenTs: a.first_ts ? Number(a.first_ts) : null,
@@ -625,7 +625,7 @@ export async function recomputeBuyer(address: string) {
     });
 }
 
-// Self-healing: if events sum != profiles sum, recompute every buyer.
+// Self-healing: if events sum != aggregate-cache sum, recompute every buyer.
 // Tolerance is $0.01 (1 cent) — JS double summation of many USDC values
 // can drift well above 0.0001, which used to fire this on every pass and
 // trigger a full table recompute for no real divergence.
@@ -648,9 +648,15 @@ export async function reconcileDrift(opts: { deadlineMs?: number } = {}) {
 
   if (!inProgress) {
     const r = await db.execute<{ delta: number }>(sql`
+      WITH depositors AS (
+        SELECT DISTINCT buyer_address AS address
+        FROM events
+        WHERE event_type = 'deposited'
+          AND buyer_address IS NOT NULL
+      )
       SELECT
-        ((SELECT COALESCE(SUM(delta_usdc),0) FROM events WHERE event_type='settled')
-         - (SELECT COALESCE(SUM(total_settled_usdc),0) FROM buyer_profiles))::float AS delta
+        ((SELECT COALESCE(SUM(e.delta_usdc),0) FROM events e JOIN depositors d ON d.address = e.buyer_address WHERE e.event_type='settled')
+         - (SELECT COALESCE(SUM(bp.total_settled_usdc),0) FROM buyer_profiles bp JOIN depositors d ON d.address = bp.address))::float AS delta
     `);
     if (Math.abs(r.rows[0]?.delta ?? 0) < 0.01) return;
   }
@@ -1207,7 +1213,7 @@ export async function syncAntsToken(
 // ============================================================================
 // AntseedEmissionsV2.EmissionsClaimed — both buyer and seller claim flows
 // fire this. Stored as event_type='ants_claim' rows in the existing events
-// table so the activity feed and per-address profiles surface them without
+// table so the activity feed and per-address detail pages surface them without
 // any schema churn.
 // ============================================================================
 
@@ -1638,8 +1644,8 @@ export async function syncAntseedDeposits(
           .returning({ id: eventsTbl.id });
         recordsAdded += result.length;
 
-        // Ensure every depositor has a buyer_profile row so they appear on
-        // /buyers even if they never opened a channel. Profiles land with 0
+        // Ensure every depositor has an aggregate-cache row so they appear on
+        // /buyers even if they never opened a channel. Rows land with 0
         // sessions / $0 settled and sort to the bottom of the qualified view.
         const depositors = [
           ...new Set(

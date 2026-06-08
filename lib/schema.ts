@@ -52,6 +52,7 @@ export const events = pgTable(
     ixChannel: index("events_channel_idx").on(t.channelId),
     ixTimestamp: index("events_timestamp_idx").on(t.timestamp),
     ixTypeTs: index("events_type_ts_idx").on(t.eventType, t.timestamp),
+    ixTypeBuyer: index("events_type_buyer_idx").on(t.eventType, t.buyerAddress),
   }),
 );
 

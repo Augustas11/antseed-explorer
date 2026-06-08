@@ -5,7 +5,7 @@ import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 
 export const runtime = "nodejs";
 export const revalidate = 3600;
-export const alt = "Buyer profile — AntSeed Demand Explorer";
+export const alt = "Buyer wallet — AntSeed Demand Explorer";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -129,7 +129,7 @@ async function renderBuyerOG(address: string) {
           <div style={{ fontSize: 26, color: "#8a8f9c" }}>Demand Explorer</div>
           <div style={{ flexGrow: 1 }} />
           <div style={{ fontSize: 18, color: "#8a8f9c" }}>
-            BUYER PROFILE
+            BUYER WALLET
           </div>
         </div>
 

@@ -63,7 +63,7 @@ The MCP wraps the following AntFeed Explorer endpoints:
 - `GET /api/channels` — on-chain payment channel records. Backs `get_session_status`.
 - `GET /api/stats` — network-wide aggregates (revenue, sessions, drift). Backs `network_stats`.
 - `GET /api/gas` — current Base gas price. Backs `network_stats`.
-- `GET /api/buyers/{address}` + `GET /api/score/{address}` — buyer profile, session history, top sellers, and trust-score breakdown. Backs `get_buyer`.
+- `GET /api/buyers/{address}` + `GET /api/score/{address}` — buyer detail, session history, top sellers, and trust-score breakdown. Backs `get_buyer`.
 - `GET /api/metrics/dau` — daily active users, by UTC day. Backs `dau_trend` and the DAU field in `network_stats`.
 
 A few small client-side adaptations remain:

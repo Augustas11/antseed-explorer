@@ -1,7 +1,6 @@
 import { db, getState, setState } from "./db";
 import {
   events as eventsTbl,
-  buyerProfiles,
   providerDirectory,
   indexerState,
 } from "./schema";
@@ -134,18 +133,18 @@ export interface BuyerRow {
   qualified: number; // 0/1 to keep the UI happy
 }
 
-function shapeBuyer(r: typeof buyerProfiles.$inferSelect): BuyerRow {
+function shapeBuyer(r: Record<string, any>): BuyerRow {
   return {
     address: r.address,
-    total_sessions: r.totalSessions ?? 0,
-    total_settled_usdc: r.totalSettledUsdc ?? 0,
-    unique_sellers: r.uniqueSellers ?? 0,
-    ghost_sessions: r.ghostSessions ?? 0,
-    first_seen_block: r.firstSeenBlock,
-    last_seen_block: r.lastSeenBlock,
-    first_seen_ts: r.firstSeenTs,
-    last_seen_ts: r.lastSeenTs,
-    trust_score: r.trustScore ?? 0,
+    total_sessions: Number(r.total_sessions ?? 0),
+    total_settled_usdc: Number(r.total_settled_usdc ?? 0),
+    unique_sellers: Number(r.unique_sellers ?? 0),
+    ghost_sessions: Number(r.ghost_sessions ?? 0),
+    first_seen_block: r.first_seen_block != null ? Number(r.first_seen_block) : null,
+    last_seen_block: r.last_seen_block != null ? Number(r.last_seen_block) : null,
+    first_seen_ts: r.first_seen_ts != null ? Number(r.first_seen_ts) : null,
+    last_seen_ts: r.last_seen_ts != null ? Number(r.last_seen_ts) : null,
+    trust_score: Number(r.trust_score ?? 0),
     qualified: r.qualified ? 1 : 0,
   };
 }
@@ -167,7 +166,7 @@ export async function listBuyers(opts: {
     : opts.sort === "unique_sellers" ? "unique_sellers DESC"
     : opts.sort === "ghosts" ? "ghost_sessions DESC"
     : "trust_score DESC";
-  const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
+  const qualClause = opts.qualifiedOnly ? "AND COALESCE(bp.qualified, false) = true" : "";
   const allowedOrderCols = [
     "total_settled_usdc DESC",
     "total_sessions DESC",
@@ -181,29 +180,39 @@ export async function listBuyers(opts: {
   // rows for specific (sort, limit) combinations on Vercel cold starts.
   // No user input is interpolated; all values are sanitized integers / fixed enum strings.
   const r = await db.execute<any>(sql`
-    SELECT * FROM buyer_profiles
-    WHERE trust_score >= ${rawFiniteNumber(minScore, "buyer min score", { min: 0, max: 100 })}
-    ${rawSqlFragment(qualClause, ["", "AND qualified = true"], "buyer qualification clause")}
+    WITH depositors AS (
+      SELECT
+        buyer_address AS address,
+        MIN(block_number)::bigint AS first_seen_block,
+        MAX(block_number)::bigint AS last_seen_block,
+        MIN(timestamp)::bigint AS first_seen_ts,
+        MAX(timestamp)::bigint AS last_seen_ts
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+      GROUP BY buyer_address
+    )
+    SELECT
+      d.address,
+      COALESCE(bp.total_sessions, 0)::int AS total_sessions,
+      COALESCE(bp.total_settled_usdc, 0)::float AS total_settled_usdc,
+      COALESCE(bp.unique_sellers, 0)::int AS unique_sellers,
+      COALESCE(bp.ghost_sessions, 0)::int AS ghost_sessions,
+      COALESCE(bp.first_seen_block, d.first_seen_block)::bigint AS first_seen_block,
+      COALESCE(bp.last_seen_block, d.last_seen_block)::bigint AS last_seen_block,
+      COALESCE(bp.first_seen_ts, d.first_seen_ts)::bigint AS first_seen_ts,
+      COALESCE(bp.last_seen_ts, d.last_seen_ts)::bigint AS last_seen_ts,
+      COALESCE(bp.trust_score, 0)::float AS trust_score,
+      COALESCE(bp.qualified, false) AS qualified
+    FROM depositors d
+    LEFT JOIN buyer_profiles bp ON bp.address = d.address
+    WHERE COALESCE(bp.trust_score, 0) >= ${rawFiniteNumber(minScore, "buyer min score", { min: 0, max: 100 })}
+    ${rawSqlFragment(qualClause, ["", "AND COALESCE(bp.qualified, false) = true"], "buyer qualification clause")}
     ORDER BY ${rawSqlFragment(orderCol, allowedOrderCols, "buyer order clause")}
     LIMIT ${rawPositiveInteger(limit, "buyer limit")}
     OFFSET ${rawNonNegativeInteger(offset, "buyer offset")}
   `);
-  return r.rows.map((row: any) =>
-    shapeBuyer({
-      address: row.address,
-      totalSessions: Number(row.total_sessions ?? 0),
-      totalSettledUsdc: Number(row.total_settled_usdc ?? 0),
-      uniqueSellers: Number(row.unique_sellers ?? 0),
-      ghostSessions: Number(row.ghost_sessions ?? 0),
-      firstSeenBlock: row.first_seen_block != null ? Number(row.first_seen_block) : null,
-      lastSeenBlock: row.last_seen_block != null ? Number(row.last_seen_block) : null,
-      firstSeenTs: row.first_seen_ts != null ? Number(row.first_seen_ts) : null,
-      lastSeenTs: row.last_seen_ts != null ? Number(row.last_seen_ts) : null,
-      trustScore: Number(row.trust_score ?? 0),
-      qualified: !!row.qualified,
-      updatedAt: row.updated_at != null ? Number(row.updated_at) : null,
-    })
-  );
+  return r.rows.map((row: any) => shapeBuyer(row));
 }
 
 export async function countBuyers(opts: {
@@ -211,11 +220,19 @@ export async function countBuyers(opts: {
   minScore?: number;
 } = {}): Promise<number> {
   const minScore = cleanScore(opts.minScore);
-  const qualClause = opts.qualifiedOnly ? "AND qualified = true" : "";
+  const qualClause = opts.qualifiedOnly ? "AND COALESCE(bp.qualified, false) = true" : "";
   const r = await db.execute<{ n: number }>(sql`
-    SELECT COUNT(*)::int AS n FROM buyer_profiles
-    WHERE trust_score >= ${rawFiniteNumber(minScore, "buyer count min score", { min: 0, max: 100 })}
-    ${rawSqlFragment(qualClause, ["", "AND qualified = true"], "buyer count qualification clause")}
+    WITH depositors AS (
+      SELECT DISTINCT buyer_address AS address
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+    )
+    SELECT COUNT(*)::int AS n
+    FROM depositors d
+    LEFT JOIN buyer_profiles bp ON bp.address = d.address
+    WHERE COALESCE(bp.trust_score, 0) >= ${rawFiniteNumber(minScore, "buyer count min score", { min: 0, max: 100 })}
+    ${rawSqlFragment(qualClause, ["", "AND COALESCE(bp.qualified, false) = true"], "buyer count qualification clause")}
   `);
   return Number(r.rows[0]?.n ?? 0);
 }
@@ -223,24 +240,37 @@ export async function countBuyers(opts: {
 async function getBuyerUncached(address: string): Promise<BuyerRow | null> {
   if (!isExplorerAddress(address)) return null;
   const r = await db.execute<any>(sql`
-    SELECT * FROM buyer_profiles WHERE address = ${address.toLowerCase()} LIMIT 1
+    WITH depositor AS (
+      SELECT
+        buyer_address AS address,
+        MIN(block_number)::bigint AS first_seen_block,
+        MAX(block_number)::bigint AS last_seen_block,
+        MIN(timestamp)::bigint AS first_seen_ts,
+        MAX(timestamp)::bigint AS last_seen_ts
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address = ${address.toLowerCase()}
+      GROUP BY buyer_address
+    )
+    SELECT
+      d.address,
+      COALESCE(bp.total_sessions, 0)::int AS total_sessions,
+      COALESCE(bp.total_settled_usdc, 0)::float AS total_settled_usdc,
+      COALESCE(bp.unique_sellers, 0)::int AS unique_sellers,
+      COALESCE(bp.ghost_sessions, 0)::int AS ghost_sessions,
+      COALESCE(bp.first_seen_block, d.first_seen_block)::bigint AS first_seen_block,
+      COALESCE(bp.last_seen_block, d.last_seen_block)::bigint AS last_seen_block,
+      COALESCE(bp.first_seen_ts, d.first_seen_ts)::bigint AS first_seen_ts,
+      COALESCE(bp.last_seen_ts, d.last_seen_ts)::bigint AS last_seen_ts,
+      COALESCE(bp.trust_score, 0)::float AS trust_score,
+      COALESCE(bp.qualified, false) AS qualified
+    FROM depositor d
+    LEFT JOIN buyer_profiles bp ON bp.address = d.address
+    LIMIT 1
   `);
   const row = r.rows[0];
   if (!row) return null;
-  return shapeBuyer({
-    address: row.address,
-    totalSessions: Number(row.total_sessions ?? 0),
-    totalSettledUsdc: Number(row.total_settled_usdc ?? 0),
-    uniqueSellers: Number(row.unique_sellers ?? 0),
-    ghostSessions: Number(row.ghost_sessions ?? 0),
-    firstSeenBlock: row.first_seen_block != null ? Number(row.first_seen_block) : null,
-    lastSeenBlock: row.last_seen_block != null ? Number(row.last_seen_block) : null,
-    firstSeenTs: row.first_seen_ts != null ? Number(row.first_seen_ts) : null,
-    lastSeenTs: row.last_seen_ts != null ? Number(row.last_seen_ts) : null,
-    trustScore: Number(row.trust_score ?? 0),
-    qualified: !!row.qualified,
-    updatedAt: row.updated_at != null ? Number(row.updated_at) : null,
-  });
+  return shapeBuyer(row);
 }
 
 export const getBuyer = cache(getBuyerUncached);
@@ -283,7 +313,7 @@ export async function getBuyerMonthlyVolume(address: string) {
     volume: number;
   }>(sql`
     SELECT to_char(to_timestamp(timestamp::float8), 'YYYY-MM') AS month,
-           COUNT(*)::int AS sessions,
+           COUNT(DISTINCT channel_id)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS volume
     FROM events
     WHERE buyer_address = ${address.toLowerCase()}
@@ -304,7 +334,7 @@ export async function getBuyerDailyVolume(address: string, days = 30) {
     volume: number;
   }>(sql`
     SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD') AS bucket,
-           COUNT(*)::int AS sessions,
+           COUNT(DISTINCT channel_id)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS volume
     FROM events
     WHERE buyer_address = ${address.toLowerCase()}
@@ -326,7 +356,7 @@ export async function getBuyerHourlyVolume(address: string, hours = 24) {
     volume: number;
   }>(sql`
     SELECT to_char(to_timestamp(timestamp), 'YYYY-MM-DD HH24:00') AS bucket,
-           COUNT(*)::int AS sessions,
+           COUNT(DISTINCT channel_id)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS volume
     FROM events
     WHERE buyer_address = ${address.toLowerCase()}
@@ -356,7 +386,7 @@ export async function getBuyerSellerSummary(
   const safeLimit = cleanPositiveInt(limit, 10, 100);
   const rows = await db.execute<BuyerSellerSummary>(sql`
     SELECT seller_address,
-           COUNT(*)::int AS sessions,
+           COUNT(DISTINCT channel_id)::int AS sessions,
            COALESCE(SUM(delta_usdc),0)::float AS total_usdc,
            COALESCE(SUM(input_tokens),0)::bigint AS total_input_tokens,
            COALESCE(SUM(output_tokens),0)::bigint AS total_output_tokens,
@@ -395,12 +425,22 @@ export async function getNetworkStats() {
     last_indexed_block_ants: string | null;
     last_indexed_block_emissions: string | null;
   }>(sql`
+    WITH depositors AS (
+      SELECT DISTINCT buyer_address AS address
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+    )
     SELECT
-      (SELECT COUNT(*)::int FROM buyer_profiles) AS total_buyers,
-      (SELECT COUNT(*)::int FROM buyer_profiles WHERE qualified = true) AS qualified_buyers,
-      (SELECT COALESCE(SUM(total_settled_usdc),0)::float FROM buyer_profiles) AS total_volume,
-      (SELECT COALESCE(SUM(total_sessions),0)::int FROM buyer_profiles) AS total_sessions,
-      (SELECT COALESCE(SUM(ghost_sessions),0)::int FROM buyer_profiles) AS total_ghosts,
+      (SELECT COUNT(*)::int FROM depositors) AS total_buyers,
+      (SELECT COUNT(*)::int FROM depositors d JOIN buyer_profiles bp ON bp.address = d.address WHERE bp.qualified = true) AS qualified_buyers,
+      (SELECT COALESCE(SUM(e.delta_usdc),0)::float FROM events e JOIN depositors d ON d.address = e.buyer_address WHERE e.event_type = 'settled') AS total_volume,
+      (SELECT COUNT(DISTINCT e.channel_id)::int FROM events e JOIN depositors d ON d.address = e.buyer_address WHERE e.event_type = 'settled') AS total_sessions,
+      (SELECT COUNT(DISTINCT e.channel_id)::int FROM events e JOIN depositors d ON d.address = e.buyer_address WHERE e.event_type='closed'
+         AND COALESCE(e.settled_amount_usdc,0) = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM events s WHERE s.channel_id = e.channel_id AND s.event_type='settled'
+         )) AS total_ghosts,
       (SELECT COUNT(*)::int FROM events WHERE event_type = 'metadata_recorded') AS metadata_records,
       (SELECT COUNT(*)::int FROM events WHERE event_type = 'ants_claim') AS ants_claims,
       (SELECT COUNT(*)::int FROM ants_holders WHERE balance + staked_balance > 0) AS ants_holders_nonzero,
@@ -1078,16 +1118,17 @@ async function computeBuyerFunnel(): Promise<BuyerFunnelStage[]> {
     ),
     settled AS (
       SELECT
-        buyer_address AS buyer,
-        COUNT(*)::int AS sessions,
-        MIN(timestamp)::bigint AS first_ts,
-        MAX(timestamp)::bigint AS last_ts
-      FROM events
-      WHERE event_type = 'settled'
-        AND buyer_address IS NOT NULL
-        AND timestamp IS NOT NULL
-        AND timestamp > 0
-      GROUP BY buyer_address
+        e.buyer_address AS buyer,
+        COUNT(DISTINCT e.channel_id)::int AS sessions,
+        MIN(e.timestamp)::bigint AS first_ts,
+        MAX(e.timestamp)::bigint AS last_ts
+      FROM events e
+      JOIN depositors d ON d.buyer = e.buyer_address
+      WHERE e.event_type = 'settled'
+        AND e.buyer_address IS NOT NULL
+        AND e.timestamp IS NOT NULL
+        AND e.timestamp > 0
+      GROUP BY e.buyer_address
     )
     SELECT
       (SELECT COUNT(*)::int FROM depositors) AS depositors,
@@ -1122,19 +1163,25 @@ export const getBuyerFunnel = createTtlCache(
   HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
 ).get;
 
-export async function getProfileDrift() {
-  const rows = await db.execute<{ events_usdc: number; profiles_usdc: number }>(sql`
+export async function getAggregateDrift() {
+  const rows = await db.execute<{ events_usdc: number; aggregates_usdc: number }>(sql`
+    WITH depositors AS (
+      SELECT DISTINCT buyer_address AS address
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+    )
     SELECT
-      (SELECT COALESCE(SUM(delta_usdc),0)::float FROM events WHERE event_type='settled') AS events_usdc,
-      (SELECT COALESCE(SUM(total_settled_usdc),0)::float FROM buyer_profiles) AS profiles_usdc
+      (SELECT COALESCE(SUM(e.delta_usdc),0)::float FROM events e JOIN depositors d ON d.address = e.buyer_address WHERE e.event_type='settled') AS events_usdc,
+      (SELECT COALESCE(SUM(bp.total_settled_usdc),0)::float FROM buyer_profiles bp JOIN depositors d ON d.address = bp.address) AS aggregates_usdc
   `);
   const r = rows.rows[0];
   const ev = Number(r?.events_usdc ?? 0);
-  const pr = Number(r?.profiles_usdc ?? 0);
+  const ag = Number(r?.aggregates_usdc ?? 0);
   return {
     eventsUsdc: ev,
-    profilesUsdc: pr,
-    driftUsdc: +(ev - pr).toFixed(6),
+    aggregatesUsdc: ag,
+    driftUsdc: +(ev - ag).toFixed(6),
   };
 }
 
@@ -1185,7 +1232,7 @@ async function lookupProviderUncached(
 export const lookupProvider = cache(lookupProviderUncached);
 
 // Batch helper: lookup many addresses at once (avoids N+1 queries on the
-// buyer profile page).
+// buyer detail page).
 export async function lookupProviders(
   addresses: (string | null | undefined)[],
 ): Promise<Map<string, ProviderRow>> {
@@ -1242,7 +1289,11 @@ export async function lookupAddress(
   const normalized = addr.toLowerCase();
 
   const buyerR = await db.execute<{ address: string }>(sql`
-    SELECT address FROM buyer_profiles WHERE address = ${normalized} LIMIT 1
+    SELECT buyer_address AS address
+    FROM events
+    WHERE event_type = 'deposited'
+      AND buyer_address = ${normalized}
+    LIMIT 1
   `);
   if (buyerR.rows.length > 0) {
     return { type: "buyer", address: normalized };
@@ -1987,10 +2038,15 @@ export async function searchBuyersByPrefix(
   if (!normalized) return [];
   const safeLimit = cleanPositiveInt(limit, 8, 20);
   const rows = await db.execute<AddressPrefixMatchRow>(sql`
-    SELECT address
-    FROM buyer_profiles
-    WHERE address LIKE ${`${normalized}%`}
-    ORDER BY trust_score DESC, address ASC
+    SELECT d.address
+    FROM (
+      SELECT DISTINCT buyer_address AS address
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address LIKE ${`${normalized}%`}
+    ) d
+    LEFT JOIN buyer_profiles bp ON bp.address = d.address
+    ORDER BY bp.trust_score DESC NULLS LAST, d.address ASC
     LIMIT ${rawPositiveInteger(safeLimit, "buyer prefix limit")}
   `);
   return rows.rows;
@@ -2329,7 +2385,12 @@ export async function listHolders(opts: {
       hp.last_seen_block,
       hp.updated_at
     FROM holder_page hp
-    LEFT JOIN buyer_profiles bp ON bp.address = hp.address
+    LEFT JOIN (
+      SELECT DISTINCT buyer_address AS address
+      FROM events
+      WHERE event_type = 'deposited'
+        AND buyer_address IS NOT NULL
+    ) bp ON bp.address = hp.address
     LEFT JOIN seller_matches sm ON sm.address = hp.address
     ORDER BY hp.total_balance DESC
   `);

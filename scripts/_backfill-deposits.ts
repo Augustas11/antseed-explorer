@@ -17,6 +17,7 @@ import { createPublicClient, http, type Log } from "viem";
 import { base } from "viem/chains";
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
+import { recomputeBuyers } from "../lib/indexer";
 import { events as eventsTbl } from "../lib/schema";
 import {
   depositsAbi,
@@ -182,6 +183,17 @@ async function main() {
         })
         .returning({ id: eventsTbl.id });
       totalAdded += result.length;
+
+      const depositors = [
+        ...new Set(
+          rows
+            .filter((row) => row.eventType === "deposited" && row.buyerAddress)
+            .map((row) => row.buyerAddress as string),
+        ),
+      ];
+      if (depositors.length > 0) {
+        await recomputeBuyers(depositors);
+      }
     }
 
     if (batches % 10 === 0 || logs.length > 0) {

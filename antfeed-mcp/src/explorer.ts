@@ -1,5 +1,5 @@
 import {
-  BuyerProfileResponseZ,
+  BuyerDetailResponseZ,
   BuyerScoreResponseZ,
   BuyersPageZ,
   ChannelRowZ,
@@ -12,7 +12,7 @@ import {
   SellersPageZ,
 } from "./schemas.js";
 import type {
-  BuyerProfileResponse,
+  BuyerDetailResponse,
   BuyerScoreResponse,
   DauDayRow,
   DirectoryProviderRow,
@@ -315,16 +315,16 @@ export class ExplorerClient {
     return parsed.data;
   }
 
-  async getBuyerProfile(address: string): Promise<BuyerProfileResponse | null> {
+  async getBuyerDetail(address: string): Promise<BuyerDetailResponse | null> {
     const url = this.buildUrl(`/api/buyers/${address.toLowerCase()}`, {});
     const res = await this.fetchRaw(url);
     if (res.status === 404) return null;
     const raw = await this.consumeJson(res, url);
-    const parsed = BuyerProfileResponseZ.safeParse(raw);
+    const parsed = BuyerDetailResponseZ.safeParse(raw);
     if (!parsed.success) {
       throw new ExplorerError("EXPLORER_BAD_RESPONSE", "Explorer /api/buyers/{address} response did not match expected shape");
     }
-    return parsed.data as BuyerProfileResponse;
+    return parsed.data as BuyerDetailResponse;
   }
 
   async getBuyerScore(address: string): Promise<BuyerScoreResponse | null> {

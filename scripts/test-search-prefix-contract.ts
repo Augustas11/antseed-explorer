@@ -30,8 +30,13 @@ const addressMatchesSource = sourceBlock(
 
 assert.match(
   buyerPrefixSource,
-  /FROM\s+buyer_profiles/,
-  "buyer prefix autocomplete must read buyer_profiles",
+  /FROM\s+events/,
+  "buyer prefix autocomplete must read depositor events",
+);
+assert.match(
+  buyerPrefixSource,
+  /event_type\s*=\s*'deposited'/,
+  "buyer prefix autocomplete must only expose funded buyer wallets",
 );
 assert.match(
   buyerPrefixSource,

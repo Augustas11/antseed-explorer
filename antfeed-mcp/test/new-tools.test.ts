@@ -75,7 +75,7 @@ describe("network_stats tool", () => {
     totalSessions: 500,
     totalGhosts: 5,
     lastSyncTs: 1_700_000_000,
-    drift: { eventsUsdc: 12345.67, profilesUsdc: 12345.67, driftUsdc: 0 },
+    drift: { eventsUsdc: 12345.67, aggregatesUsdc: 12345.67, driftUsdc: 0 },
   };
   const GAS = { gwei: 0.4231 };
   const DAU_TODAY = [
@@ -170,8 +170,8 @@ describe("network_stats tool", () => {
 });
 
 describe("get_buyer tool", () => {
-  const PROFILE = {
-    profile: {
+  const BUYER_DETAIL = {
+    buyer: {
       address: ADDR_A.toLowerCase(),
       total_sessions: 12,
       total_settled_usdc: 99.5,
@@ -226,7 +226,7 @@ describe("get_buyer tool", () => {
 
   it("merges /api/buyers + /api/score and trims to 20 recent sessions", async () => {
     const fetchImpl = routedFetch({
-      "/api/buyers/": () => jsonResponse(PROFILE),
+      "/api/buyers/": () => jsonResponse(BUYER_DETAIL),
       "/api/score/": () => jsonResponse(SCORE),
     });
     const explorer = makeExplorer(fetchImpl);
@@ -268,12 +268,12 @@ describe("get_buyer tool", () => {
 
   it("degrades gracefully when /api/score is rate-limited", async () => {
     const fetchImpl = routedFetch({
-      "/api/buyers/": () => jsonResponse(PROFILE),
+      "/api/buyers/": () => jsonResponse(BUYER_DETAIL),
       "/api/score/": () => new Response("limit", { status: 429 }),
     });
     const explorer = makeExplorer(fetchImpl);
     const out = (await getBuyer({ address: ADDR_A }, { explorer })) as Record<string, any>;
-    // Falls back to profile.trust_score when breakdown is unavailable.
+    // Falls back to buyer.trust_score when breakdown is unavailable.
     expect(out.trustScore.total).toBe(65);
     expect(out.trustScore.breakdownAvailable).toBe(false);
     expect(out.trustScore.volume).toBeNull();
@@ -363,9 +363,9 @@ describe("dau_trend tool", () => {
 });
 
 describe("get_buyer qualified isolation", () => {
-  it("does not let score endpoint override profile.qualified=0", async () => {
-    const profileNotQualified = {
-      profile: {
+  it("does not let score endpoint override buyer.qualified=0", async () => {
+    const buyerNotQualified = {
+      buyer: {
         address: ADDR_A.toLowerCase(),
         total_sessions: 2,
         total_settled_usdc: 1,
@@ -382,7 +382,7 @@ describe("get_buyer qualified isolation", () => {
       topSellers: [],
       monthly: [],
     };
-    // Score says qualified=true (stale) — profile must win.
+    // Score says qualified=true (stale) — buyer detail must win.
     const scoreSaysQualified = {
       address: ADDR_A.toLowerCase(),
       score: 80,
@@ -398,7 +398,7 @@ describe("get_buyer qualified isolation", () => {
       },
     };
     const fetchImpl = routedFetch({
-      "/api/buyers/": () => jsonResponse(profileNotQualified),
+      "/api/buyers/": () => jsonResponse(buyerNotQualified),
       "/api/score/": () => jsonResponse(scoreSaysQualified),
     });
     const explorer = makeExplorer(fetchImpl);

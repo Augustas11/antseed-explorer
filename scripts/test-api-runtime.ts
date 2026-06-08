@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  BuyerProfileResponseZ,
+  BuyerDetailResponseZ,
   BuyerScoreResponseZ,
   BuyersPageZ,
   ChannelRowZ,
@@ -53,7 +53,7 @@ async function main() {
   const sellerAddress = sellers.sellers[0].address;
   const channelId = channels.channels[0].channel_id;
 
-  BuyerProfileResponseZ.parse(await fetchJson(`/api/buyers/${buyerAddress}`));
+  BuyerDetailResponseZ.parse(await fetchJson(`/api/buyers/${buyerAddress}`));
   BuyerScoreResponseZ.parse(await fetchJson(`/api/score/${buyerAddress}`));
   SellerServicesResponseZ.parse(await fetchJson(`/api/sellers/${sellerAddress}/services`));
   ChannelRowZ.parse(await fetchJson(`/api/channels/${channelId}`));

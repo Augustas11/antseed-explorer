@@ -4,7 +4,7 @@ import type { ToolDef } from "./registry.js";
 export const networkStatsTool: ToolDef = {
   name: "network_stats",
   description:
-    "Get a one-shot point-in-time snapshot of antfeed: settled revenue, today's DAU, indexer→profile drift, and Base gas price. Use this for 'state of the network right now' questions; use dau_trend for growth over time. Parallel fetches /api/stats, /api/gas, and /api/metrics/dau; any individual upstream failure degrades that field to null and is listed in partialFailures.",
+    "Get a one-shot point-in-time snapshot of antfeed: settled revenue, today's DAU, indexer aggregate drift, and Base gas price. Use this for 'state of the network right now' questions; use dau_trend for growth over time. Parallel fetches /api/stats, /api/gas, and /api/metrics/dau; any individual upstream failure degrades that field to null and is listed in partialFailures.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -17,7 +17,7 @@ export const networkStatsTool: ToolDef = {
       dau: { type: ["integer", "null"], description: "Daily active users for today's UTC bucket. null when /api/metrics/dau failed or returned no rows." },
       drift: {
         type: ["number", "null"],
-        description: "USDC drift between raw events and aggregated profiles. 0 = in sync; null when /api/stats failed.",
+        description: "USDC drift between raw events and aggregate cache rows. 0 = in sync; null when /api/stats failed.",
       },
       gasGwei: {
         type: ["number", "null"],

@@ -1,7 +1,7 @@
 import type { ExplorerClient } from "../explorer.js";
 import { ExplorerError } from "../explorer.js";
 import { getBuyerSchema } from "../schemas.js";
-import type { BuyerProfileResponse, BuyerScoreResponse } from "../schemas.js";
+import type { BuyerDetailResponse, BuyerScoreResponse } from "../schemas.js";
 import type { ToolDef } from "./registry.js";
 
 export const getBuyerTool: ToolDef = {
@@ -111,32 +111,32 @@ export async function getBuyer(raw: unknown, deps: { explorer: ExplorerClient })
   const input = getBuyerSchema.parse(raw);
   const addr = input.address.toLowerCase();
 
-  const [profile, score] = await Promise.all([
-    deps.explorer.getBuyerProfile(addr),
+  const [detail, score] = await Promise.all([
+    deps.explorer.getBuyerDetail(addr),
     deps.explorer.getBuyerScore(addr).catch((err) => {
       // /api/score has its own rate limit and can be flaky independently of
       // /api/buyers. Degrade to null on any explorer-side outage (rate-limit,
       // network, 5xx) so a score blip doesn't take down buyer lookups.
-      // Profile failures stay fatal — without it we don't have a buyer.
+      // Buyer-detail failures stay fatal — without them we don't have a buyer.
       if (err instanceof ExplorerError && isScoreDegradable(err.code)) return null;
       throw err;
     }),
   ]);
 
-  if (!profile) {
+  if (!detail) {
     throw new ExplorerError(
       "BUYER_NOT_FOUND",
       `Address ${input.address} has no indexed buyer activity. The explorer indexes addresses on first on-chain deposit.`,
     );
   }
 
-  return shapeBuyer(profile, score);
+  return shapeBuyer(detail, score);
 }
 
-function shapeBuyer(profile: BuyerProfileResponse, score: BuyerScoreResponse | null) {
-  const p = profile.profile;
+function shapeBuyer(detail: BuyerDetailResponse, score: BuyerScoreResponse | null) {
+  const p = detail.buyer;
   const breakdown = score?.breakdown;
-  const recent = profile.sessions.slice(0, RECENT_SESSIONS_CAP).map((s) => ({
+  const recent = detail.sessions.slice(0, RECENT_SESSIONS_CAP).map((s) => ({
     sessionId: s.channel_id ?? null,
     seller: s.seller_address ?? null,
     service: null,
@@ -144,7 +144,7 @@ function shapeBuyer(profile: BuyerProfileResponse, score: BuyerScoreResponse | n
     usdc: s.settled_amount_usdc ?? s.delta_usdc ?? null,
     timestamp: s.timestamp ? new Date(s.timestamp * 1000).toISOString() : null,
   }));
-  const topSellers = profile.topSellers.map((t) => ({
+  const topSellers = detail.topSellers.map((t) => ({
     address: t.seller_address,
     displayName: t.seller_label ?? null,
     sessionCount: t.sessions,
@@ -152,7 +152,7 @@ function shapeBuyer(profile: BuyerProfileResponse, score: BuyerScoreResponse | n
   }));
   return {
     address: p.address,
-    // Profile is the source of truth — it's the row the rest of this response
+    // Buyer detail is the source of truth — it's the row the rest of this response
     // is derived from. Using the score endpoint's `qualified` here could
     // produce `qualified=true` next to `unique_sellers<3` from a stale snapshot.
     qualified: p.qualified === 1,
@@ -167,7 +167,7 @@ function shapeBuyer(profile: BuyerProfileResponse, score: BuyerScoreResponse | n
     sessions: {
       total: p.total_sessions,
       settledUsdc: p.total_settled_usdc,
-      monthlyVolume: profile.monthly.map((m) => ({
+      monthlyVolume: detail.monthly.map((m) => ({
         month: m.month,
         sessions: m.sessions,
         volumeUsdc: m.volume,

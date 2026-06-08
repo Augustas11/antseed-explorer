@@ -244,7 +244,7 @@ export const NetworkStatsResponseZ = z
     drift: z
       .object({
         eventsUsdc: z.number().finite().optional(),
-        profilesUsdc: z.number().finite().optional(),
+        aggregatesUsdc: z.number().finite().optional(),
         driftUsdc: z.number().finite().optional(),
       })
       .passthrough()
@@ -305,9 +305,9 @@ export const BuyerSellerSummaryRowZ = z
   })
   .passthrough();
 
-export const BuyerProfileResponseZ = z
+export const BuyerDetailResponseZ = z
   .object({
-    profile: BuyerRowZ,
+    buyer: BuyerRowZ,
     sessions: z.array(BuyerSessionEventZ).max(200),
     topSellers: z.array(BuyerSellerSummaryRowZ).max(100),
     monthly: z.array(BuyerMonthlyVolumeRowZ).max(200),
@@ -341,5 +341,5 @@ export type DirectoryProviderRow = z.infer<typeof DirectoryProviderRowZ>;
 export type NetworkStatsResponse = z.infer<typeof NetworkStatsResponseZ>;
 export type GasResponse = z.infer<typeof GasResponseZ>;
 export type DauDayRow = z.infer<typeof DauDayRowZ>;
-export type BuyerProfileResponse = z.infer<typeof BuyerProfileResponseZ>;
+export type BuyerDetailResponse = z.infer<typeof BuyerDetailResponseZ>;
 export type BuyerScoreResponse = z.infer<typeof BuyerScoreResponseZ>;

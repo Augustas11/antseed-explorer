@@ -1,4 +1,4 @@
-export interface BuyerProfile {
+export interface BuyerScoreInput {
   address: string;
   totalSessions: number;
   totalSettledUsdc: number;
@@ -52,12 +52,12 @@ export const TRUST_SCORE_METHOD = {
       label: "Recency",
       max: 0,
       input: "firstSeenTs, lastSeenTs",
-      formula: "Tracked on profiles, not weighted in the current score",
+      formula: "Tracked in aggregate rows, not weighted in the current score",
     },
   ],
 } as const;
 
-export function calculateTrustScore(p: BuyerProfile): ScoreBreakdown {
+export function calculateTrustScore(p: BuyerScoreInput): ScoreBreakdown {
   // Volume (0–30): log scale, $100 USDC settled = 30 pts
   const volume = Math.min(
     30,
