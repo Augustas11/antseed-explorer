@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Model lab">
+  <rect width="48" height="48" rx="10" fill="currentColor" opacity=".12"/>
+  <circle cx="24" cy="24" r="10" fill="none" stroke="currentColor" stroke-width="3"/>
+  <path fill="currentColor" d="M22 16h4v16h-4zM16 22h16v4H16z"/>
+</svg>
