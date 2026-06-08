@@ -928,6 +928,88 @@ export async function getEpochAnalytics(clock: {
   };
 }
 
+export interface DailyMetricsRow {
+  day: string;
+  dau: number;
+  newUsers: number;
+  settledUsdc: number;
+  feesUsdc: number;
+  settles: number;
+  requests: number;
+  tokens: number;
+}
+
+export async function getDailyMetricsTable(days: number): Promise<DailyMetricsRow[]> {
+  const d = cleanPositiveInt(days, 14, 90);
+  const rows = await db.execute<{
+    day: string;
+    dau: number;
+    new_users: number;
+    settled_usdc: number;
+    fees_usdc: number;
+    settles: number;
+    requests: string | number | null;
+    tokens: string | number | null;
+  }>(sql`
+    WITH days AS (
+      SELECT generate_series(
+        date_trunc('day', to_timestamp(extract(epoch from now())::bigint - (${rawPositiveInteger(d, "daily metrics days")} - 1) * 86400)),
+        date_trunc('day', to_timestamp(extract(epoch from now())::bigint)),
+        interval '1 day'
+      )::date AS day
+    ),
+    settled AS (
+      SELECT
+        to_timestamp(timestamp)::date AS day,
+        COALESCE(SUM(delta_usdc), 0)::float AS settled_usdc,
+        COALESCE(SUM(platform_fee_usdc), 0)::float AS fees_usdc,
+        COUNT(*)::int AS settles
+      FROM events
+      WHERE event_type = 'settled'
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "daily metrics settle window days")} * 86400
+      GROUP BY 1
+    ),
+    metadata AS (
+      SELECT
+        to_timestamp(timestamp)::date AS day,
+        COALESCE(SUM(request_count), 0)::bigint AS requests,
+        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0)::bigint AS tokens
+      FROM events
+      WHERE event_type = 'metadata_recorded'
+        AND timestamp IS NOT NULL
+        AND timestamp > 0
+        AND timestamp > extract(epoch from now())::bigint - ${rawPositiveInteger(d, "daily metrics token window days")} * 86400
+      GROUP BY 1
+    )
+    SELECT
+      to_char(days.day, 'YYYY-MM-DD') AS day,
+      COALESCE(daily_dau.dau, 0)::int AS dau,
+      COALESCE(daily_dau.new_users, 0)::int AS new_users,
+      COALESCE(settled.settled_usdc, 0)::float AS settled_usdc,
+      COALESCE(settled.fees_usdc, 0)::float AS fees_usdc,
+      COALESCE(settled.settles, 0)::int AS settles,
+      COALESCE(metadata.requests, 0)::bigint AS requests,
+      COALESCE(metadata.tokens, 0)::bigint AS tokens
+    FROM days
+    LEFT JOIN daily_dau ON daily_dau.day = days.day
+    LEFT JOIN settled ON settled.day = days.day
+    LEFT JOIN metadata ON metadata.day = days.day
+    ORDER BY days.day DESC
+  `);
+  return rows.rows.map((row) => ({
+    day: row.day,
+    dau: Number(row.dau ?? 0),
+    newUsers: Number(row.new_users ?? 0),
+    settledUsdc: Number(row.settled_usdc ?? 0),
+    feesUsdc: Number(row.fees_usdc ?? 0),
+    settles: Number(row.settles ?? 0),
+    requests: safeTokenCount(row.requests, "daily metrics requests"),
+    tokens: safeTokenCount(row.tokens, "daily metrics tokens"),
+  }));
+}
+
 export async function getProfileDrift() {
   const rows = await db.execute<{ events_usdc: number; profiles_usdc: number }>(sql`
     SELECT

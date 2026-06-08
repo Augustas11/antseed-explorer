@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import {
   getDailyTokens,
   getDailyVolume,
+  getDailyMetricsTable,
   getHeroSnapshot,
   getHourlyTokens,
   getHourlyVolume,
@@ -75,11 +76,12 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string }>;
+  searchParams: Promise<{ range?: string; days?: string }>;
 }) {
   // No page-load sync on Vercel — cron handles indexing.
   const query = await searchParams;
   const range = query.range || "30d";
+  const dailyMetricDays = Math.max(14, Math.min(90, Number(query.days) || 14));
   const rangeLabel =
     range === "24h"
       ? "last 24h"
@@ -108,11 +110,12 @@ export default async function HomePage({
       ? getDailyTokens(9999)
       : getDailyTokens(30);
   const epochClockP = getEpochClock();
-  const [stats, heroSnapshot, daily, tokens, recent, top, epochClock] = await Promise.all([
+  const [stats, heroSnapshot, daily, tokens, dailyMetrics, recent, top, epochClock] = await Promise.all([
     getNetworkStats(),
     getHeroSnapshot(),
     dailyP,
     tokensP,
+    getDailyMetricsTable(dailyMetricDays),
     getRecentEvents(20),
     listBuyers({ limit: 10, sort: "score" }),
     epochClockP,
@@ -267,6 +270,55 @@ export default async function HomePage({
 
       <section>
         <DauChart />
+      </section>
+
+      <section className="panel overflow-hidden">
+        <div className="flex items-center justify-between gap-3 p-4 border-b border-edge">
+          <div>
+            <h2 className="font-medium">Daily metrics</h2>
+            <p className="text-xs text-muted mt-0.5">
+              UTC daily demand, settlement, and token usage.
+            </p>
+          </div>
+          {dailyMetricDays < 90 && (
+            <Link
+              href={`/?${new URLSearchParams({ range, days: "90" }).toString()}`}
+              className="text-xs text-accent hover:underline shrink-0"
+            >
+              Show more →
+            </Link>
+          )}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>DAU</th>
+                <th>New users</th>
+                <th>Settled USDC</th>
+                <th>Fees</th>
+                <th>Settles</th>
+                <th>Requests</th>
+                <th>Tokens</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dailyMetrics.map((row) => (
+                <tr key={row.day}>
+                  <td className="font-mono text-xs text-muted">{row.day}</td>
+                  <td>{fmtNum(row.dau)}</td>
+                  <td>{fmtNum(row.newUsers)}</td>
+                  <td>{fmtUsd(row.settledUsdc)}</td>
+                  <td>{fmtUsd(row.feesUsdc)}</td>
+                  <td>{fmtNum(row.settles)}</td>
+                  <td>{fmtNum(row.requests)}</td>
+                  <td>{fmtCompact(row.tokens)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <ActivityFeed events={recent} />
