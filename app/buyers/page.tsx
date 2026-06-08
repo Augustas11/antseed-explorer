@@ -194,15 +194,20 @@ export default async function BuyersPage({
                   </SortableHeader>
                 </th>
                 <th>
-                  <SortableHeader
-                    field="score"
-                    current={sort}
-                    dir={dir}
-                    basePath="/buyers"
-                    extraParams={sharedParams}
-                  >
-                    Trust
-                  </SortableHeader>
+                  <span className="inline-flex items-center gap-2">
+                    <SortableHeader
+                      field="score"
+                      current={sort}
+                      dir={dir}
+                      basePath="/buyers"
+                      extraParams={sharedParams}
+                    >
+                      Trust
+                    </SortableHeader>
+                    <Link href="/score" className="text-accent hover:underline">
+                      ?
+                    </Link>
+                  </span>
                 </th>
                 <th></th>
               </tr>

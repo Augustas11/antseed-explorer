@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { scoreColor } from "@/lib/score";
 
 export function ScoreBadge({ score, size = "sm" }: { score: number; size?: "sm" | "lg" }) {
@@ -18,7 +19,15 @@ export function ScoreBadge({ score, size = "sm" }: { score: number; size?: "sm" 
 
 export function QualifiedBadge({ qualified }: { qualified: boolean }) {
   if (qualified) {
-    return <span className="badge badge-good">✓ Qualified</span>;
+    return (
+      <Link href="/score" className="badge badge-good hover:underline">
+        ✓ Qualified
+      </Link>
+    );
   }
-  return <span className="badge badge-muted">Not qualified</span>;
+  return (
+    <Link href="/score" className="badge badge-muted hover:underline">
+      Not qualified
+    </Link>
+  );
 }

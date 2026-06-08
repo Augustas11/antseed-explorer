@@ -15,6 +15,48 @@ export interface ScoreBreakdown {
   qualified: boolean;
 }
 
+export const TRUST_SCORE_METHOD = {
+  range: { min: 0, max: 100 },
+  qualification: "uniqueSellers >= 3",
+  components: [
+    {
+      key: "volume",
+      label: "USDC volume",
+      max: 30,
+      input: "totalSettledUsdc",
+      formula: "min(30, log10(totalSettledUsdc + 1) / log10(100) * 30)",
+    },
+    {
+      key: "consistency",
+      label: "Sessions",
+      max: 25,
+      input: "totalSessions",
+      formula: "min(25, log10(totalSessions + 1) / log10(50) * 25)",
+    },
+    {
+      key: "diversity",
+      label: "Seller diversity",
+      max: 25,
+      input: "uniqueSellers",
+      formula: "0 below 3 sellers; 3 sellers = 10; 10+ sellers = 25",
+    },
+    {
+      key: "reliability",
+      label: "Wash-trading heuristic",
+      max: 20,
+      input: "totalSessions, ghostSessions",
+      formula: "totalSessions / (totalSessions + ghostSessions) * 20",
+    },
+    {
+      key: "recency",
+      label: "Recency",
+      max: 0,
+      input: "firstSeenTs, lastSeenTs",
+      formula: "Tracked on profiles, not weighted in the current score",
+    },
+  ],
+} as const;
+
 export function calculateTrustScore(p: BuyerProfile): ScoreBreakdown {
   // Volume (0–30): log scale, $100 USDC settled = 30 pts
   const volume = Math.min(
