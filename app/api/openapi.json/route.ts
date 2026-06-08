@@ -476,6 +476,45 @@ const spec = {
         },
       },
     },
+    "/api/search": {
+      get: {
+        summary: "Search indexed entities",
+        description: "Returns up to 8 matches across buyers, sellers, channels, transactions, services, and provider display names.",
+        operationId: "searchEntities",
+        parameters: [
+          { name: "q", in: "query", schema: { type: "string", maxLength: 120 }, description: "Search query." },
+        ],
+        responses: {
+          "200": {
+            description: "Search matches",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["matches"],
+                  properties: {
+                    matches: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        required: ["type", "label", "detail", "href", "exact"],
+                        properties: {
+                          type: { type: "string", enum: ["buyer", "seller", "channel", "tx", "service"] },
+                          label: { type: "string" },
+                          detail: { type: "string" },
+                          href: { type: "string" },
+                          exact: { type: "boolean" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     "/api/stats": {
       get: {
         summary: "Network statistics",
