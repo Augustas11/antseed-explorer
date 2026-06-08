@@ -5,7 +5,7 @@ import {
   getAntsOverview,
   listHolders,
 } from "@/lib/queries";
-import { fmtCompact, fmtNum, fmtUsd, shortAddr } from "@/lib/format";
+import { clampPage, fmtCompact, fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import { AntsSupplyChart } from "../components/Charts";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +25,7 @@ export default async function AntsPage({
   searchParams: Promise<SP>;
 }) {
   const query = await searchParams;
-  const page = Math.max(1, Number(query.page || 1));
+  const page = clampPage(query.page);
   const limit = 50;
   const offset = (page - 1) * limit;
 

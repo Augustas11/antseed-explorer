@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { listBuyers, countBuyers, getBuyerFunnel, lookupProviders } from "@/lib/queries";
-import { fmtNum, fmtUsd, shortAddr } from "@/lib/format";
+import { clampPage, fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import TimestampDisplay from "../components/TimestampDisplay";
 import { ScoreBadge, QualifiedBadge } from "../components/Badges";
 import SortableHeader from "../components/SortableHeader";
@@ -27,11 +27,6 @@ const sortLabels: Record<string, string> = {
 
 const SORTS = new Set(Object.keys(sortLabels));
 
-function pageParam(value: string | undefined): number {
-  const n = Number(value ?? 1);
-  return Number.isFinite(n) ? Math.max(1, Math.floor(n)) : 1;
-}
-
 function scoreParam(value: string | undefined): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
@@ -43,7 +38,7 @@ export default async function BuyersPage({
   searchParams: Promise<SP>;
 }) {
   const query = await searchParams;
-  const page = pageParam(query.page);
+  const page = clampPage(query.page);
   const limit = 25;
   const offset = (page - 1) * limit;
   const qualifiedOnly = query.qualified === "1";
