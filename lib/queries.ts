@@ -19,6 +19,7 @@ import {
 import { cache as reactCache } from "react";
 import { canonicalize, groupServices, type ServiceGroup } from "./services-canonical";
 import { getActiveDiemPoolUsers, getDiemPoolSnapshotMetadata } from "./diem";
+import { createTtlCache } from "./ttlCache";
 import {
   rawAddressList,
   rawFiniteNumber,
@@ -68,6 +69,7 @@ const CHANNEL_EVENT_TYPES_SQL = rawStringLiteralList(
   (value) => /^[a-z_]+$/.test(value),
   "channel event types",
 );
+const HOT_PAGE_AGGREGATE_CACHE_TTL_MS = 5 * 60_000;
 
 function cleanPositiveInt(value: unknown, fallback: number, max: number): number {
   const n = Number(value);
@@ -1017,7 +1019,7 @@ export interface BuyerFunnelStage {
   dropoffPct: number | null;
 }
 
-export async function getBuyerFunnel(): Promise<BuyerFunnelStage[]> {
+async function computeBuyerFunnel(): Promise<BuyerFunnelStage[]> {
   const rows = await db.execute<{
     depositors: number;
     first_session: number;
@@ -1070,6 +1072,11 @@ export async function getBuyerFunnel(): Promise<BuyerFunnelStage[]> {
     };
   });
 }
+
+export const getBuyerFunnel = createTtlCache(
+  computeBuyerFunnel,
+  HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
+).get;
 
 export async function getProfileDrift() {
   const rows = await db.execute<{ events_usdc: number; profiles_usdc: number }>(sql`
