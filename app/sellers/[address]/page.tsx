@@ -16,6 +16,7 @@ import TimeRangePills from "../../components/TimeRangePills";
 import AddressDisplay from "../../components/AddressDisplay";
 import TimestampDisplay from "../../components/TimestampDisplay";
 import VerifiedLabel from "../../components/VerifiedLabel";
+import AgentSnippet from "../../components/AgentSnippet";
 
 export const dynamic = "force-dynamic";
 
@@ -184,6 +185,14 @@ export default async function SellerProfilePage({
           </div>
         </div>
       </section>
+
+      {provider && (
+        <AgentSnippet
+          title="Use this seller via your agent"
+          peerId={provider.peer_id}
+          services={provider.services}
+        />
+      )}
 
       <section className="panel p-4">
         <div className="flex items-center justify-between mb-3">

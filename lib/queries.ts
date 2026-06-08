@@ -1591,6 +1591,7 @@ export interface ServiceProviderRow extends ServiceRow {
   provider_details: Array<{
     address: string;
     display_name: string | null;
+    peer_id: string | null;
     pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
     advertised_as: string[];
   }>;
@@ -1603,7 +1604,7 @@ type PricingMap = Record<string, { inputUsdPerMillion?: number; outputUsdPerMill
 // providers and prices are aggregated across all aliases.
 export async function listServices(): Promise<ServiceRow[]> {
   const allProviders = (await db.execute<any>(sql`
-    SELECT address, display_name, services, pricing FROM provider_directory
+    SELECT address, display_name, peer_id, services, pricing FROM provider_directory
   `)).rows;
 
   // canonical key -> rollup buckets
@@ -1678,6 +1679,7 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
   type Detail = {
     address: string;
     display_name: string | null;
+    peer_id: string | null;
     pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
     advertised_as: string[];
   };
@@ -1711,6 +1713,7 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
         byAddress.set(provider.address, {
           address: provider.address,
           display_name: provider.display_name ?? null,
+          peer_id: provider.peer_id ?? null,
           pricing: svcPricing,
           advertised_as: [svc],
         });
