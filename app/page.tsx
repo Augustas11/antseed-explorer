@@ -32,6 +32,7 @@ import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
 import { getHeroSnapshotStatus } from "@/lib/heroSnapshot";
 import { getSiteOrigin, siteUrl } from "@/lib/site";
+import { INSTALL_SNIPPET } from "@/lib/mcpSnippet";
 
 export const dynamic = "force-dynamic";
 
@@ -142,22 +143,58 @@ export default async function HomePage({
         </div>
       )}
 
-      <section>
-        <h1 className="text-3xl font-semibold tracking-tight">
-          AntSeed network economics
-        </h1>
-        <p className="text-muted mt-2 max-w-2xl">
-          Settled USDC, tokens consumed, and paying users on the AntSeed P2P AI
-          services network. All metrics derived from on-chain events on Base.
-        </p>
-        <Link
-          href="/mcp"
-          className="inline-flex items-center gap-2 mt-4 px-3 py-1.5 rounded-full border border-accent/30 bg-accent/5 text-xs text-accent hover:bg-accent/10 transition-colors"
-        >
-          <span className="font-medium">Use from any AI agent</span>
-          <span className="text-muted">— one-line MCP install</span>
-          <span aria-hidden="true">→</span>
-        </Link>
+      <section className="space-y-5">
+        <div className="max-w-3xl">
+          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
+            AntSeed for AI agents
+          </h1>
+          <p className="text-muted mt-3 max-w-2xl">
+            On-chain buyer intelligence + a one-line MCP install so your agent
+            can transact on the AntSeed marketplace.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Link href="/mcp" className="btn-accent">
+            Install MCP →
+          </Link>
+          <Link href="/docs" className="btn">
+            Read the docs →
+          </Link>
+        </div>
+        <details className="panel p-4 max-w-3xl group">
+          <summary className="cursor-pointer text-sm font-medium text-accent">
+            Show config
+          </summary>
+          <pre className="mt-3 bg-bg border border-edge rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed">
+            <code>{INSTALL_SNIPPET}</code>
+          </pre>
+        </details>
+      </section>
+
+      <section className="panel px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className="font-medium text-ink">Current epoch #{epoch.currentEpoch}</span>
+          <span className="text-muted">·</span>
+          <span>
+            ends in{" "}
+            <span className="text-ink">
+              <EpochCountdown endTs={epoch.endTs} initialNow={Date.now()} />
+            </span>
+          </span>
+          <span className="text-muted">·</span>
+          <span>
+            epoch revenue <span className="text-ink">{fmtUsd(epoch.epochRevenueUsdc)}</span>
+          </span>
+          <span className="text-muted">·</span>
+          <span>
+            active sellers <span className="text-ink">{fmtNum(epoch.activeSellers)}</span>
+          </span>
+          {epoch.todo && (
+            <span className="text-xs text-muted">
+              · 7-day boundary fallback
+            </span>
+          )}
+        </div>
       </section>
 
       <section className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -214,32 +251,6 @@ export default async function HomePage({
           }
           sparkline={<Sparkline data={usersSpark} color="#f5b656" />}
         />
-      </section>
-
-      <section className="panel px-4 py-3">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-          <span className="font-medium text-ink">Current epoch #{epoch.currentEpoch}</span>
-          <span className="text-muted">·</span>
-          <span>
-            ends in{" "}
-            <span className="text-ink">
-              <EpochCountdown endTs={epoch.endTs} initialNow={Date.now()} />
-            </span>
-          </span>
-          <span className="text-muted">·</span>
-          <span>
-            epoch revenue <span className="text-ink">{fmtUsd(epoch.epochRevenueUsdc)}</span>
-          </span>
-          <span className="text-muted">·</span>
-          <span>
-            active sellers <span className="text-ink">{fmtNum(epoch.activeSellers)}</span>
-          </span>
-          {epoch.todo && (
-            <span className="text-xs text-muted">
-              · 7-day boundary fallback
-            </span>
-          )}
-        </div>
       </section>
 
       <section className="grid md:grid-cols-2 gap-4">

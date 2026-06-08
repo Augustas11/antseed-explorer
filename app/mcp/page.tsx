@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import CopyButton from "./CopyButton";
 import { getSiteOrigin, siteUrl } from "@/lib/site";
+import { INSTALL_SNIPPET } from "@/lib/mcpSnippet";
 
 export async function generateMetadata(): Promise<Metadata> {
   const title = "AntFeed MCP — discover and transact on AntSeed from any AI agent";
@@ -27,19 +28,6 @@ export async function generateMetadata(): Promise<Metadata> {
     },
   };
 }
-
-const INSTALL_SNIPPET = `{
-  "mcpServers": {
-    "antfeed": {
-      "command": "npx",
-      "args": ["-y", "@antfeed/mcp"],
-      "env": {
-        "ANTFEED_EXPLORER_URL": "https://www.antfeed.org",
-        "ANTSEED_BUYER_URL": "http://localhost:8377"
-      }
-    }
-  }
-}`;
 
 const READ_ONLY_TOOLS: { name: string; inputs: string; output: string }[] = [
   {
