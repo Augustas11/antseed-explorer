@@ -2139,6 +2139,7 @@ export async function listProviderFacets(): Promise<{
 
 export interface HolderRow {
   address: string;
+  kind: "buyer" | "seller" | "none";
   balance_wei: string;
   balance_ants: number;
   staked_balance_wei: string;
@@ -2164,31 +2165,65 @@ export async function listHolders(opts: {
       FROM ants_holders
       WHERE balance + staked_balance > 0
         AND address NOT IN (${excludeSql})
+    ),
+    holder_page AS (
+      SELECT
+        address,
+        balance + staked_balance                 AS total_balance,
+        balance::text                            AS balance_wei,
+        (balance / 1e18)::float                  AS balance_ants,
+        staked_balance::text                     AS staked_balance_wei,
+        (staked_balance / 1e18)::float           AS staked_balance_ants,
+        CASE
+          WHEN (SELECT total FROM circulating) > 0
+          THEN ((balance + staked_balance) * 100.0 / (SELECT total FROM circulating))::float
+          ELSE 0
+        END                                       AS pct_supply,
+        first_seen_block,
+        last_seen_block,
+        updated_at
+      FROM ants_holders
+      WHERE balance + staked_balance > 0
+        AND address NOT IN (${excludeSql})
+      ORDER BY (balance + staked_balance) DESC
+      LIMIT ${rawPositiveInteger(limit, "holders limit")}
+      OFFSET ${rawNonNegativeInteger(offset, "holders offset")}
+    ),
+    seller_matches AS (
+      SELECT pd.address
+      FROM provider_directory pd
+      INNER JOIN holder_page hp ON hp.address = pd.address
+      UNION
+      SELECT DISTINCT e.seller_address AS address
+      FROM events e
+      INNER JOIN holder_page hp ON hp.address = e.seller_address
+      WHERE e.seller_address IS NOT NULL
+        AND e.event_type IN (${CHANNEL_EVENT_TYPES_SQL})
     )
     SELECT
-      address,
-      balance::text                            AS balance_wei,
-      (balance / 1e18)::float                  AS balance_ants,
-      staked_balance::text                     AS staked_balance_wei,
-      (staked_balance / 1e18)::float           AS staked_balance_ants,
+      hp.address,
       CASE
-        WHEN (SELECT total FROM circulating) > 0
-        THEN ((balance + staked_balance) * 100.0 / (SELECT total FROM circulating))::float
-        ELSE 0
-      END                                       AS pct_supply,
-      first_seen_block,
-      last_seen_block,
-      updated_at
-    FROM ants_holders
-    WHERE balance + staked_balance > 0
-      AND address NOT IN (${excludeSql})
-    ORDER BY (balance + staked_balance) DESC
-    LIMIT ${rawPositiveInteger(limit, "holders limit")}
-    OFFSET ${rawNonNegativeInteger(offset, "holders offset")}
+        WHEN bp.address IS NOT NULL THEN 'buyer'
+        WHEN sm.address IS NOT NULL THEN 'seller'
+        ELSE 'none'
+      END                                       AS kind,
+      hp.balance_wei,
+      hp.balance_ants,
+      hp.staked_balance_wei,
+      hp.staked_balance_ants,
+      hp.pct_supply,
+      hp.first_seen_block,
+      hp.last_seen_block,
+      hp.updated_at
+    FROM holder_page hp
+    LEFT JOIN buyer_profiles bp ON bp.address = hp.address
+    LEFT JOIN seller_matches sm ON sm.address = hp.address
+    ORDER BY hp.total_balance DESC
   `);
 
   return r.rows.map((x: any) => ({
     address: x.address,
+    kind: x.kind === "buyer" || x.kind === "seller" ? x.kind : "none",
     balance_wei: String(x.balance_wei ?? "0"),
     balance_ants: Number(x.balance_ants ?? 0),
     staked_balance_wei: String(x.staked_balance_wei ?? "0"),

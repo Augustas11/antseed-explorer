@@ -4,7 +4,9 @@ import {
   countHolders,
   getAntsOverview,
   listHolders,
+  type HolderRow,
 } from "@/lib/queries";
+import { explorerBaseUrl } from "@/lib/chain";
 import { clampPage, fmtCompact, fmtNum, fmtUsd, shortAddr } from "@/lib/format";
 import { AntsSupplyChart } from "../components/Charts";
 
@@ -105,12 +107,7 @@ export default async function AntsPage({
                 <tr key={h.address}>
                   <td className="text-muted">{offset + i + 1}</td>
                   <td>
-                    <Link
-                      href={`/buyers/${h.address}`}
-                      className="font-mono text-accent hover:underline"
-                    >
-                      {shortAddr(h.address)}
-                    </Link>
+                    <HolderAddressLink holder={h} />
                   </td>
                   <td className="text-right tabular-nums">
                     {fmtCompact(h.balance_ants)}
@@ -150,6 +147,35 @@ export default async function AntsPage({
         </div>
       )}
     </div>
+  );
+}
+
+function HolderAddressLink({ holder }: { holder: HolderRow }) {
+  const className = "font-mono text-accent hover:underline";
+  const label = shortAddr(holder.address);
+  if (holder.kind === "buyer") {
+    return (
+      <Link href={`/buyers/${holder.address}`} className={className}>
+        {label}
+      </Link>
+    );
+  }
+  if (holder.kind === "seller") {
+    return (
+      <Link href={`/sellers/${holder.address}`} className={className}>
+        {label}
+      </Link>
+    );
+  }
+  return (
+    <a
+      href={`${explorerBaseUrl}/address/${holder.address}`}
+      className={className}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {label}
+    </a>
   );
 }
 
