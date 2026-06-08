@@ -481,6 +481,7 @@ const spec = {
         summary: "Search indexed entities",
         description: "Returns up to 8 matches across buyers, sellers, channels, transactions, services, and provider display names.",
         operationId: "searchEntities",
+        security: [{ ApiKey: [] }, {}],
         parameters: [
           { name: "q", in: "query", schema: { type: "string", maxLength: 120 }, description: "Search query." },
         ],
@@ -512,6 +513,7 @@ const spec = {
               },
             },
           },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
         },
       },
     },
