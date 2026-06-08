@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getNetworkStats, getDailyVolume, getProfileDrift } from "@/lib/queries";
+import { getNetworkStats, getDailyVolume, getAggregateDrift } from "@/lib/queries";
 import { trackMcpUsage } from "@/lib/mcp-usage";
 import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
   // are still <500ms total and 100% reliable.
   const stats = await getNetworkStats();
   const daily = await getDailyVolume(30);
-  const drift = await getProfileDrift();
+  const drift = await getAggregateDrift();
   return NextResponse.json(
     { ...stats, daily, drift },
     { headers: RESPONSE_HEADERS },

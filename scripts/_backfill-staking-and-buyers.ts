@@ -5,11 +5,9 @@
 //  legacy script mutates ants_holders directly and must not be used for
 //  staking backfills.
 //
-//  Phase 2 — Buyer profiles: recompute buyer_profile rows for every address
-//  that ever sent a Deposited event (tx.from, post-backfill-deposits). Closes
-//  the gap between /buyers (buyer_profiles count) and the paying-users USDC
-//  payer count by creating zero-session profiles for depositors who never
-//  opened a channel.
+//  Phase 2 — Buyer aggregate rows: recompute cached aggregate rows for every
+//  address that ever sent a Deposited event (tx.from, post-backfill-deposits).
+//  This keeps funded buyers visible even if they never opened a channel.
 //
 // Run:
 //   RPC_URL=https://mainnet.base.org npx tsx scripts/_backfill-staking-and-buyers.ts
@@ -182,9 +180,9 @@ async function backfillStaking() {
   return totalEvents;
 }
 
-// ─── Phase 2: buyer profiles ─────────────────────────────────────────────────
+// ─── Phase 2: buyer aggregate rows ────────────────────────────────────────────
 
-async function backfillBuyerProfiles() {
+async function backfillBuyerAggregates() {
   console.log("\n[phase-2/buyers] starting");
 
   const rows = await db.execute<{ buyer_address: string }>(sql`
@@ -206,7 +204,7 @@ async function backfillBuyerProfiles() {
     console.log(`[phase-2/buyers] ${i + chunk.length}/${addresses.length} (${pct}%, ${elapsed}s)`);
   }
 
-  console.log(`[phase-2/buyers] DONE. recomputed ${addresses.length} profiles`);
+  console.log(`[phase-2/buyers] DONE. recomputed ${addresses.length} aggregate rows`);
   return addresses.length;
 }
 
@@ -216,9 +214,9 @@ async function main() {
   console.log("[backfill] rpc=", RPC);
 
   const stakingEvents = await backfillStaking();
-  const buyerProfiles = await backfillBuyerProfiles();
+  const buyerAggregates = await backfillBuyerAggregates();
 
-  console.log(`\n[backfill] ALL DONE. staking_events=${stakingEvents} buyer_profiles_recomputed=${buyerProfiles}`);
+  console.log(`\n[backfill] ALL DONE. staking_events=${stakingEvents} buyer_aggregates_recomputed=${buyerAggregates}`);
   process.exit(0);
 }
 

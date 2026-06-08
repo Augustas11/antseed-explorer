@@ -23,7 +23,7 @@ import { toolContext } from "./tool-context.js";
 import { sanitizeMessage } from "./sanitize.js";
 
 const PACKAGE_NAME = "antfeed-mcp";
-const PACKAGE_VERSION = "0.2.5";
+const PACKAGE_VERSION = "0.3.0";
 const USER_AGENT = `${PACKAGE_NAME}/${PACKAGE_VERSION}`;
 const MIN_NODE_MAJOR = 20;
 

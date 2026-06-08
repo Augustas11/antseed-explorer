@@ -177,11 +177,11 @@ const spec = {
           volume: { type: "number" },
         },
       },
-      BuyerProfileResponse: {
+      BuyerDetailResponse: {
         type: "object",
-        required: PUBLIC_RESPONSE_FIELDS.BuyerProfileResponse,
+        required: PUBLIC_RESPONSE_FIELDS.BuyerDetailResponse,
         properties: {
-          profile: { "$ref": "#/components/schemas/BuyerRow" },
+          buyer: { "$ref": "#/components/schemas/BuyerRow" },
           sessions: { type: "array", items: { "$ref": "#/components/schemas/BuyerSessionEvent" } },
           topSellers: { type: "array", items: { "$ref": "#/components/schemas/BuyerSellerSummaryRow" } },
           monthly: { type: "array", items: { "$ref": "#/components/schemas/BuyerMonthlyVolumeRow" } },
@@ -227,12 +227,12 @@ const spec = {
         type: "object",
         properties: { error: { type: "string", example: "rate_limit_exceeded" } },
       },
-      ProfileDrift: {
+      AggregateDrift: {
         type: "object",
-        required: PUBLIC_RESPONSE_FIELDS.ProfileDrift,
+        required: PUBLIC_RESPONSE_FIELDS.AggregateDrift,
         properties: {
           eventsUsdc: { type: "number" },
-          profilesUsdc: { type: "number" },
+          aggregatesUsdc: { type: "number" },
           driftUsdc: { type: "number" },
         },
       },
@@ -248,7 +248,7 @@ const spec = {
           lastIndexedBlock: { type: "integer", nullable: true },
           lastHeadBlock: { type: "integer", nullable: true },
           lastSyncTs: { type: "integer", nullable: true, description: "Unix ms" },
-          drift: { "$ref": "#/components/schemas/ProfileDrift" },
+          drift: { "$ref": "#/components/schemas/AggregateDrift" },
           daily: {
             type: "array",
             items: {
@@ -273,7 +273,7 @@ const spec = {
     "/api/buyers": {
       get: {
         summary: "List buyers",
-        description: "Returns paginated buyer profiles sorted by trust metrics.",
+        description: "Returns paginated funded buyer wallets sorted by trust metrics.",
         operationId: "listBuyers",
         security: [{ ApiKey: [] }, {}],
         parameters: [
@@ -308,15 +308,15 @@ const spec = {
     },
     "/api/buyers/{address}": {
       get: {
-        summary: "Get buyer profile",
-        description: "Returns one buyer profile with recent sessions, top sellers, and monthly settled volume.",
-        operationId: "getBuyerProfile",
+        summary: "Get buyer detail",
+        description: "Returns one funded buyer wallet with recent sessions, top sellers, and monthly settled volume.",
+        operationId: "getBuyerDetail",
         security: [{ ApiKey: [] }, {}],
         parameters: [
           { name: "address", in: "path", required: true, schema: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }, description: "Ethereum address (0x-prefixed, 40 hex chars)" },
         ],
         responses: {
-          "200": { description: "Buyer profile", content: { "application/json": { schema: { "$ref": "#/components/schemas/BuyerProfileResponse" } } } },
+          "200": { description: "Buyer detail", content: { "application/json": { schema: { "$ref": "#/components/schemas/BuyerDetailResponse" } } } },
           "400": { description: "Invalid address" },
           "404": { description: "Buyer not found" },
           "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },

@@ -41,12 +41,12 @@ export async function generateMetadata({
   return {
     title,
     description,
-    openGraph: { title, description, type: "profile" },
+    openGraph: { title, description, type: "website" },
     twitter: { card: "summary_large_image", title, description },
   };
 }
 
-export default async function BuyerProfilePage({
+export default async function BuyerDetailPage({
   params,
   searchParams,
 }: {
@@ -101,7 +101,7 @@ export default async function BuyerProfilePage({
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <div className="text-xs uppercase tracking-wider text-muted">
-            Buyer profile
+            Buyer wallet
           </div>
           <div className="mt-1">
             <AddressDisplay address={buyer.address} full />

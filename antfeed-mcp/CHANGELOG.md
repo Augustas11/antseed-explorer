@@ -2,6 +2,12 @@
 
 All notable changes to `@antfeed/mcp` are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 — 2026-06-08
+
+### Changed
+
+- **Breaking: `get_buyer` now exposes funded buyer wallets.** The upstream `/api/buyers/{address}` detail response field changed from `profile` to `buyer`, and MCP schemas/tools now mirror that shape. Direct consumers reading the old field must switch to `buyer`.
+
 ## 0.2.5 — 2026-05-24
 
 ### Fixed
@@ -42,7 +48,7 @@ Quality pass on every tool plus three new read tools that fill the biggest gaps 
 
 ### Added
 
-- **`network_stats`** — one-shot snapshot of antfeed: settled revenue, today's DAU, indexer→profile drift, current Base gas price. Parallel-fetches `/api/stats`, `/api/gas`, and `/api/metrics/dau`. Use for "state of the network right now"; use `dau_trend` for trends. Each upstream is independent: a per-endpoint failure degrades that field to `null` and is reported in `partialFailures: string[]` rather than failing the whole snapshot.
+- **`network_stats`** — one-shot snapshot of antfeed: settled revenue, today's DAU, indexer aggregate drift, current Base gas price. Parallel-fetches `/api/stats`, `/api/gas`, and `/api/metrics/dau`. Use for "state of the network right now"; use `dau_trend` for trends. Each upstream is independent: a per-endpoint failure degrades that field to `null` and is reported in `partialFailures: string[]` rather than failing the whole snapshot.
 - **`get_buyer`** — symmetric to provider lookup but for buyers. Returns trust-score breakdown (volume / consistency / diversity / reliability), aggregate session stats, the last 20 recent settled sessions, and the buyer's top sellers by spend. Parallel-fetches `/api/buyers/[address]` + `/api/score/[address]`; degrades gracefully when the score endpoint is rate-limited.
 - **`dau_trend`** — daily active users between two ISO dates (default: last 30 days). Returns per-day total DAU plus buyer/seller breakdown and new-user count. Backed by `/api/metrics/dau`.
 

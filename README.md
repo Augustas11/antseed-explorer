@@ -10,7 +10,7 @@ Not affiliated with the AntSeed team.
 
 ## What it does
 
-1. **Buyer profiles** — per-address volume, sessions, unique sellers, ghost-session count, and a derived **Buyer Trust Score** (0–100).
+1. **Funded buyers** — per-depositor volume, sessions, unique sellers, ghost-session count, and a derived **Buyer Trust Score** (0–100).
 2. **Network leaderboard** — sortable, filterable buyer ranking.
 3. **Network overview** — daily settlement volume, active buyers, last 30 days.
 4. **Token usage detail** — input/output tokens and request count from `AntseedStats.MetadataRecorded`, with legacy settled-session metadata decoded only after validation.
@@ -67,7 +67,7 @@ npm run dev
 
 Core settlement contract: **`AntseedChannels`** on Base mainnet,
 [`0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d`](https://basescan.org/address/0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d), deployed at block `45,667,842`.
-Auxiliary indexers also read AntseedStats, ANTS, staking, deposits, and identity events for token accounting, holder state, DAU, and profile enrichment.
+Auxiliary indexers also read AntseedStats, ANTS, staking, deposits, and identity events for token accounting, holder state, DAU, and address enrichment.
 
 | event | semantic |
 |---|---|
@@ -101,7 +101,7 @@ A buyer with ≥3 distinct settled sellers earns the **Qualified Proven Sign** b
 ```
 GET  /api/stats                      Network aggregates + 30d daily series
 GET  /api/buyers?limit=&offset=&qualified=&minScore=&sort=
-GET  /api/buyers/{address}           Full profile + sessions + top sellers
+GET  /api/buyers/{address}           Buyer detail + sessions + top sellers
 GET  /api/score/{address}            Trust score JSON
 POST /api/sync?force=1               Manual indexer pass (Bearer sync secret required)
 ```
@@ -152,7 +152,7 @@ antseed-explorer/
     layout.tsx                  # nav + Sync button
     page.tsx                    # / overview + top 10
     buyers/page.tsx             # /buyers leaderboard
-    buyers/[address]/page.tsx   # buyer profile
+    buyers/[address]/page.tsx   # buyer detail
     api/
       cron/sync/route.ts        # cron-driven indexer pass
       sync/route.ts             # authenticated manual sync endpoint

@@ -80,7 +80,7 @@ export default async function BuyersPage({
             Top {fmtNum(total)} buyers — sort by {sortLabel}
           </h1>
           <p className="text-muted text-sm mt-1">
-            {fmtNum(total)} buyers match this filter.
+            {fmtNum(total)} funded buyer wallets match this filter.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -125,7 +125,7 @@ export default async function BuyersPage({
         <div>
           <h2 className="font-medium">Buyer conversion funnel</h2>
           <p className="text-xs text-muted mt-1">
-            Demand-side progression from funded buyers to durable marketplace usage.
+            Demand-side progression from distinct USDC depositors to durable marketplace usage.
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">

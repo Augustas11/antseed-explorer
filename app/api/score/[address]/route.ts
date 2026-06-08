@@ -35,8 +35,8 @@ export async function GET(
     return NextResponse.json({ error: "invalid_address" }, { status: 400, headers: RESPONSE_HEADERS });
   }
 
-  const profile = await getBuyer(address);
-  if (!profile) {
+  const buyer = await getBuyer(address);
+  if (!buyer) {
     return NextResponse.json(
       {
         address: address.toLowerCase(),
@@ -50,27 +50,27 @@ export async function GET(
     );
   }
   const breakdown = calculateTrustScore({
-    address: profile.address,
-    totalSessions: profile.total_sessions,
-    totalSettledUsdc: profile.total_settled_usdc,
-    uniqueSellers: profile.unique_sellers,
-    ghostSessions: profile.ghost_sessions,
+    address: buyer.address,
+    totalSessions: buyer.total_sessions,
+    totalSettledUsdc: buyer.total_settled_usdc,
+    uniqueSellers: buyer.unique_sellers,
+    ghostSessions: buyer.ghost_sessions,
   });
   const tier = breakdown.total >= 70 ? "trusted" : breakdown.total >= 40 ? "developing" : "new";
   return NextResponse.json(
     {
-      address: profile.address,
+      address: buyer.address,
       score: breakdown.total,
       tier,
       qualified: breakdown.qualified,
       breakdown,
       stats: {
-        totalSessions: profile.total_sessions,
-        totalSettledUsdc: profile.total_settled_usdc,
-        uniqueSellers: profile.unique_sellers,
-        ghostSessions: profile.ghost_sessions,
-        firstSeenBlock: profile.first_seen_block,
-        lastSeenBlock: profile.last_seen_block,
+        totalSessions: buyer.total_sessions,
+        totalSettledUsdc: buyer.total_settled_usdc,
+        uniqueSellers: buyer.unique_sellers,
+        ghostSessions: buyer.ghost_sessions,
+        firstSeenBlock: buyer.first_seen_block,
+        lastSeenBlock: buyer.last_seen_block,
       },
     },
     { headers: RESPONSE_HEADERS },

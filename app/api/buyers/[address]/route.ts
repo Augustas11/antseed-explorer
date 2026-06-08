@@ -29,8 +29,8 @@ export async function GET(
   if (!isExplorerAddress(address)) {
     return NextResponse.json({ error: "invalid_address" }, { status: 400 });
   }
-  const profile = await getBuyer(address);
-  if (!profile) {
+  const buyer = await getBuyer(address);
+  if (!buyer) {
     return NextResponse.json({ error: "buyer_not_found" }, { status: 404 });
   }
   const [sessions, topSellers, monthly] = await Promise.all([
@@ -51,7 +51,7 @@ export async function GET(
     seller_label: providerMap.get(s.seller_address)?.display_name || null,
   }));
   return NextResponse.json({
-    profile,
+    buyer,
     sessions: sessionsAnnotated,
     topSellers: topSellersAnnotated,
     monthly,

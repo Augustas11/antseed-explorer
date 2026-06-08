@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { GET as getOpenApi } from "../app/api/openapi.json/route";
 import {
-  BuyerProfileResponseZ,
+  BuyerDetailResponseZ,
   BuyerScoreResponseZ,
   BuyersPageZ,
   ChannelRowZ,
@@ -128,9 +128,9 @@ const componentResponseSchemas: PublicResponseSchemaName[] = [
   "BuyerSessionEvent",
   "BuyerSellerSummaryRow",
   "BuyerMonthlyVolumeRow",
-  "BuyerProfileResponse",
+  "BuyerDetailResponse",
   "ScoreResponse",
-  "ProfileDrift",
+  "AggregateDrift",
   "StatsResponse",
 ];
 
@@ -192,6 +192,87 @@ assert.deepEqual(queryEnum("/api/buyers", "format"), [...EXPORT_FORMATS]);
 assert.deepEqual(queryEnum("/api/sellers", "format"), [...EXPORT_FORMATS]);
 assert.deepEqual(queryEnum("/api/channels", "format"), [...EXPORT_FORMATS]);
 
+const listBuyersBody = queriesSource.match(
+  /export async function listBuyers[\s\S]*?\n}\n\nexport async function countBuyers/,
+)?.[0];
+assert.ok(listBuyersBody, "listBuyers must remain discoverable to contract checks");
+assert.match(listBuyersBody, /WITH depositors AS/, "buyers list must be depositor-first");
+assert.match(
+  listBuyersBody,
+  /LEFT JOIN buyer_profiles bp ON bp\.address = d\.address/,
+  "buyers list may only use buyer aggregates as optional enrichment",
+);
+
+const countBuyersBody = queriesSource.match(
+  /export async function countBuyers[\s\S]*?\n}\n\nasync function getBuyerUncached/,
+)?.[0];
+assert.ok(countBuyersBody, "countBuyers must remain discoverable to contract checks");
+assert.match(countBuyersBody, /WITH depositors AS/, "buyer count must be depositor-first");
+assert.match(
+  countBuyersBody,
+  /LEFT JOIN buyer_profiles bp ON bp\.address = d\.address/,
+  "buyer count must not require an aggregate row",
+);
+
+const getBuyerBody = queriesSource.match(
+  /async function getBuyerUncached[\s\S]*?\n}\n\nexport const getBuyer/,
+)?.[0];
+assert.ok(getBuyerBody, "getBuyer must remain discoverable to contract checks");
+assert.match(getBuyerBody, /WITH depositor AS/, "buyer detail must be depositor-first");
+assert.match(
+  getBuyerBody,
+  /LEFT JOIN buyer_profiles bp ON bp\.address = d\.address/,
+  "buyer detail must not require an aggregate row",
+);
+
+const buyerFunnelBody = queriesSource.match(
+  /async function computeBuyerFunnel[\s\S]*?\n}\n\nexport const getBuyerFunnel/,
+)?.[0];
+assert.ok(buyerFunnelBody, "buyer funnel must remain discoverable to contract checks");
+assert.match(
+  buyerFunnelBody,
+  /JOIN depositors d ON d\.buyer = e\.buyer_address/,
+  "buyer funnel settled stages must be constrained to real depositors",
+);
+assert.match(
+  buyerFunnelBody,
+  /COUNT\(DISTINCT e\.channel_id\)::int AS sessions/,
+  "buyer funnel sessions must count distinct settled channels",
+);
+
+const networkStatsBody = queriesSource.match(
+  /export async function getNetworkStats[\s\S]*?\n}\n\nexport async function refreshHeroSnapshot/,
+)?.[0];
+assert.ok(networkStatsBody, "network stats must remain discoverable to contract checks");
+assert.match(networkStatsBody, /WITH depositors AS/, "network buyer stats must derive funded wallets from deposits");
+assert.match(
+  networkStatsBody,
+  /JOIN depositors d ON d\.address = e\.buyer_address WHERE e\.event_type = 'settled'/,
+  "network usage totals must be constrained to funded buyer wallets",
+);
+assert.match(
+  networkStatsBody,
+  /COUNT\(DISTINCT e\.channel_id\)::int/,
+  "network sessions must count distinct settled channels",
+);
+
+const aggregateDriftBody = queriesSource.match(
+  /export async function getAggregateDrift[\s\S]*?\n}\n\nexport interface ProviderRow/,
+)?.[0];
+assert.ok(aggregateDriftBody, "aggregate drift must remain discoverable to contract checks");
+assert.match(aggregateDriftBody, /WITH depositors AS/, "aggregate drift must be depositor-scoped");
+assert.match(
+  aggregateDriftBody,
+  /buyer_profiles bp JOIN depositors d ON d\.address = bp\.address/,
+  "aggregate drift must ignore stale non-depositor aggregate rows",
+);
+
+assert.match(
+  readFileSync("lib/schema.ts", "utf8"),
+  /events_type_buyer_idx/,
+  "events schema must index depositor-first event lookups",
+);
+
 const getBuyerSessionsBody = queriesSource.match(
   /export async function getBuyerSessions[\s\S]*?\n}\n\nexport async function getBuyerMonthlyVolume/,
 )?.[0];
@@ -205,6 +286,16 @@ assert.match(
   getBuyerSessionsBody,
   /timestamp:\s*e\.timestamp != null \? Number\(e\.timestamp\) : null/,
   "buyer detail sessions must serialize timestamp as a number or null",
+);
+
+const buyerMonthlyVolumeBody = queriesSource.match(
+  /export async function getBuyerMonthlyVolume[\s\S]*?\n}\n\nexport async function getBuyerDailyVolume/,
+)?.[0];
+assert.ok(buyerMonthlyVolumeBody, "buyer monthly volume must remain discoverable to contract checks");
+assert.match(
+  buyerMonthlyVolumeBody,
+  /COUNT\(DISTINCT channel_id\)::int AS sessions/,
+  "buyer monthly sessions must count distinct settled channels",
 );
 
 assert.deepEqual(schemaProperties("ScoreResponse").tier, {
@@ -302,7 +393,7 @@ NetworkStatsResponseZ.parse({
   totalSessions: 2,
   totalGhosts: 0,
   lastSyncTs: 1_700_000_100,
-  drift: { eventsUsdc: 12.5, profilesUsdc: 12.5, driftUsdc: 0 },
+  drift: { eventsUsdc: 12.5, aggregatesUsdc: 12.5, driftUsdc: 0 },
 });
 GasResponseZ.parse({ gwei: 0.0042 });
 DauTrendResponseZ.parse([
@@ -315,8 +406,8 @@ DauTrendResponseZ.parse([
     dau_sellers: 1,
   },
 ]);
-BuyerProfileResponseZ.parse({
-  profile: buyer,
+BuyerDetailResponseZ.parse({
+  buyer,
   sessions: [
     {
       tx_hash: `0x${"d".repeat(64)}`,

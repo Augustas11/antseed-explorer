@@ -133,7 +133,7 @@ export const PUBLIC_RESPONSE_FIELDS = {
     "seller_label",
   ],
   BuyerMonthlyVolumeRow: ["month", "sessions", "volume"],
-  BuyerProfileResponse: ["profile", "sessions", "topSellers", "monthly"],
+  BuyerDetailResponse: ["buyer", "sessions", "topSellers", "monthly"],
   TrustScoreBreakdown: [
     "total",
     "qualified",
@@ -151,7 +151,7 @@ export const PUBLIC_RESPONSE_FIELDS = {
     "lastSeenBlock",
   ],
   ScoreResponse: ["address", "score", "tier", "qualified", "breakdown", "stats"],
-  ProfileDrift: ["eventsUsdc", "profilesUsdc", "driftUsdc"],
+  AggregateDrift: ["eventsUsdc", "aggregatesUsdc", "driftUsdc"],
   StatsDailyRow: [
     "day",
     "sessions",
