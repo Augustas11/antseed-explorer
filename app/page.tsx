@@ -32,7 +32,6 @@ import ActivityFeed from "./components/ActivityFeed";
 import AutoRefresh from "./components/AutoRefresh";
 import { getHeroSnapshotStatus } from "@/lib/heroSnapshot";
 import { getSiteOrigin, siteUrl } from "@/lib/site";
-import { INSTALL_SNIPPET } from "@/lib/mcpSnippet";
 
 export const dynamic = "force-dynamic";
 
@@ -157,18 +156,7 @@ export default async function HomePage({
           <Link href="/mcp" className="btn-accent">
             Install MCP →
           </Link>
-          <Link href="/docs" className="btn">
-            Read the docs →
-          </Link>
         </div>
-        <details className="panel p-4 max-w-3xl group">
-          <summary className="cursor-pointer text-sm font-medium text-accent">
-            Show config
-          </summary>
-          <pre className="mt-3 bg-bg border border-edge rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed">
-            <code>{INSTALL_SNIPPET}</code>
-          </pre>
-        </details>
       </section>
 
       <section className="panel px-4 py-3">
