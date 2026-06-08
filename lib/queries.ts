@@ -1215,6 +1215,13 @@ export async function lookupAddress(
     return { type: "seller", address: normalized };
   }
 
+  const providerR = await db.execute<{ address: string }>(sql`
+    SELECT address FROM provider_directory WHERE address = ${normalized} LIMIT 1
+  `);
+  if (providerR.rows.length > 0) {
+    return { type: "seller", address: normalized };
+  }
+
   return null;
 }
 
