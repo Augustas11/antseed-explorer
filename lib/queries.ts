@@ -1732,7 +1732,7 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
   const { key: canonicalKey, display: canonicalDisplay } = canonicalize(input);
 
   const allProviders = (await db.execute<any>(sql`
-    SELECT address, display_name, services, pricing FROM provider_directory
+    SELECT address, display_name, peer_id, services, pricing FROM provider_directory
   `)).rows;
 
   // Dedup providers by address; collect every alias they advertise that maps
