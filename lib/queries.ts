@@ -839,6 +839,95 @@ export async function getDailyVolume(days = 30) {
   return rows.rows;
 }
 
+export interface EpochRevenueBucket {
+  epoch: number;
+  label: string;
+  volume: number;
+  sessions: number;
+}
+
+export interface EpochAnalytics {
+  currentEpoch: number;
+  startTs: number;
+  endTs: number;
+  durationSec: number;
+  epochRevenueUsdc: number;
+  activeSellers: number;
+  source: "contract" | "time-fallback";
+  todo: string | null;
+  buckets: EpochRevenueBucket[];
+}
+
+export async function getEpochAnalytics(clock: {
+  currentEpoch: number;
+  startTs: number;
+  endTs: number;
+  durationSec: number;
+  source: "contract" | "time-fallback";
+  todo: string | null;
+}): Promise<EpochAnalytics> {
+  const currentEpoch = cleanNonNegativeInt(clock.currentEpoch, 0, 10_000);
+  const durationSec = cleanPositiveInt(clock.durationSec, 7 * 86400, 366 * 86400);
+  const epochZeroTs = clock.startTs - currentEpoch * durationSec;
+  const minEpoch = Math.max(0, currentEpoch - 23);
+  const maxEpoch = currentEpoch;
+  const rows = await db.execute<{
+    epoch: number;
+    volume: number;
+    sessions: number;
+    active_sellers: number;
+  }>(sql`
+    WITH params AS (
+      SELECT
+        ${rawNonNegativeInteger(epochZeroTs, "epoch zero timestamp")}::bigint AS epoch_zero,
+        ${rawPositiveInteger(durationSec, "epoch duration seconds")}::bigint AS epoch_seconds,
+        ${rawNonNegativeInteger(minEpoch, "minimum epoch")}::int AS min_epoch,
+        ${rawNonNegativeInteger(maxEpoch, "maximum epoch")}::int AS max_epoch
+    ),
+    epochs AS (
+      SELECT generate_series(min_epoch, max_epoch)::int AS epoch FROM params
+    ),
+    settled AS (
+      SELECT
+        floor((timestamp - params.epoch_zero)::numeric / params.epoch_seconds)::int AS epoch,
+        COALESCE(delta_usdc, 0)::float AS delta_usdc,
+        seller_address
+      FROM events, params
+      WHERE event_type = 'settled'
+        AND timestamp IS NOT NULL
+        AND timestamp >= params.epoch_zero + params.min_epoch * params.epoch_seconds
+        AND timestamp < params.epoch_zero + (params.max_epoch + 1) * params.epoch_seconds
+    )
+    SELECT
+      epochs.epoch,
+      COALESCE(SUM(settled.delta_usdc), 0)::float AS volume,
+      COUNT(settled.delta_usdc)::int AS sessions,
+      COUNT(DISTINCT settled.seller_address)::int AS active_sellers
+    FROM epochs
+    LEFT JOIN settled ON settled.epoch = epochs.epoch
+    GROUP BY epochs.epoch
+    ORDER BY epochs.epoch ASC
+  `);
+  const buckets = rows.rows.map((row) => ({
+    epoch: Number(row.epoch),
+    label: `E${Number(row.epoch)}`,
+    volume: Number(row.volume ?? 0),
+    sessions: Number(row.sessions ?? 0),
+  }));
+  const current = rows.rows.find((row) => Number(row.epoch) === currentEpoch);
+  return {
+    currentEpoch,
+    startTs: clock.startTs,
+    endTs: clock.endTs,
+    durationSec,
+    epochRevenueUsdc: Number(current?.volume ?? 0),
+    activeSellers: Number(current?.active_sellers ?? 0),
+    source: clock.source,
+    todo: clock.todo,
+    buckets,
+  };
+}
+
 export async function getProfileDrift() {
   const rows = await db.execute<{ events_usdc: number; profiles_usdc: number }>(sql`
     SELECT

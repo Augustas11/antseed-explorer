@@ -6,10 +6,12 @@ import {
   getHeroSnapshot,
   getHourlyTokens,
   getHourlyVolume,
+  getEpochAnalytics,
   getNetworkStats,
   getRecentEvents,
   listBuyers,
 } from "@/lib/queries";
+import { getEpochClock } from "@/lib/epoch";
 import {
   fmtCompact,
   fmtNum,
@@ -19,8 +21,9 @@ import {
   shortAddr,
 } from "@/lib/format";
 import { ScoreBadge, QualifiedBadge } from "./components/Badges";
-import { TokensChart, VolumeChart } from "./components/Charts";
+import { EpochRevenueChart, TokensChart, VolumeChart } from "./components/Charts";
 import { DauChart } from "./components/DauChart";
+import EpochCountdown from "./components/EpochCountdown";
 import HeroCard from "./components/HeroCard";
 import Sparkline from "./components/Sparkline";
 import TimeRangePills from "./components/TimeRangePills";
@@ -104,14 +107,17 @@ export default async function HomePage({
       : range === "all"
       ? getDailyTokens(9999)
       : getDailyTokens(30);
-  const [stats, heroSnapshot, daily, tokens, recent, top] = await Promise.all([
+  const epochClockP = getEpochClock();
+  const [stats, heroSnapshot, daily, tokens, recent, top, epochClock] = await Promise.all([
     getNetworkStats(),
     getHeroSnapshot(),
     dailyP,
     tokensP,
     getRecentEvents(20),
     listBuyers({ limit: 10, sort: "score" }),
+    epochClockP,
   ]);
+  const epoch = await getEpochAnalytics(epochClock);
   const hero = heroSnapshot?.stats ?? null;
   const heroStatus = heroSnapshot ? getHeroSnapshotStatus(heroSnapshot) : null;
   const heroStale = heroStatus?.stale === true;
@@ -207,6 +213,32 @@ export default async function HomePage({
         />
       </section>
 
+      <section className="panel px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className="font-medium text-ink">Current epoch #{epoch.currentEpoch}</span>
+          <span className="text-muted">·</span>
+          <span>
+            ends in{" "}
+            <span className="text-ink">
+              <EpochCountdown endTs={epoch.endTs} initialNow={Date.now()} />
+            </span>
+          </span>
+          <span className="text-muted">·</span>
+          <span>
+            epoch revenue <span className="text-ink">{fmtUsd(epoch.epochRevenueUsdc)}</span>
+          </span>
+          <span className="text-muted">·</span>
+          <span>
+            active sellers <span className="text-ink">{fmtNum(epoch.activeSellers)}</span>
+          </span>
+          {epoch.todo && (
+            <span className="text-xs text-muted">
+              · 7-day boundary fallback
+            </span>
+          )}
+        </div>
+      </section>
+
       <section className="grid md:grid-cols-2 gap-4">
         <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">
@@ -214,6 +246,15 @@ export default async function HomePage({
             <TimeRangePills current={range} basePath="/" />
           </div>
           <VolumeChart data={daily} />
+        </div>
+        <div className="panel p-4">
+          <div className="mb-3">
+            <h2 className="font-medium">Epoch revenue</h2>
+            <p className="text-xs text-muted mt-0.5">
+              Settled USDC by reward epoch.
+            </p>
+          </div>
+          <EpochRevenueChart data={epoch.buckets} />
         </div>
         <div className="panel p-4">
           <div className="flex items-center justify-between mb-3">

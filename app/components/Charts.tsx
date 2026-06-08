@@ -160,3 +160,27 @@ export function ActivityChart({
     </ResponsiveContainer>
   );
 }
+
+export function EpochRevenueChart({
+  data,
+}: {
+  data: { label: string; volume: number; sessions: number }[];
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={data}>
+        <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} />
+        <XAxis dataKey="label" stroke={chartTheme.axis} fontSize={11} />
+        <YAxis stroke={chartTheme.axis} fontSize={11} />
+        <Tooltip
+          contentStyle={{
+            background: "#12141a",
+            border: "1px solid #1f2230",
+            borderRadius: 8,
+          }}
+        />
+        <Bar dataKey="volume" name="USDC settled" fill={chartTheme.bar2} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
