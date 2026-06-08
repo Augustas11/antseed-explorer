@@ -43,6 +43,10 @@ export default async function ServiceDetailPage({
         (b.pricing?.outputUsdPerMillion ?? Number.POSITIVE_INFINITY);
       return aCost - bCost;
     })[0];
+  const snippetService =
+    cheapestProvider?.pricing_service ??
+    cheapestProvider?.advertised_as[0] ??
+    service.name;
 
   return (
     <div className="space-y-6">
@@ -95,7 +99,7 @@ export default async function ServiceDetailPage({
 
       <AgentSnippet
         peerId={cheapestProvider?.peer_id}
-        service={service.name}
+        service={snippetService}
       />
 
       <section className="panel">

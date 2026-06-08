@@ -1649,6 +1649,24 @@ export async function getChannelEvents(
 // ServiceRow + service queries
 // ---------------------------------------------------------------------------
 
+type ServicePricing = { inputUsdPerMillion?: number; outputUsdPerMillion?: number };
+
+function servicePricingCost(pricing: ServicePricing | null): number {
+  const input = pricing?.inputUsdPerMillion ?? Number.POSITIVE_INFINITY;
+  const output = pricing?.outputUsdPerMillion ?? Number.POSITIVE_INFINITY;
+  return input + output;
+}
+
+function isBetterServicePricing(
+  candidate: ServicePricing | null,
+  current: ServicePricing | null,
+): boolean {
+  const candidateCost = servicePricingCost(candidate);
+  const currentCost = servicePricingCost(current);
+  if (candidateCost !== currentCost) return candidateCost < currentCost;
+  return current == null && candidate != null;
+}
+
 export interface ServiceRow {
   // The canonical key (e.g. "claude-opus-4-6"). Used as the URL slug for
   // /services/[name] so links survive raw-alias spelling changes upstream.
@@ -1668,12 +1686,13 @@ export interface ServiceProviderRow extends ServiceRow {
     address: string;
     display_name: string | null;
     peer_id: string | null;
-    pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
+    pricing: ServicePricing | null;
+    pricing_service: string | null;
     advertised_as: string[];
   }>;
 }
 
-type PricingMap = Record<string, { inputUsdPerMillion?: number; outputUsdPerMillion?: number }>;
+type PricingMap = Record<string, ServicePricing>;
 
 // Rolled-up service listing keyed by canonical model. Multiple raw service
 // strings ("Claude Opus 4.6" / "claude-opus-4-6") collapse into one row;
@@ -1756,7 +1775,8 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
     address: string;
     display_name: string | null;
     peer_id: string | null;
-    pricing: { inputUsdPerMillion?: number; outputUsdPerMillion?: number } | null;
+    pricing: ServicePricing | null;
+    pricing_service: string | null;
     advertised_as: string[];
   };
   const byAddress = new Map<string, Detail>();
@@ -1777,13 +1797,11 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
       const existing = byAddress.get(provider.address);
       if (existing) {
         existing.advertised_as.push(svc);
-        // Keep the cheapest price seen for this provider's display row
-        if (
-          svcPricing?.inputUsdPerMillion != null &&
-          (existing.pricing?.inputUsdPerMillion == null ||
-            svcPricing.inputUsdPerMillion < existing.pricing.inputUsdPerMillion)
-        ) {
+        // Keep the cheapest price seen for this provider's display row and
+        // remember the raw advertised service that owns that pricing entry.
+        if (isBetterServicePricing(svcPricing, existing.pricing)) {
           existing.pricing = svcPricing;
+          existing.pricing_service = svc;
         }
       } else {
         byAddress.set(provider.address, {
@@ -1791,6 +1809,7 @@ async function getServiceUncached(input: string): Promise<ServiceProviderRow | n
           display_name: provider.display_name ?? null,
           peer_id: provider.peer_id ?? null,
           pricing: svcPricing,
+          pricing_service: svc,
           advertised_as: [svc],
         });
       }
