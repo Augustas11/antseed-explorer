@@ -20,7 +20,7 @@
     "test:api-runtime": "node --import tsx scripts/test-api-runtime.ts",
     "test:csp-runtime": "node --import tsx scripts/test-csp-runtime.ts",
     "check:rate-limit-storage": "node --import tsx scripts/check-rate-limit-storage.ts",
-    "test:contracts": "node --import tsx scripts/test-api-contract.ts && node --import tsx scripts/test-sql-safe.ts && node --import tsx scripts/test-csv.ts && node --import tsx scripts/test-diem-snapshot.ts && node --import tsx scripts/test-hero-snapshot.ts && node --import tsx scripts/test-provider-directory.ts && node --import tsx scripts/test-rate-limit-storage.ts && node --import tsx scripts/test-format.ts && node --import tsx scripts/test-security-headers.ts",
+    "test:contracts": "node --import tsx scripts/test-api-contract.ts && node --import tsx scripts/test-sql-safe.ts && node --import tsx scripts/test-csv.ts && node --import tsx scripts/test-diem-snapshot.ts && node --import tsx scripts/test-hero-snapshot.ts && node --import tsx scripts/test-provider-directory.ts && node --import tsx scripts/test-agent-snippet.ts && node --import tsx scripts/test-rate-limit-storage.ts && node --import tsx scripts/test-format.ts && node --import tsx scripts/test-security-headers.ts",
     "vercel-build": "tsx scripts/migrate.ts && next build"
   },
   "dependencies": {

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { buildAgentSessionSnippet } from "@/lib/snippet";
 
 export default function AgentSnippet({
   title = "Use this model via your agent",
@@ -20,11 +21,7 @@ export default function AgentSnippet({
   );
   const [copied, setCopied] = useState(false);
   const snippet = useMemo(
-    () => `# one-time install
-# see antfeed.org/mcp
-
-# in your agent
-create_session(providerPeerId="${peerId ?? "..."}", service="${selectedService || "..."}", initialDepositUsdc=1)`,
+    () => buildAgentSessionSnippet({ peerId, service: selectedService }),
     [peerId, selectedService],
   );
 
