@@ -74,34 +74,40 @@ export async function applyDecodedSettlement(row: SettlementInput): Promise<void
        AND service_id <> ALL(${serviceIdArray}::text[])
   `);
 
-  // Phase 1 — write per-service snapshots (v2 only).
-  if (decoded.version === 2) {
-    for (const s of decoded.services) {
-      await db.execute(sql`
-        INSERT INTO settlement_service_snapshots
-          (tx_hash, log_index, channel_id, service_id, block_number, timestamp,
-           cumulative_amount_usdc, cumulative_in_tokens, cumulative_cached_in_tokens,
-           cumulative_out_tokens, cumulative_requests)
-        VALUES (
-          ${row.txHash}, ${row.logIndex}, ${row.channelId}, ${s.serviceId},
+  // Phase 1 — bulk-write per-service snapshots in one INSERT (v2 only).
+  // The metadata decoder caps services at MAX_DECODED_SERVICES (lib/metadata.ts)
+  // so the VALUES list stays well under any reasonable parameter cap. Without
+  // bulk-batching, an adversarial payload with hundreds of services would
+  // cost hundreds of Neon HTTP round-trips per settlement.
+  if (decoded.version === 2 && decoded.services.length > 0) {
+    const values = sql.join(
+      decoded.services.map(
+        (s) => sql`(${row.txHash}, ${row.logIndex}, ${row.channelId}, ${s.serviceId},
           ${row.blockNumber}, ${row.timestamp},
           ${usdcFromAmount(s.cumulativeAmount)},
           ${Number(s.cumulativeInputTokens)},
           ${Number(s.cumulativeCachedInputTokens)},
           ${Number(s.cumulativeOutputTokens)},
-          ${Number(s.cumulativeRequestCount)}
-        )
-        ON CONFLICT (tx_hash, log_index, service_id) DO UPDATE
-          SET channel_id                  = EXCLUDED.channel_id,
-              block_number                = EXCLUDED.block_number,
-              timestamp                   = EXCLUDED.timestamp,
-              cumulative_amount_usdc      = EXCLUDED.cumulative_amount_usdc,
-              cumulative_in_tokens        = EXCLUDED.cumulative_in_tokens,
-              cumulative_cached_in_tokens = EXCLUDED.cumulative_cached_in_tokens,
-              cumulative_out_tokens       = EXCLUDED.cumulative_out_tokens,
-              cumulative_requests         = EXCLUDED.cumulative_requests
-      `);
-    }
+          ${Number(s.cumulativeRequestCount)})`,
+      ),
+      sql`, `,
+    );
+    await db.execute(sql`
+      INSERT INTO settlement_service_snapshots
+        (tx_hash, log_index, channel_id, service_id, block_number, timestamp,
+         cumulative_amount_usdc, cumulative_in_tokens, cumulative_cached_in_tokens,
+         cumulative_out_tokens, cumulative_requests)
+      VALUES ${values}
+      ON CONFLICT (tx_hash, log_index, service_id) DO UPDATE
+        SET channel_id                  = EXCLUDED.channel_id,
+            block_number                = EXCLUDED.block_number,
+            timestamp                   = EXCLUDED.timestamp,
+            cumulative_amount_usdc      = EXCLUDED.cumulative_amount_usdc,
+            cumulative_in_tokens        = EXCLUDED.cumulative_in_tokens,
+            cumulative_cached_in_tokens = EXCLUDED.cumulative_cached_in_tokens,
+            cumulative_out_tokens       = EXCLUDED.cumulative_out_tokens,
+            cumulative_requests         = EXCLUDED.cumulative_requests
+    `);
   }
 
   // Phase 2 — completion marker. If we crash before this, the row stays

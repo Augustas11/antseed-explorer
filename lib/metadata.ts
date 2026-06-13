@@ -73,17 +73,22 @@ export function terminalStatusOf(decoded: DecodedMetadata): TerminalStatus {
 // services at ~200 bytes each) but small enough that `decodeAbiParameters`
 // can't be DoS'd by an MB-scale tail.
 const MAX_METADATA_BYTES = 64 * 1024;
-// Postgres bigint is signed 64-bit. Counters from v2 payloads land in
-// settlement_service_snapshots.cumulative_*_tokens (bigint). Reject anything
-// above this so an INSERT can't fail mid-batch and leave the row pending
-// forever; reject negative values defensively even though uint256 is unsigned.
-const MAX_PG_BIGINT = 9_223_372_036_854_775_807n;
-// Reject obviously-malformed payloads where one row claims billions of
-// services. Real payloads are ~5-50 services per channel.
-const MAX_DECODED_SERVICES = 1024;
+// Settlement counters are persisted to Postgres bigint columns, but
+// applyDecodedSettlement passes them as JS numbers via Drizzle's
+// tagged-template binding. JS numbers lose precision above 2^53-1
+// (Number.MAX_SAFE_INTEGER ≈ 9.007e15), and a `Number(2^63-1)` rounds UP
+// above Postgres signed-bigint max so the INSERT fails and the event is
+// stuck `pending` forever. Cap at MAX_SAFE_INTEGER so coercion stays
+// lossless. Even 2^53-1 tokens is astronomical (>9 quadrillion) — well
+// above any realistic per-channel counter.
+const MAX_SAFE_COUNTER = BigInt(Number.MAX_SAFE_INTEGER);
+// Reject obviously-malformed payloads. Real v2 metadata carries 5-50
+// services per channel; 128 is a generous ceiling that still caps the
+// number of phase-1 INSERTs applyDecodedSettlement performs.
+const MAX_DECODED_SERVICES = 128;
 
 function safeBigint(value: bigint): bigint {
-  if (value < 0n || value > MAX_PG_BIGINT) {
+  if (value < 0n || value > MAX_SAFE_COUNTER) {
     throw new Error("counter out of safe bigint range");
   }
   return value;

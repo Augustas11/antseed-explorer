@@ -148,6 +148,56 @@ function testServiceIdOfClaudeOpusVector() {
   assert.equal(serviceIdOf("  Claude Opus 4.6  "), expected);
 }
 
+// Build a v2 payload with a single service where a chosen counter holds the
+// supplied bigint. Used to test the safe-counter boundary at the decoder.
+function makeV2WithCounter(amount: bigint): string {
+  const sid = serviceIdOf("Boundary Model");
+  return encodeAbiParametersTest(amount, sid);
+}
+
+function encodeAbiParametersTest(amount: bigint, sid: `0x${string}`): string {
+  // Hand-built ABI encoding for: (uint256 version, uint256 cumIn, uint256
+  // cumOut, uint256 cumReq, ServiceTotal[] services) with one ServiceTotal.
+  const w = (v: bigint) => v.toString(16).padStart(64, "0");
+  const head =
+    w(2n) + // version
+    w(0n) + // cumIn
+    w(0n) + // cumOut
+    w(0n) + // cumReq
+    w(0xa0n); // offset to services tail
+  const tail =
+    w(1n) + // services.length
+    sid.replace(/^0x/, "") +
+    w(amount) + // cumulativeAmount — the boundary value
+    w(0n) +
+    w(0n) +
+    w(0n) +
+    w(0n);
+  return `0x${head}${tail}`;
+}
+
+function testCounterAboveMaxSafe() {
+  // 2^63-1 is Postgres signed bigint max, but Number(2^63-1) rounds UP above
+  // it, so an INSERT with Number-coerced 2^63-1 would fail with overflow.
+  // The decoder must terminate this as decode_failed BEFORE we reach the DB.
+  const tooBig = 9_223_372_036_854_775_807n; // 2^63-1
+  const d = decodeMetadata(makeV2WithCounter(tooBig));
+  assert.deepEqual(
+    d,
+    { version: null, reason: "decode_failed" },
+    "2^63-1 cumulativeAmount must terminate decode_failed (Number precision loss)",
+  );
+}
+
+function testCounterAtMaxSafe() {
+  // MAX_SAFE_INTEGER (2^53-1) — coercion via Number() is lossless here, so
+  // the decoder should accept it. The actual stored USDC ($9 billion) is
+  // beyond any realistic counter but proves the boundary semantics.
+  const okBig = BigInt(Number.MAX_SAFE_INTEGER);
+  const d = decodeMetadata(makeV2WithCounter(okBig));
+  assert.equal(d.version, 2, "MAX_SAFE_INTEGER counter must decode cleanly");
+}
+
 testEmpty();
 testV1();
 testV2();
@@ -155,5 +205,7 @@ testGarbageNoThrow();
 testDuplicateServiceIdPerCounterMax();
 testServiceIdOfHexLooking();
 testServiceIdOfClaudeOpusVector();
+testCounterAboveMaxSafe();
+testCounterAtMaxSafe();
 
 console.log("✓ test-metadata-decode");
