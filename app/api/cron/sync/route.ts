@@ -27,12 +27,14 @@ export async function GET(req: NextRequest) {
     // Force=true so cron runs every tick regardless of debounce.
     // Leave explicit headroom for provider + DIEM refresh under the 60s cap.
     const result = await sync({ force: true, deadlineMs: 45_000 });
-    await refreshProviderDirectory();
-    // Per-model v2 attribution: drain the backfill (decode any settled events
-    // whose metadata hasn't been parsed yet) then rebuild the derived rollups.
-    // Drain at least a tiny chunk on every tick so the prefix-pending gate
-    // keeps advancing under sustained budget pressure — otherwise a single
-    // pending event holds back every later snapshot on that channel.
+    // Per-model v2 attribution runs BEFORE refreshProviderDirectory: the
+    // rebuild reads from snapshots + events and never depends on
+    // service_id_aliases (aliases join in the query layer, not in the CST/DSM
+    // SQL). Putting it first guarantees rollup freshness even when an
+    // upstream network.antseed.com fetch slows the rest of the tick.
+    // Drain at least a tiny chunk every tick so the prefix-pending gate keeps
+    // advancing under sustained budget pressure — otherwise a single pending
+    // event holds back every later snapshot on that channel.
     try {
       const pendingBudget = remaining(5_000);
       if (pendingBudget >= 3_000) {
@@ -44,6 +46,7 @@ export async function GET(req: NextRequest) {
     } catch (e) {
       console.warn("[cron/sync] service metadata rebuild failed", e);
     }
+    await refreshProviderDirectory();
     // DIEM + hero snapshots are SSR-warm-up jobs — they don't need to refresh
     // every 15 min. Gate them to the top of each hour so the cron tick that
     // actually does this work runs ~24×/day instead of 96×/day.

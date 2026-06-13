@@ -454,10 +454,14 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
 
 const MAX_SAFE_TOKEN_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
 const MAX_SAFE_REQUEST_COUNT = 2_147_483_647n;
-const CHANNEL_METADATA_VERSION = 1;
+const SUPPORTED_METADATA_VERSIONS = new Set([1, 2]);
 
-// ChannelSettled.metadata is abi-encoded as 4 uint256s:
+// ChannelSettled.metadata starts with 4 uint256s:
 //   [version, totalInputTokens, totalOutputTokens, totalRequests]
+// v2 (AntSeed v0.1.103+) appends a ServiceTotal[] tail for per-service
+// attribution; the aggregate prefix is identical so we decode v1 and v2 the
+// same way here. Per-service attribution is handled by lib/metadata.ts +
+// lib/serviceMetadata.ts.applyDecodedSettlement().
 export function decodeMetadata(metadata: string | undefined):
   | { version: number; inputTokens: number; outputTokens: number; requestCount: number }
   | null {
@@ -473,7 +477,8 @@ export function decodeMetadata(metadata: string | undefined):
     const outputTokens = safeNumber(word(2), MAX_SAFE_TOKEN_COUNT);
     const requestCount = safeNumber(word(3), MAX_SAFE_REQUEST_COUNT);
     if (
-      version !== CHANNEL_METADATA_VERSION ||
+      version == null ||
+      !SUPPORTED_METADATA_VERSIONS.has(version) ||
       inputTokens == null ||
       outputTokens == null ||
       requestCount == null

@@ -689,8 +689,13 @@ async function computeHeroWindowedCoverage(cutoffUnix: number): Promise<{
   } & Record<string, unknown>>(sql`
     WITH
       cutoff AS (
-        SELECT ${rawNonNegativeInteger(cutoffUnix, "hero windowed cutoff")}::bigint AS cutoff_unix,
-               to_timestamp(${rawNonNegativeInteger(cutoffUnix, "hero windowed cutoff")})::date AS cutoff_day
+        -- SPEC §7.3: derive cutoff_day as the UTC date FIRST, then re-derive
+        -- cutoff_unix from cutoff_day's midnight UTC. Otherwise a rolling
+        -- Unix cutoff would slice partway through a day, leaving the events
+        -- denominator covering N hours less than the daily_service_metrics
+        -- numerator and skewing v2_share by up to 100% on a low-volume day.
+        SELECT (to_timestamp(${rawNonNegativeInteger(cutoffUnix, "hero windowed cutoff")}) AT TIME ZONE 'UTC')::date AS cutoff_day,
+               extract(epoch from (to_timestamp(${rawNonNegativeInteger(cutoffUnix, "hero windowed cutoff")}) AT TIME ZONE 'UTC')::date AT TIME ZONE 'UTC')::bigint AS cutoff_unix
       ),
       channel_pending_min AS (
         SELECT DISTINCT ON (channel_id)

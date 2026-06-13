@@ -64,9 +64,39 @@ export function terminalStatusOf(decoded: DecodedMetadata): TerminalStatus {
   return decoded.reason === "empty" ? "empty" : "decode_failed";
 }
 
+// Bounds for adversarial payloads. A buyer-signed `SpendingAuth.metadata`
+// blob arrives over an attacker-controlled path (buyer crafts → seller relays
+// → ChannelSettled.metadata bytes). We need ceilings everywhere a large
+// number could blow up memory, query cost, or destination columns.
+//
+// 64 KiB is well above the largest realistic v2 payload (a few hundred
+// services at ~200 bytes each) but small enough that `decodeAbiParameters`
+// can't be DoS'd by an MB-scale tail.
+const MAX_METADATA_BYTES = 64 * 1024;
+// Postgres bigint is signed 64-bit. Counters from v2 payloads land in
+// settlement_service_snapshots.cumulative_*_tokens (bigint). Reject anything
+// above this so an INSERT can't fail mid-batch and leave the row pending
+// forever; reject negative values defensively even though uint256 is unsigned.
+const MAX_PG_BIGINT = 9_223_372_036_854_775_807n;
+// Reject obviously-malformed payloads where one row claims billions of
+// services. Real payloads are ~5-50 services per channel.
+const MAX_DECODED_SERVICES = 1024;
+
+function safeBigint(value: bigint): bigint {
+  if (value < 0n || value > MAX_PG_BIGINT) {
+    throw new Error("counter out of safe bigint range");
+  }
+  return value;
+}
+
 export function decodeMetadata(bytes: string | null | undefined): DecodedMetadata {
   if (!bytes || bytes === "0x") return { version: null, reason: "empty" };
   const hex = (bytes.startsWith("0x") ? bytes : `0x${bytes}`) as `0x${string}`;
+  // Cap byte length BEFORE handing to decodeAbiParameters so a 100 MB blob
+  // can't blow the heap. Length is in hex chars; each byte = 2 chars.
+  if (hex.length - 2 > MAX_METADATA_BYTES * 2) {
+    return { version: null, reason: "decode_failed" };
+  }
 
   try {
     const [version, cumIn, cumOut, cumReq, services] = decodeAbiParameters(
@@ -74,6 +104,28 @@ export function decodeMetadata(bytes: string | null | undefined): DecodedMetadat
       hex,
     ) as readonly [bigint, bigint, bigint, bigint, readonly DecodedService[]];
     if (version === 2n) {
+      // Hard ceiling on services.length — a malformed payload with billions
+      // of entries can't be coalesced even if decodeAbiParameters returned.
+      if (services.length > MAX_DECODED_SERVICES) {
+        return { version: null, reason: "decode_failed" };
+      }
+      // Validate every counter is in the bigint-safe range BEFORE we ingest.
+      // Catching here means applyDecodedSettlement never has to handle the
+      // out-of-range case — bad rows get terminally marked decode_failed.
+      try {
+        for (const s of services) {
+          safeBigint(s.cumulativeAmount);
+          safeBigint(s.cumulativeInputTokens);
+          safeBigint(s.cumulativeCachedInputTokens);
+          safeBigint(s.cumulativeOutputTokens);
+          safeBigint(s.cumulativeRequestCount);
+        }
+        safeBigint(cumIn);
+        safeBigint(cumOut);
+        safeBigint(cumReq);
+      } catch {
+        return { version: null, reason: "decode_failed" };
+      }
       // Coalesce duplicate serviceIds: take max of each counter independently
       // so a malformed payload where one duplicate has higher cumulativeAmount
       // and another has higher cumulativeOutputTokens cannot silently drop
@@ -119,7 +171,16 @@ export function decodeMetadata(bytes: string | null | undefined): DecodedMetadat
       V1_PARAMS,
       hex,
     ) as readonly [bigint, bigint, bigint, bigint];
-    if (version === 1n) return { version: 1, cumIn, cumOut, cumReq };
+    if (version === 1n) {
+      try {
+        safeBigint(cumIn);
+        safeBigint(cumOut);
+        safeBigint(cumReq);
+      } catch {
+        return { version: null, reason: "decode_failed" };
+      }
+      return { version: 1, cumIn, cumOut, cumReq };
+    }
   } catch {
     // Fall through to decode_failed.
   }

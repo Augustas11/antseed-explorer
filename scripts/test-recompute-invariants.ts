@@ -117,28 +117,57 @@ async function main() {
     assert.equal(Number(dsmRow.out_sum), Number(cstRow.cumulative_out_tokens));
     assert.equal(Number(dsmRow.req_sum), Number(cstRow.cumulative_requests));
 
-    // Per-settlement aggregate cap: SUM of per-service delta <= events.delta_usdc.
-    // With one service, this is trivially true (capped at top-level on first sight),
-    // but assert anyway to lock in the invariant shape.
-    const aggregateRow = await db.execute<Record<string, unknown>>(sql`
-      SELECT MAX(per_settlement_total - events_delta) AS max_excess
-        FROM (
-          SELECT sss.tx_hash, sss.log_index,
-                 SUM(sss.cumulative_amount_usdc) AS per_settlement_total,
-                 MAX(e.delta_usdc) AS events_delta
-            FROM settlement_service_snapshots sss
-            JOIN events e ON e.tx_hash = sss.tx_hash AND e.log_index = sss.log_index
-           WHERE sss.tx_hash LIKE '0xfff10000%'
-           GROUP BY sss.tx_hash, sss.log_index
-        ) s
+    // Per-settlement aggregate cap (SPEC §5.5 per_settlement_scale): when the
+    // sum of per-service first-snapshot USDC deltas in ONE settlement exceeds
+    // events.delta_usdc, every per-service delta in that settlement must be
+    // proportionally scaled down to fit the top-level cap.
+    //
+    // Fixture: a fresh channel (no pre-v2 history → no zero-baseline), one
+    // settlement with TWO services each claiming 10 USDC cumulative while the
+    // top-level delta is only 6. Expected: each service's CST is scaled to
+    // 3 USDC (6 * 10 / 20 = 3). Without proportional scaling each would
+    // sit at the raw 10 USDC and CST sum would be 2x reality.
+    const capRaw = `antseed-test-model-cap-${Date.now()}`;
+    const capRawB = `antseed-test-model-cap-b-${Date.now()}`;
+    const capChannel = makeChannelId(99);
+    const capSidA = await seedAlias(capRaw);
+    const capSidB = await seedAlias(capRawB);
+    await applyFixture({
+      txHash: makeTxHash(99),
+      logIndex: 0,
+      channelId: capChannel,
+      blockNumber: 300_000,
+      timestamp: 1_700_500_000 + 86_400 * 7,
+      deltaUsdc: 6,
+      services: [
+        {
+          raw: capRaw,
+          cumulativeAmount: 10_000_000n,
+          cumulativeInputTokens: 100n,
+          cumulativeCachedInputTokens: 0n,
+          cumulativeOutputTokens: 50n,
+          cumulativeRequestCount: 1n,
+        },
+        {
+          raw: capRawB,
+          cumulativeAmount: 10_000_000n,
+          cumulativeInputTokens: 100n,
+          cumulativeCachedInputTokens: 0n,
+          cumulativeOutputTokens: 50n,
+          cumulativeRequestCount: 1n,
+        },
+      ],
+    });
+    await recomputeServiceMetadata();
+    const cap = await db.execute<Record<string, unknown>>(sql`
+      SELECT SUM(cumulative_amount_usdc)::float AS sum_usdc
+        FROM channel_service_totals
+       WHERE channel_id = ${capChannel} AND service_id IN (${capSidA}, ${capSidB})
     `);
-    const excess = Number(aggregateRow.rows[0]?.max_excess ?? 0);
-    // First snapshot is bounded by delta_usdc; later cumulative may exceed
-    // delta_usdc of one settlement because cumulative grows across many.
-    // Assert only that the FIRST settlement on first sight is bounded.
+    const sumUsdc = Number(cap.rows[0]?.sum_usdc ?? 0);
     assert.ok(
-      excess <= 5 + EPS,
-      `first-settlement absolute > delta_usdc cap (excess=${excess})`,
+      Math.abs(sumUsdc - 6) < EPS,
+      `proportional scale must bring two-service first-snapshot sum to delta_usdc (got ${sumUsdc}, expected 6)`,
     );
 
     console.log("✓ test-recompute-invariants");
