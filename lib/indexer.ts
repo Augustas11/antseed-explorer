@@ -28,6 +28,7 @@ import {
 } from "./indexerWindow";
 import { canonicalize } from "./services-canonical";
 import { serviceIdOf } from "./metadata";
+import { applyDecodedSettlement } from "./serviceMetadata";
 
 export { growLogBatchSize, shrinkLogBatchSize } from "./indexerWindow";
 
@@ -291,6 +292,13 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
     const rows: any[] = [];
     const batchBuyers = new Set<string>();
     let malformedMetadata = 0;
+    // Side map: settled rows by (tx_hash:log_index) so we can fan out to
+    // applyDecodedSettlement after the events-insert returns the freshly
+    // inserted rows (replay-safe: only newly-inserted events are decoded).
+    const settledForDecode = new Map<
+      string,
+      { channelId: string; blockNumber: number; timestamp: number; metadata: string | null }
+    >();
     for (const log of logs as any[]) {
       const eventType = mapEventType(log.eventName);
       if (!eventType) {
@@ -304,6 +312,14 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
       const ts = blockTs.get(log.blockNumber!) ?? 0;
       const meta = decodeMetadata(args.metadata);
       if (eventType === "settled" && args.metadata && !meta) malformedMetadata++;
+      if (eventType === "settled" && channelId) {
+        settledForDecode.set(`${log.transactionHash}:${log.logIndex}`, {
+          channelId,
+          blockNumber: Number(log.blockNumber),
+          timestamp: ts,
+          metadata: typeof args.metadata === "string" ? args.metadata : null,
+        });
+      }
       rows.push({
         txHash: log.transactionHash,
         logIndex: log.logIndex,
@@ -354,9 +370,36 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
         .insert(eventsTbl)
         .values(rows)
         .onConflictDoNothing()
-        .returning({ id: eventsTbl.id });
+        .returning({
+          id: eventsTbl.id,
+          txHash: eventsTbl.txHash,
+          logIndex: eventsTbl.logIndex,
+        });
       eventsAdded += result.length;
       await addPendingBuyers(batchBuyers);
+      // Live-path v2 attribution: decode only the rows that were freshly
+      // inserted (returning(...) filters out replays via onConflictDoNothing).
+      // Backfill of pre-existing rows runs via decodePendingMetadata().
+      for (const r of result) {
+        const key = `${r.txHash}:${r.logIndex}`;
+        const settled = settledForDecode.get(key);
+        if (!settled) continue;
+        try {
+          await applyDecodedSettlement({
+            txHash: r.txHash,
+            logIndex: r.logIndex,
+            channelId: settled.channelId,
+            blockNumber: settled.blockNumber,
+            timestamp: settled.timestamp,
+            metadata: settled.metadata,
+          });
+        } catch (e) {
+          console.warn(
+            `[indexer] applyDecodedSettlement failed for ${key}:`,
+            (e as Error)?.message || e,
+          );
+        }
+      }
     }
     },
   });
