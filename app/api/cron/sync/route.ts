@@ -3,6 +3,10 @@ import { sync, refreshProviderDirectory } from "@/lib/indexer";
 import { refreshDiemPoolSnapshot } from "@/lib/diem";
 import { refreshHeroSnapshot } from "@/lib/queries";
 import { authorizedBearer } from "@/lib/operatorAuth";
+import {
+  recomputeServiceMetadata,
+  decodePendingMetadata,
+} from "@/lib/serviceMetadata";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +28,18 @@ export async function GET(req: NextRequest) {
     // Leave explicit headroom for provider + DIEM refresh under the 60s cap.
     const result = await sync({ force: true, deadlineMs: 45_000 });
     await refreshProviderDirectory();
+    // Per-model v2 attribution: drain the backfill (decode any settled events
+    // whose metadata hasn't been parsed yet) then rebuild the derived rollups.
+    // Bounded so a giant backfill can't eat the whole tick.
+    try {
+      const pendingBudget = remaining(5_000);
+      if (pendingBudget >= 3_000) {
+        await decodePendingMetadata(500);
+      }
+      await recomputeServiceMetadata();
+    } catch (e) {
+      console.warn("[cron/sync] service metadata rebuild failed", e);
+    }
     // DIEM + hero snapshots are SSR-warm-up jobs — they don't need to refresh
     // every 15 min. Gate them to the top of each hour so the cron tick that
     // actually does this work runs ~24×/day instead of 96×/day.
