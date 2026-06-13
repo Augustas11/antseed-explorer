@@ -270,6 +270,114 @@ const spec = {
   },
   security: [{}],
   paths: {
+    "/api/models": {
+      get: {
+        summary: "List models with usage",
+        description: "Returns per-canonical-model usage stats sourced from on-chain v2 SpendingAuth attribution, plus an Unmapped bucket and coverage breakdown so the page is honest about the v1->v2 transition.",
+        operationId: "listModels",
+        security: [{ ApiKey: [] }, {}],
+        parameters: [
+          { name: "limit", in: "query", schema: { type: "integer", default: 100, maximum: 500 } },
+          { name: "sort", in: "query", schema: { type: "string", enum: ["spend", "sellers", "tokens", "requests"], default: "spend" } },
+        ],
+        responses: {
+          "200": {
+            description: "Model usage summary",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["rows", "unmapped", "coverage"],
+                  properties: {
+                    rows: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        required: [
+                          "service_key",
+                          "display",
+                          "aliases",
+                          "service_ids",
+                          "amount_usdc",
+                          "input_tokens",
+                          "cached_input_tokens",
+                          "output_tokens",
+                          "requests",
+                          "channels",
+                          "buyers",
+                          "sellers",
+                          "provider_count",
+                          "tags",
+                        ],
+                        properties: {
+                          service_key: { type: "string", example: "claude-opus-4-6" },
+                          display: { type: "string", example: "Claude Opus 4.6" },
+                          aliases: { type: "array", items: { type: "string" } },
+                          service_ids: { type: "array", items: { type: "string" }, description: "0x-prefixed bytes32 hashes" },
+                          amount_usdc: { type: "number" },
+                          input_tokens: { type: "integer" },
+                          cached_input_tokens: { type: "integer" },
+                          output_tokens: { type: "integer" },
+                          requests: { type: "integer" },
+                          channels: { type: "integer" },
+                          buyers: { type: "integer" },
+                          sellers: { type: "integer" },
+                          provider_count: { type: "integer" },
+                          min_price_in: { type: "number", nullable: true },
+                          max_price_in: { type: "number", nullable: true },
+                          min_price_out: { type: "number", nullable: true },
+                          max_price_out: { type: "number", nullable: true },
+                          tags: { type: "array", items: { type: "string" } },
+                        },
+                      },
+                    },
+                    unmapped: {
+                      type: "object",
+                      required: ["service_ids", "amount_usdc", "top"],
+                      properties: {
+                        service_ids: { type: "integer" },
+                        amount_usdc: { type: "number" },
+                        top: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            required: ["service_id", "amount_usdc"],
+                            properties: {
+                              service_id: { type: "string" },
+                              amount_usdc: { type: "number" },
+                            },
+                          },
+                        },
+                      },
+                    },
+                    coverage: {
+                      type: "object",
+                      required: [
+                        "decoded_settled_usdc",
+                        "v2_attributed_usdc",
+                        "v2_share",
+                        "unattributed_usdc",
+                        "pending_usdc",
+                        "prefix_blocked_usdc",
+                      ],
+                      properties: {
+                        decoded_settled_usdc: { type: "number" },
+                        v2_attributed_usdc: { type: "number" },
+                        v2_share: { type: "number", description: "0..1 — share of decoded settled USDC carrying v2 attribution" },
+                        unattributed_usdc: { type: "number" },
+                        pending_usdc: { type: "number" },
+                        prefix_blocked_usdc: { type: "number" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "429": { description: "Rate limit exceeded", content: { "application/json": { schema: { "$ref": "#/components/schemas/Error429" } } } },
+        },
+      },
+    },
     "/api/buyers": {
       get: {
         summary: "List buyers",
