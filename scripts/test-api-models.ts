@@ -8,7 +8,9 @@ import Module from "node:module";
 // Intercept lib/queries imports BEFORE the route module pulls them in so we
 // can return a fixed ModelUsageSummary without standing up Neon.
 const queriesPath = require.resolve("../lib/queries");
-const originalLoad = (Module as unknown as { _load: (...args: unknown[]) => unknown })._load;
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+const moduleAny = Module as unknown as { _load: ModuleLoad };
+const originalLoad = moduleAny._load;
 const FIXTURE = {
   rows: [
     {
@@ -42,11 +44,7 @@ const FIXTURE = {
     prefix_blocked_usdc: 0,
   },
 };
-(Module as unknown as { _load: typeof originalLoad })._load = function (
-  request: string,
-  parent: unknown,
-  isMain: boolean,
-) {
+moduleAny._load = function (request: string, parent: unknown, isMain: boolean) {
   const resolved =
     request.startsWith("./") || request.startsWith("../") || request.startsWith("@/")
       ? request
@@ -69,12 +67,8 @@ let rateLimitAllowed = true;
 const rateLimitPath = require.resolve("../lib/rateLimit");
 const mcpUsagePath = require.resolve("../lib/mcp-usage");
 const trackedRoutes: string[] = [];
-const realLoad = (Module as unknown as { _load: typeof originalLoad })._load;
-(Module as unknown as { _load: typeof originalLoad })._load = function (
-  request: string,
-  parent: unknown,
-  isMain: boolean,
-) {
+const realLoad = moduleAny._load;
+moduleAny._load = function (request: string, parent: unknown, isMain: boolean) {
   if (request === "@/lib/rateLimit") {
     return {
       checkRateLimit: async () =>
