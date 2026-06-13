@@ -30,11 +30,15 @@ export async function GET(req: NextRequest) {
     await refreshProviderDirectory();
     // Per-model v2 attribution: drain the backfill (decode any settled events
     // whose metadata hasn't been parsed yet) then rebuild the derived rollups.
-    // Bounded so a giant backfill can't eat the whole tick.
+    // Drain at least a tiny chunk on every tick so the prefix-pending gate
+    // keeps advancing under sustained budget pressure — otherwise a single
+    // pending event holds back every later snapshot on that channel.
     try {
       const pendingBudget = remaining(5_000);
       if (pendingBudget >= 3_000) {
         await decodePendingMetadata(500);
+      } else if (pendingBudget >= 500) {
+        await decodePendingMetadata(50);
       }
       await recomputeServiceMetadata();
     } catch (e) {

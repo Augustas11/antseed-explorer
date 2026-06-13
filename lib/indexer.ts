@@ -998,15 +998,21 @@ async function persistServiceAliasesFromRows(
     }
   }
   if (aliases.length === 0) return;
-  for (const a of aliases) {
-    await db.execute(sql`
-      INSERT INTO service_id_aliases
-        (service_id, raw_alias, canonical_key, display, first_seen_ts, last_seen_ts)
-      VALUES (${a.service_id}, ${a.raw_alias}, ${a.canonical_key}, ${a.display}, ${a.seen_ts}, ${a.seen_ts})
-      ON CONFLICT (service_id) DO UPDATE
-        SET last_seen_ts = EXCLUDED.last_seen_ts
-    `);
-  }
+  // Batch into one INSERT — VALUES list is bounded by MAX_PROVIDER_DIRECTORY_PEERS
+  // * MAX_PROVIDER_SERVICES so it stays well under any reasonable param cap.
+  const values = sql.join(
+    aliases.map(
+      (a) => sql`(${a.service_id}, ${a.raw_alias}, ${a.canonical_key}, ${a.display}, ${a.seen_ts}, ${a.seen_ts})`,
+    ),
+    sql`, `,
+  );
+  await db.execute(sql`
+    INSERT INTO service_id_aliases
+      (service_id, raw_alias, canonical_key, display, first_seen_ts, last_seen_ts)
+    VALUES ${values}
+    ON CONFLICT (service_id) DO UPDATE
+      SET last_seen_ts = EXCLUDED.last_seen_ts
+  `);
 }
 
 // ============================================================================

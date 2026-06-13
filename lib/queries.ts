@@ -2932,11 +2932,25 @@ async function computeModelDetail(canonicalKey: string): Promise<ModelDetail | n
   };
 }
 
+const MODEL_DETAIL_CACHE_MAX = 500;
 const modelDetailCacheByKey = new Map<string, { get: () => Promise<ModelDetail | null> }>();
 
 export async function getModelDetail(canonicalKey: string): Promise<ModelDetail | null> {
+  // Resolve to a known canonical key BEFORE creating a cache entry. Otherwise
+  // an attacker hitting /models/<random> creates one entry per request and
+  // the Map grows without bound (the inner TtlCache TTL doesn't evict the
+  // outer Map). If the key isn't in the usage rollup, return null without
+  // touching the cache.
+  const usage = await getModelUsage();
+  const row = usage.rows.find((r) => r.service_key === canonicalKey);
+  if (!row) return null;
   let entry = modelDetailCacheByKey.get(canonicalKey);
   if (!entry) {
+    if (modelDetailCacheByKey.size >= MODEL_DETAIL_CACHE_MAX) {
+      // Evict the oldest entry — Map preserves insertion order.
+      const oldest = modelDetailCacheByKey.keys().next().value;
+      if (oldest) modelDetailCacheByKey.delete(oldest);
+    }
     entry = createTtlCache(
       () => computeModelDetail(canonicalKey),
       HOT_PAGE_AGGREGATE_CACHE_TTL_MS,

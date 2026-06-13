@@ -144,7 +144,18 @@ export async function decodePendingMetadata(limit = 200): Promise<number> {
 
   let processed = 0;
   for (const r of rows.rows) {
-    if (!r.channel_id) continue;
+    if (!r.channel_id) {
+      // No channel — can't fan out per-service snapshots. Flip terminal so
+      // the row stops counting toward pending_usdc on every coverage CTE.
+      await db.execute(sql`
+        UPDATE events
+           SET metadata_decode_status = 'decode_failed',
+               metadata_decoded_at    = ${Math.floor(Date.now() / 1000)}
+         WHERE tx_hash = ${r.tx_hash} AND log_index = ${r.log_index}
+      `);
+      processed += 1;
+      continue;
+    }
     const metadata = extractMetadataFromRawLog(r.raw_log);
     await applyDecodedSettlement({
       txHash: r.tx_hash,
