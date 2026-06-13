@@ -21,6 +21,12 @@ export interface HeroStats {
   antsClaimers: number;
   diemPoolUsers: number;
   diemExactAddresses: boolean;
+  // v2 attribution coverage (SPEC §7.3 windowed form) — optional so the
+  // hero-snapshot validator accepts older persisted blobs that pre-date the
+  // per-model rollup. The UI shows v2Share next to total revenue and the
+  // prefix-blocked sub-line so users can read coverage at a glance.
+  v2Share?: number;
+  prefixBlockedUsdc?: number;
 }
 
 export interface HeroSparklinePoint {

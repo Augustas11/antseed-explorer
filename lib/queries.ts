@@ -638,6 +638,10 @@ async function computeHeroStats(): Promise<HeroStats> {
   `);
 
   const x = r.rows[0] ?? {};
+  const windowedCoverage = await computeHeroWindowedCoverage(day30).catch((e) => {
+    console.warn("[hero] windowed coverage failed", e);
+    return null;
+  });
   return {
     totalRevenueUsdc: Number(x.total_revenue ?? 0),
     recentRevenueUsdc: Number(x.recent_revenue ?? 0),
@@ -647,6 +651,12 @@ async function computeHeroStats(): Promise<HeroStats> {
     totalTokensOutput: safeTokenCount(x.total_tokens_output, "hero total output"),
     recentTokens: safeTokenCount(x.recent_tokens, "hero recent"),
     priorTokens: safeTokenCount(x.prior_tokens, "hero prior"),
+    ...(windowedCoverage
+      ? {
+          v2Share: windowedCoverage.v2_share,
+          prefixBlockedUsdc: windowedCoverage.prefix_blocked_usdc,
+        }
+      : {}),
     totalPayingUsers: Number(x.total_paying_users ?? 0),
     recentPayingUsers: Number(x.recent_paying_users ?? 0),
     priorPayingUsers: Number(x.prior_paying_users ?? 0),
@@ -654,6 +664,86 @@ async function computeHeroStats(): Promise<HeroStats> {
     antsClaimers: Number(x.ants_claimers ?? 0),
     diemPoolUsers: Number(x.diem_pool_users ?? 0),
     diemExactAddresses: diemPool.exactAddresses,
+  };
+}
+
+// SPEC §7.3 windowed form — explicit CROSS JOIN cutoff before LEFT JOIN
+// channel_pending_min so `events e` is in scope for the join's ON clause
+// (pass-8 #1; comma-join binds looser than LEFT JOIN). Reports the share of
+// 30d decoded settled spend that carries v2 attribution, plus the
+// prefix-blocked sub-bucket so the hero card can be honest about what's held
+// out of the rebuild while backfill catches up.
+async function computeHeroWindowedCoverage(cutoffUnix: number): Promise<{
+  v2_share: number;
+  decoded_settled_usdc: number;
+  v2_attributed_usdc: number;
+  prefix_blocked_usdc: number;
+  pending_usdc: number;
+}> {
+  const r = await db.execute<{
+    decoded_settled_usdc: number;
+    v2_attributed_usdc: number;
+    pending_usdc: number;
+    prefix_blocked_usdc: number;
+    v2_share: number;
+  } & Record<string, unknown>>(sql`
+    WITH
+      cutoff AS (
+        SELECT ${rawNonNegativeInteger(cutoffUnix, "hero windowed cutoff")}::bigint AS cutoff_unix,
+               to_timestamp(${rawNonNegativeInteger(cutoffUnix, "hero windowed cutoff")})::date AS cutoff_day
+      ),
+      channel_pending_min AS (
+        SELECT DISTINCT ON (channel_id)
+               channel_id,
+               block_number AS first_pending_block,
+               log_index    AS first_pending_log_index
+          FROM events
+         WHERE event_type = 'settled'
+           AND metadata_decode_status = 'pending'
+           AND channel_id IS NOT NULL
+         ORDER BY channel_id, block_number ASC, log_index ASC
+      ),
+      events_classified AS (
+        SELECT e.delta_usdc,
+               CASE
+                 WHEN e.metadata_decode_status = 'pending' THEN 'pending'
+                 WHEN cpm.first_pending_block IS NOT NULL
+                      AND (e.block_number, e.log_index)
+                          >= (cpm.first_pending_block, cpm.first_pending_log_index)
+                   THEN 'prefix_blocked'
+                 ELSE 'decoded'
+               END AS bucket
+          FROM events e
+          CROSS JOIN cutoff
+          LEFT JOIN channel_pending_min cpm ON cpm.channel_id = e.channel_id
+         WHERE e.event_type = 'settled'
+           AND e.timestamp >= cutoff.cutoff_unix
+      ),
+      coverage_decoded AS (
+        SELECT COALESCE(SUM(delta_usdc) FILTER (WHERE bucket = 'decoded'),        0)::float AS decoded_settled_usdc,
+               COALESCE(SUM(delta_usdc) FILTER (WHERE bucket = 'pending'),        0)::float AS pending_usdc,
+               COALESCE(SUM(delta_usdc) FILTER (WHERE bucket = 'prefix_blocked'), 0)::float AS prefix_blocked_usdc
+          FROM events_classified
+      ),
+      coverage_attributed AS (
+        SELECT COALESCE(SUM(delta_amount_usdc), 0)::float AS v2_attributed_usdc
+          FROM daily_service_metrics, cutoff
+         WHERE day >= cutoff.cutoff_day
+      )
+    SELECT decoded_settled_usdc, v2_attributed_usdc, pending_usdc, prefix_blocked_usdc,
+           CASE WHEN decoded_settled_usdc > 0
+                THEN v2_attributed_usdc / decoded_settled_usdc
+                ELSE 0
+           END AS v2_share
+      FROM coverage_decoded CROSS JOIN coverage_attributed
+  `);
+  const row = r.rows[0];
+  return {
+    decoded_settled_usdc: Number(row?.decoded_settled_usdc ?? 0),
+    v2_attributed_usdc: Number(row?.v2_attributed_usdc ?? 0),
+    pending_usdc: Number(row?.pending_usdc ?? 0),
+    prefix_blocked_usdc: Number(row?.prefix_blocked_usdc ?? 0),
+    v2_share: Number(row?.v2_share ?? 0),
   };
 }
 
@@ -2487,3 +2577,371 @@ export const getAntsOverview = createTtlCache(
   computeAntsOverview,
   HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
 ).get;
+
+// ===========================================================================
+// Per-model network stats — sourced from v2 SpendingAuth attribution
+// (settlement_service_snapshots) rolled up by recomputeServiceMetadata().
+// SPEC §7.
+// ===========================================================================
+
+import { getModelTags, type ModelTag } from "./modelTags";
+import { getLabForModel, type Lab } from "./labs";
+
+export type ModelUsageSort = "spend" | "sellers" | "tokens" | "requests";
+
+export interface ModelUsageRow {
+  service_key: string;
+  display: string;
+  aliases: string[];
+  service_ids: string[];
+  amount_usdc: number;
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  requests: number;
+  channels: number;
+  buyers: number;
+  sellers: number;
+  provider_count: number;
+  min_price_in: number | null;
+  max_price_in: number | null;
+  min_price_out: number | null;
+  max_price_out: number | null;
+  tags: ModelTag[];
+}
+
+export interface ModelUsageCoverage {
+  decoded_settled_usdc: number;
+  v2_attributed_usdc: number;
+  v2_share: number;
+  unattributed_usdc: number;
+  pending_usdc: number;
+  prefix_blocked_usdc: number;
+}
+
+export interface ModelUsageUnmapped {
+  service_ids: number;
+  amount_usdc: number;
+  top: Array<{ service_id: string; amount_usdc: number }>;
+}
+
+export interface ModelUsageSummary {
+  rows: ModelUsageRow[];
+  unmapped: ModelUsageUnmapped;
+  coverage: ModelUsageCoverage;
+}
+
+type ModelUsageRawRow = {
+  group_key: string;
+  canonical_key: string | null;
+  display: string | null;
+  service_ids: string[];
+  amount_usdc: number;
+  in_tokens: number;
+  cached_in_tokens: number;
+  out_tokens: number;
+  requests: number;
+  channels: number;
+  buyers: number;
+  sellers: number;
+} & Record<string, unknown>;
+
+type ModelCoverageRawRow = {
+  decoded_settled_usdc: number;
+  v2_attributed_usdc: number;
+  pending_usdc: number;
+  prefix_blocked_usdc: number;
+  unattributed_usdc: number;
+  v2_share: number;
+} & Record<string, unknown>;
+
+type ModelAliasRow = {
+  canonical_key: string;
+  raw_alias: string;
+} & Record<string, unknown>;
+
+async function computeModelUsage(): Promise<ModelUsageSummary> {
+  // Per-canonical rollup. JOINs service_id_aliases inside the CTE so
+  // COUNT(DISTINCT ...) is taken across all aliases under one canonical
+  // model — Node-side merge would double-count buyers/sellers/channels that
+  // used two aliases of the same model (SPEC §7.1 / pass-8 #2).
+  const usage = await db.execute<ModelUsageRawRow>(sql`
+    WITH
+      channel_dim AS (
+        SELECT DISTINCT ON (channel_id)
+               channel_id, buyer_address, seller_address
+          FROM events
+         WHERE event_type IN ('reserved','settled','closed','topup','withdrawn')
+           AND channel_id IS NOT NULL
+         ORDER BY channel_id, block_number ASC, log_index ASC
+      ),
+      cst_with_dim AS (
+        SELECT cst.service_id, cst.channel_id,
+               cst.cumulative_amount_usdc       AS amount_usdc,
+               cst.cumulative_in_tokens         AS in_tokens,
+               cst.cumulative_cached_in_tokens  AS cached_in_tokens,
+               cst.cumulative_out_tokens        AS out_tokens,
+               cst.cumulative_requests          AS requests,
+               cd.buyer_address,
+               cd.seller_address,
+               sia.canonical_key,
+               sia.display
+          FROM channel_service_totals cst
+          LEFT JOIN channel_dim         cd  ON cd.channel_id = cst.channel_id
+          LEFT JOIN service_id_aliases  sia USING (service_id)
+      )
+    SELECT
+      COALESCE(canonical_key, '__unmapped:' || service_id) AS group_key,
+      MAX(canonical_key)                  AS canonical_key,
+      MAX(display)                        AS display,
+      ARRAY_AGG(DISTINCT service_id)      AS service_ids,
+      COALESCE(SUM(amount_usdc), 0)::float       AS amount_usdc,
+      COALESCE(SUM(in_tokens), 0)::bigint        AS in_tokens,
+      COALESCE(SUM(cached_in_tokens), 0)::bigint AS cached_in_tokens,
+      COALESCE(SUM(out_tokens), 0)::bigint       AS out_tokens,
+      COALESCE(SUM(requests), 0)::bigint         AS requests,
+      COUNT(DISTINCT channel_id)::int            AS channels,
+      COUNT(DISTINCT buyer_address)::int         AS buyers,
+      COUNT(DISTINCT seller_address)::int        AS sellers
+    FROM cst_with_dim
+    GROUP BY 1
+  `);
+
+  // Aliases per canonical key from service_id_aliases.
+  const aliases = await db.execute<ModelAliasRow>(sql`
+    SELECT canonical_key, raw_alias FROM service_id_aliases
+  `);
+  const aliasesByKey = new Map<string, string[]>();
+  for (const r of aliases.rows) {
+    if (!aliasesByKey.has(r.canonical_key)) aliasesByKey.set(r.canonical_key, []);
+    aliasesByKey.get(r.canonical_key)!.push(r.raw_alias);
+  }
+
+  // Supply-side merge from listServices() (provider_count + price ranges).
+  const supply = await listServices();
+  const supplyByKey = new Map(supply.map((s) => [s.name, s]));
+
+  const rows: ModelUsageRow[] = [];
+  const unmappedRows: Array<{ service_id: string; amount_usdc: number }> = [];
+
+  for (const raw of usage.rows) {
+    const isUnmapped = raw.canonical_key == null;
+    if (isUnmapped) {
+      // group_key is '__unmapped:<service_id>'; ARRAY_AGG has exactly one id.
+      const sid = (raw.service_ids ?? [])[0] ?? raw.group_key.slice("__unmapped:".length);
+      unmappedRows.push({
+        service_id: sid,
+        amount_usdc: Number(raw.amount_usdc ?? 0),
+      });
+      continue;
+    }
+    const canonicalKey = raw.canonical_key!;
+    const display = raw.display ?? canonicalKey;
+    const supplyRow = supplyByKey.get(canonicalKey);
+    rows.push({
+      service_key: canonicalKey,
+      display,
+      aliases: (aliasesByKey.get(canonicalKey) ?? []).slice().sort(),
+      service_ids: (raw.service_ids ?? []).slice().sort(),
+      amount_usdc: Number(raw.amount_usdc ?? 0),
+      input_tokens: Number(raw.in_tokens ?? 0),
+      cached_input_tokens: Number(raw.cached_in_tokens ?? 0),
+      output_tokens: Number(raw.out_tokens ?? 0),
+      requests: Number(raw.requests ?? 0),
+      channels: Number(raw.channels ?? 0),
+      buyers: Number(raw.buyers ?? 0),
+      sellers: Number(raw.sellers ?? 0),
+      provider_count: supplyRow?.provider_count ?? 0,
+      min_price_in: supplyRow?.min_price_in ?? null,
+      max_price_in: supplyRow?.max_price_in ?? null,
+      min_price_out: supplyRow?.min_price_out ?? null,
+      max_price_out: supplyRow?.max_price_out ?? null,
+      tags: getModelTags(display),
+    });
+  }
+
+  const coverage = await computeModelCoverage();
+
+  const unmappedTotal = unmappedRows.reduce((sum, r) => sum + r.amount_usdc, 0);
+  const unmappedTop = unmappedRows
+    .slice()
+    .sort((a, b) => b.amount_usdc - a.amount_usdc)
+    .slice(0, 5);
+
+  return {
+    rows,
+    unmapped: {
+      service_ids: unmappedRows.length,
+      amount_usdc: unmappedTotal,
+      top: unmappedTop,
+    },
+    coverage,
+  };
+}
+
+async function computeModelCoverage(): Promise<ModelUsageCoverage> {
+  const r = await db.execute<ModelCoverageRawRow>(sql`
+    WITH
+      channel_pending_min AS (
+        SELECT DISTINCT ON (channel_id)
+               channel_id,
+               block_number AS first_pending_block,
+               log_index    AS first_pending_log_index
+          FROM events
+         WHERE event_type = 'settled'
+           AND metadata_decode_status = 'pending'
+           AND channel_id IS NOT NULL
+         ORDER BY channel_id, block_number ASC, log_index ASC
+      ),
+      events_classified AS (
+        SELECT e.delta_usdc,
+               e.metadata_decode_status,
+               CASE
+                 WHEN e.metadata_decode_status = 'pending' THEN 'pending'
+                 WHEN cpm.first_pending_block IS NOT NULL
+                      AND (e.block_number, e.log_index)
+                          >= (cpm.first_pending_block, cpm.first_pending_log_index)
+                   THEN 'prefix_blocked'
+                 ELSE 'decoded'
+               END AS bucket
+          FROM events e
+          LEFT JOIN channel_pending_min cpm ON cpm.channel_id = e.channel_id
+         WHERE e.event_type = 'settled'
+      ),
+      coverage_decoded AS (
+        SELECT COALESCE(SUM(delta_usdc) FILTER (WHERE bucket = 'decoded'),        0)::float AS decoded_settled_usdc,
+               COALESCE(SUM(delta_usdc) FILTER (WHERE bucket = 'pending'),        0)::float AS pending_usdc,
+               COALESCE(SUM(delta_usdc) FILTER (WHERE bucket = 'prefix_blocked'), 0)::float AS prefix_blocked_usdc
+          FROM events_classified
+      ),
+      coverage_attributed AS (
+        SELECT COALESCE(SUM(cumulative_amount_usdc), 0)::float AS v2_attributed_usdc
+          FROM channel_service_totals
+      )
+    SELECT decoded_settled_usdc, v2_attributed_usdc, pending_usdc, prefix_blocked_usdc,
+           (decoded_settled_usdc - v2_attributed_usdc) AS unattributed_usdc,
+           CASE WHEN decoded_settled_usdc > 0
+                THEN v2_attributed_usdc / decoded_settled_usdc
+                ELSE 0
+           END AS v2_share
+      FROM coverage_decoded CROSS JOIN coverage_attributed
+  `);
+  const row = r.rows[0];
+  return {
+    decoded_settled_usdc: Number(row?.decoded_settled_usdc ?? 0),
+    v2_attributed_usdc: Number(row?.v2_attributed_usdc ?? 0),
+    v2_share: Number(row?.v2_share ?? 0),
+    unattributed_usdc: Number(row?.unattributed_usdc ?? 0),
+    pending_usdc: Number(row?.pending_usdc ?? 0),
+    prefix_blocked_usdc: Number(row?.prefix_blocked_usdc ?? 0),
+  };
+}
+
+const modelUsageCache = createTtlCache(
+  computeModelUsage,
+  HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
+);
+
+export async function getModelUsage(opts: {
+  sort?: ModelUsageSort;
+  limit?: number;
+} = {}): Promise<ModelUsageSummary> {
+  const cached = await modelUsageCache.get();
+  // Apply sort + limit on the cached structure so the cache itself stays
+  // representation-stable across queries with different sort/limit pairs.
+  const sortKey: ModelUsageSort = opts.sort ?? "spend";
+  const rows = cached.rows.slice().sort((a, b) => {
+    switch (sortKey) {
+      case "sellers":
+        return b.sellers - a.sellers || b.amount_usdc - a.amount_usdc;
+      case "tokens":
+        return (
+          b.input_tokens + b.output_tokens - (a.input_tokens + a.output_tokens) ||
+          b.amount_usdc - a.amount_usdc
+        );
+      case "requests":
+        return b.requests - a.requests || b.amount_usdc - a.amount_usdc;
+      case "spend":
+      default:
+        return b.amount_usdc - a.amount_usdc || b.sellers - a.sellers;
+    }
+  });
+  const limit = opts.limit != null && opts.limit > 0 ? Math.floor(opts.limit) : rows.length;
+  return {
+    rows: rows.slice(0, limit),
+    unmapped: cached.unmapped,
+    coverage: cached.coverage,
+  };
+}
+
+export interface ModelDailyPoint {
+  day: string;
+  amount_usdc: number;
+  input_tokens: number;
+  output_tokens: number;
+  requests: number;
+}
+
+export interface ModelDetail extends ModelUsageRow {
+  daily: ModelDailyPoint[];
+  providers: ServiceProviderRow["provider_details"];
+  lab: Lab | null;
+}
+
+async function computeModelDetail(canonicalKey: string): Promise<ModelDetail | null> {
+  const usage = await getModelUsage();
+  const row = usage.rows.find((r) => r.service_key === canonicalKey);
+  if (!row) return null;
+
+  const dailyRows = await db.execute<{
+    day: string;
+    amount_usdc: number;
+    input_tokens: number;
+    output_tokens: number;
+    requests: number;
+  }>(sql`
+    WITH ids AS (
+      SELECT service_id FROM service_id_aliases WHERE canonical_key = ${canonicalKey}
+    )
+    SELECT to_char(day, 'YYYY-MM-DD')        AS day,
+           SUM(delta_amount_usdc)::float     AS amount_usdc,
+           SUM(delta_in_tokens)::bigint      AS input_tokens,
+           SUM(delta_out_tokens)::bigint     AS output_tokens,
+           SUM(delta_requests)::bigint       AS requests
+      FROM daily_service_metrics
+     WHERE service_id IN (SELECT service_id FROM ids)
+       AND day > (CURRENT_DATE - 30)
+     GROUP BY day
+     ORDER BY day ASC
+  `);
+
+  const detail = await getService(canonicalKey);
+  const providers = detail?.provider_details ?? [];
+
+  return {
+    ...row,
+    daily: dailyRows.rows.map((d) => ({
+      day: d.day,
+      amount_usdc: Number(d.amount_usdc ?? 0),
+      input_tokens: Number(d.input_tokens ?? 0),
+      output_tokens: Number(d.output_tokens ?? 0),
+      requests: Number(d.requests ?? 0),
+    })),
+    providers,
+    lab: getLabForModel(row.display),
+  };
+}
+
+const modelDetailCacheByKey = new Map<string, { get: () => Promise<ModelDetail | null> }>();
+
+export async function getModelDetail(canonicalKey: string): Promise<ModelDetail | null> {
+  let entry = modelDetailCacheByKey.get(canonicalKey);
+  if (!entry) {
+    entry = createTtlCache(
+      () => computeModelDetail(canonicalKey),
+      HOT_PAGE_AGGREGATE_CACHE_TTL_MS,
+    );
+    modelDetailCacheByKey.set(canonicalKey, entry);
+  }
+  return entry.get();
+}
