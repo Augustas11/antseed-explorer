@@ -3,6 +3,7 @@ export const NAV_ITEMS = [
   { href: "/ants", label: "$ANTS" },
   { href: "/channels", label: "Channels" },
   { href: "/services", label: "Services" },
+  { href: "/models", label: "Models" },
   { href: "/providers", label: "Providers" },
   { href: "/mcp", label: "MCP" },
   { href: "/contracts", label: "Contracts" },

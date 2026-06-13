@@ -1,10 +1,10 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getService } from "@/lib/queries";
-import { fmtNum, shortAddr } from "@/lib/format";
+import { getService, getModelDetail } from "@/lib/queries";
+import { fmtNum } from "@/lib/format";
 import AgentSnippet from "../../components/AgentSnippet";
-import VerifiedLabel from "../../components/VerifiedLabel";
+import ProviderList from "../../components/ProviderList";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +32,10 @@ export default async function ServiceDetailPage({
   const input = decodeURIComponent(name);
   const service = await getService(input);
   if (!service) notFound();
+  // Show the "View usage stats →" cross-link only when v2 attribution rolled
+  // up to a model under this canonical key. getModelDetail returns null when
+  // there's no spend attributed yet (pre-v2 sellers, or zero-baseline holdouts).
+  const usage = await getModelDetail(service.name).catch(() => null);
   const cheapestProvider = service.provider_details
     .filter((provider) => provider.peer_id)
     .sort((a, b) => {
@@ -106,56 +110,19 @@ export default async function ServiceDetailPage({
         <div className="px-4 py-3 border-b border-edge">
           <h2 className="font-medium">Providers</h2>
         </div>
-        {service.provider_details.length === 0 ? (
-          <div className="p-6 text-center text-sm text-muted">
-            No providers found.
-          </div>
-        ) : (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Advertised as</th>
-                <th>Input $/M</th>
-                <th>Output $/M</th>
-              </tr>
-            </thead>
-            <tbody>
-              {service.provider_details.map((p) => (
-                <tr key={p.address}>
-                  <td>
-                    <Link
-                      href={`/sellers/${p.address}`}
-                      className="font-mono text-accent hover:underline text-xs"
-                    >
-                      {shortAddr(p.address)}
-                    </Link>
-                    <VerifiedLabel displayName={p.display_name} />
-                  </td>
-                  <td className="text-muted text-xs">
-                    {p.advertised_as.map((a, i) => (
-                      <span key={a}>
-                        {i > 0 && ", "}
-                        <span className="font-mono">{a}</span>
-                      </span>
-                    ))}
-                  </td>
-                  <td className="text-muted text-xs">
-                    {p.pricing?.inputUsdPerMillion != null
-                      ? `$${p.pricing.inputUsdPerMillion.toFixed(2)}`
-                      : "—"}
-                  </td>
-                  <td className="text-muted text-xs">
-                    {p.pricing?.outputUsdPerMillion != null
-                      ? `$${p.pricing.outputUsdPerMillion.toFixed(2)}`
-                      : "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        <ProviderList providers={service.provider_details} />
       </section>
+
+      {usage && (
+        <div className="text-xs">
+          <Link
+            href={`/models/${encodeURIComponent(service.name)}`}
+            className="text-accent hover:underline"
+          >
+            View usage stats →
+          </Link>
+        </div>
+      )}
 
       <div className="text-xs">
         <Link href="/services" className="text-accent hover:underline">
