@@ -42,6 +42,11 @@ export const events = pgTable(
     requestCount: integer("request_count"),
     timestamp: bigint("timestamp", { mode: "number" }),
     rawLog: text("raw_log"),
+    metadataDecodeStatus: text("metadata_decode_status")
+      .$type<"pending" | "empty" | "v1" | "v2" | "decode_failed">()
+      .notNull()
+      .default("pending"),
+    metadataDecodedAt: bigint("metadata_decoded_at", { mode: "number" }),
   },
   (t) => ({
     uxTxLog: uniqueIndex("events_tx_log_uniq").on(t.txHash, t.logIndex),
@@ -53,6 +58,81 @@ export const events = pgTable(
     ixTimestamp: index("events_timestamp_idx").on(t.timestamp),
     ixTypeTs: index("events_type_ts_idx").on(t.eventType, t.timestamp),
     ixTypeBuyer: index("events_type_buyer_idx").on(t.eventType, t.buyerAddress),
+  }),
+);
+
+export const settlementServiceSnapshots = pgTable(
+  "settlement_service_snapshots",
+  {
+    txHash: text("tx_hash").notNull(),
+    logIndex: integer("log_index").notNull(),
+    channelId: text("channel_id").notNull(),
+    serviceId: text("service_id").notNull(),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    timestamp: bigint("timestamp", { mode: "number" }).notNull(),
+    cumulativeAmountUsdc: doublePrecision("cumulative_amount_usdc").notNull(),
+    cumulativeInTokens: bigint("cumulative_in_tokens", { mode: "number" }).notNull(),
+    cumulativeCachedInTokens: bigint("cumulative_cached_in_tokens", { mode: "number" }).notNull(),
+    cumulativeOutTokens: bigint("cumulative_out_tokens", { mode: "number" }).notNull(),
+    cumulativeRequests: bigint("cumulative_requests", { mode: "number" }).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.txHash, t.logIndex, t.serviceId] }),
+    ixService: index("sss_service_idx").on(t.serviceId),
+    ixChannelSvc: index("sss_channel_svc_idx").on(t.channelId, t.serviceId, t.blockNumber, t.logIndex),
+    ixTs: index("sss_ts_idx").on(t.timestamp),
+  }),
+);
+
+export const channelServiceTotals = pgTable(
+  "channel_service_totals",
+  {
+    channelId: text("channel_id").notNull(),
+    serviceId: text("service_id").notNull(),
+    cumulativeAmountUsdc: doublePrecision("cumulative_amount_usdc").notNull(),
+    cumulativeInTokens: bigint("cumulative_in_tokens", { mode: "number" }).notNull(),
+    cumulativeCachedInTokens: bigint("cumulative_cached_in_tokens", { mode: "number" }).notNull(),
+    cumulativeOutTokens: bigint("cumulative_out_tokens", { mode: "number" }).notNull(),
+    cumulativeRequests: bigint("cumulative_requests", { mode: "number" }).notNull(),
+    lastBlock: bigint("last_block", { mode: "number" }).notNull(),
+    lastLogIndex: integer("last_log_index").notNull(),
+    lastTs: bigint("last_ts", { mode: "number" }).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.channelId, t.serviceId] }),
+    ixService: index("cst_service_idx").on(t.serviceId),
+  }),
+);
+
+export const dailyServiceMetrics = pgTable(
+  "daily_service_metrics",
+  {
+    day: date("day").notNull(),
+    serviceId: text("service_id").notNull(),
+    deltaAmountUsdc: doublePrecision("delta_amount_usdc").notNull().default(0),
+    deltaInTokens: bigint("delta_in_tokens", { mode: "number" }).notNull().default(0),
+    deltaCachedInTokens: bigint("delta_cached_in_tokens", { mode: "number" }).notNull().default(0),
+    deltaOutTokens: bigint("delta_out_tokens", { mode: "number" }).notNull().default(0),
+    deltaRequests: bigint("delta_requests", { mode: "number" }).notNull().default(0),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.day, t.serviceId] }),
+    ixService: index("dsm_service_idx").on(t.serviceId),
+  }),
+);
+
+export const serviceIdAliases = pgTable(
+  "service_id_aliases",
+  {
+    serviceId: text("service_id").primaryKey(),
+    rawAlias: text("raw_alias").notNull(),
+    canonicalKey: text("canonical_key").notNull(),
+    display: text("display").notNull(),
+    firstSeenTs: bigint("first_seen_ts", { mode: "number" }).notNull(),
+    lastSeenTs: bigint("last_seen_ts", { mode: "number" }).notNull(),
+  },
+  (t) => ({
+    ixCanonical: index("sia_canonical_idx").on(t.canonicalKey),
   }),
 );
 
