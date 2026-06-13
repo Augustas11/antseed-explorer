@@ -26,6 +26,8 @@ import {
   estimateBlockTimestamps,
   syncEventStream,
 } from "./indexerWindow";
+import { canonicalize } from "./services-canonical";
+import { serviceIdOf } from "./metadata";
 
 export { growLogBatchSize, shrinkLogBatchSize } from "./indexerWindow";
 
@@ -902,11 +904,65 @@ export async function refreshProviderDirectory() {
         );
       }
     }
+    await persistServiceAliasesFromRows(rows, now);
     await setState("provider_dir_refreshed_at", Date.now().toString());
   } catch {
     // Non-fatal — network unreachable, timed out, or upstream returned junk.
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// Mirror every advertised raw service string into service_id_aliases so the
+// /models reverse-lookup can map a bytes32 service_id back to its canonical
+// model name. SPEC §6.1.
+async function persistServiceAliasesFromRows(
+  rows: Array<{ services: string | null }>,
+  now: number,
+): Promise<void> {
+  const seen = new Set<string>();
+  type AliasRow = {
+    service_id: string;
+    raw_alias: string;
+    canonical_key: string;
+    display: string;
+    seen_ts: number;
+  };
+  const aliases: AliasRow[] = [];
+  for (const row of rows) {
+    if (!row.services) continue;
+    let arr: unknown;
+    try {
+      arr = JSON.parse(row.services);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(arr)) continue;
+    for (const raw of arr) {
+      if (typeof raw !== "string") continue;
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      if (seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      const canon = canonicalize(trimmed);
+      aliases.push({
+        service_id: serviceIdOf(trimmed),
+        raw_alias: trimmed,
+        canonical_key: canon.key,
+        display: canon.display,
+        seen_ts: now,
+      });
+    }
+  }
+  if (aliases.length === 0) return;
+  for (const a of aliases) {
+    await db.execute(sql`
+      INSERT INTO service_id_aliases
+        (service_id, raw_alias, canonical_key, display, first_seen_ts, last_seen_ts)
+      VALUES (${a.service_id}, ${a.raw_alias}, ${a.canonical_key}, ${a.display}, ${a.seen_ts}, ${a.seen_ts})
+      ON CONFLICT (service_id) DO UPDATE
+        SET last_seen_ts = EXCLUDED.last_seen_ts
+    `);
   }
 }
 
