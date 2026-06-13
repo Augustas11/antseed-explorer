@@ -6,6 +6,6 @@ CREATE TABLE IF NOT EXISTS "service_id_aliases" (
   "first_seen_ts" bigint NOT NULL,
   "last_seen_ts"  bigint NOT NULL
 );
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "sia_canonical_idx"
   ON "service_id_aliases" ("canonical_key");

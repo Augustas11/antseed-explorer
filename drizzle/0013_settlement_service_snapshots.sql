@@ -13,12 +13,12 @@ CREATE TABLE IF NOT EXISTS "settlement_service_snapshots" (
   CONSTRAINT "settlement_service_snapshots_pkey"
     PRIMARY KEY ("tx_hash", "log_index", "service_id")
 );
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "sss_service_idx"
   ON "settlement_service_snapshots" ("service_id");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "sss_channel_svc_idx"
   ON "settlement_service_snapshots" ("channel_id", "service_id", "block_number", "log_index");
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "sss_ts_idx"
   ON "settlement_service_snapshots" ("timestamp");

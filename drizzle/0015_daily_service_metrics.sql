@@ -9,6 +9,6 @@ CREATE TABLE IF NOT EXISTS "daily_service_metrics" (
   CONSTRAINT "daily_service_metrics_pkey"
     PRIMARY KEY ("day", "service_id")
 );
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "dsm_service_idx"
   ON "daily_service_metrics" ("service_id");

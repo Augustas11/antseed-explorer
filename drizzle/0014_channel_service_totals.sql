@@ -12,6 +12,6 @@ CREATE TABLE IF NOT EXISTS "channel_service_totals" (
   CONSTRAINT "channel_service_totals_pkey"
     PRIMARY KEY ("channel_id", "service_id")
 );
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "cst_service_idx"
   ON "channel_service_totals" ("service_id");
