@@ -63,16 +63,31 @@ export async function applyDecodedSettlement(row: SettlementInput): Promise<void
        AND metadata_decode_status <> 'pending'
   `);
 
-  // Phase 0b — prune snapshots that aren't in the current decoded service set.
-  // `<> ALL($arr)` cleanly handles the empty-array case: with `'{}'::text[]`
-  // every existing row matches (i.e. wipes them) for terminal v1/empty/decode_failed.
-  const serviceIdArray = decoded.version === 2 ? decoded.services.map((s) => s.serviceId) : [];
-  await db.execute(sql`
-    DELETE FROM settlement_service_snapshots
-     WHERE tx_hash    = ${row.txHash}
-       AND log_index  = ${row.logIndex}
-       AND service_id <> ALL(${serviceIdArray}::text[])
-  `);
+  // Phase 0b — prune snapshots that aren't in the current decoded service
+  // set. The SPEC's `<> ALL(${array}::text[])` idiom assumes Postgres-literal
+  // array interpolation, but the Neon HTTP driver binds JS `[]` as the
+  // parameter `()` which is invalid SQL. Two branches instead:
+  //   - v2 with services: delete snapshots whose service_id is NOT IN the set
+  //   - everything else (v1/empty/decode_failed/v2-no-services): wipe all
+  //     snapshots for the (tx_hash, log_index) row.
+  if (decoded.version === 2 && decoded.services.length > 0) {
+    const idValues = sql.join(
+      decoded.services.map((s) => sql`${s.serviceId}`),
+      sql`, `,
+    );
+    await db.execute(sql`
+      DELETE FROM settlement_service_snapshots
+       WHERE tx_hash   = ${row.txHash}
+         AND log_index = ${row.logIndex}
+         AND service_id NOT IN (${idValues})
+    `);
+  } else {
+    await db.execute(sql`
+      DELETE FROM settlement_service_snapshots
+       WHERE tx_hash   = ${row.txHash}
+         AND log_index = ${row.logIndex}
+    `);
+  }
 
   // Phase 1 — bulk-write per-service snapshots in one INSERT (v2 only).
   // The metadata decoder caps services at MAX_DECODED_SERVICES (lib/metadata.ts)
