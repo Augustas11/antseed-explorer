@@ -28,7 +28,7 @@ import {
 } from "./indexerWindow";
 import { canonicalize } from "./services-canonical";
 import { serviceIdOf } from "./metadata";
-import { applyDecodedSettlement } from "./serviceMetadata";
+import { applyDecodedSettlementsBulk } from "./serviceMetadata";
 
 export { growLogBatchSize, shrinkLogBatchSize } from "./indexerWindow";
 
@@ -380,22 +380,30 @@ async function runSync(opts: { deadlineMs?: number }): Promise<SyncResult> {
       // Live-path v2 attribution: decode only the rows that were freshly
       // inserted (returning(...) filters out replays via onConflictDoNothing).
       // Backfill of pre-existing rows runs via decodePendingMetadata().
-      for (const r of result) {
-        const key = `${r.txHash}:${r.logIndex}`;
-        const settled = settledForDecode.get(key);
-        if (!settled) continue;
+      //
+      // Bulk-apply the whole batch in 4 Neon round-trips instead of 4× per
+      // settled event — without this, a 2000-block batch with ~250 settled
+      // events spent ~30s in serial HTTP roundtrips and starved the cron
+      // budget.
+      const toDecode = result.flatMap((r) => {
+        const settled = settledForDecode.get(`${r.txHash}:${r.logIndex}`);
+        return settled
+          ? [{
+              txHash: r.txHash,
+              logIndex: r.logIndex,
+              channelId: settled.channelId,
+              blockNumber: settled.blockNumber,
+              timestamp: settled.timestamp,
+              metadata: settled.metadata,
+            }]
+          : [];
+      });
+      if (toDecode.length > 0) {
         try {
-          await applyDecodedSettlement({
-            txHash: r.txHash,
-            logIndex: r.logIndex,
-            channelId: settled.channelId,
-            blockNumber: settled.blockNumber,
-            timestamp: settled.timestamp,
-            metadata: settled.metadata,
-          });
+          await applyDecodedSettlementsBulk(toDecode);
         } catch (e) {
           console.warn(
-            `[indexer] applyDecodedSettlement failed for ${key}:`,
+            `[indexer] applyDecodedSettlementsBulk failed for ${toDecode.length} rows:`,
             (e as Error)?.message || e,
           );
         }

@@ -48,62 +48,143 @@ export function getRebuildLockKey(): number {
 }
 
 // SPEC §5.3 — atomic for the row, idempotent, replay-proof.
+// Thin wrapper over applyDecodedSettlementsBulk for callers with a single row.
 export async function applyDecodedSettlement(row: SettlementInput): Promise<void> {
-  const decoded = decodeMetadata(row.metadata);
-  const status = terminalStatusOf(decoded);
+  await applyDecodedSettlementsBulk([row]);
+}
 
-  // Phase 0a — back-flip status to 'pending' so any rebuild in progress that
-  // had the prior terminal row in its snapshot set ignores the in-flight row.
+// Bulk variant — applies N settlements in 4 Neon round-trips total instead of
+// 4×N. The per-row variant exists as a wrapper for single-call sites
+// (test fixtures, etc.). The live channels indexer and the backfill worker
+// both go through this path so a 250-settlement batch costs 4 HTTP calls
+// instead of 1,000.
+//
+// Atomicity is per-statement, not per-batch — if phase 1 fails the snapshot
+// for some rows may have already been pruned in phase 0b. That matches the
+// pre-bulk behaviour (each row was 4 separate autocommit statements before).
+// All rows remain in 'pending' until phase 2 finishes, so the rebuild's
+// `channel_pending_min` gate keeps stragglers out of the rollup until the
+// next backfill pass re-applies them.
+export async function applyDecodedSettlementsBulk(
+  rows: SettlementInput[],
+): Promise<void> {
+  if (rows.length === 0) return;
+
+  // Decode once per row up front.
+  const decoded = rows.map((row) => {
+    const meta = decodeMetadata(row.metadata);
+    return { row, meta, status: terminalStatusOf(meta) };
+  });
+
+  // (tx_hash, log_index) tuple set used by phases 0a, 0b, and (implicitly) 2.
+  const idTuples = sql.join(
+    decoded.map((d) => sql`(${d.row.txHash}, ${d.row.logIndex}::int)`),
+    sql`, `,
+  );
+
+  // Phase 0a — back-flip any row whose current terminal status is being
+  // overwritten so an in-flight rebuild doesn't see it in the snapshot set.
+  // In steady state most rows are already 'pending' and this UPDATE matches
+  // zero rows; keeping it makes re-decode of terminal rows safe.
   await db.execute(sql`
     UPDATE events
        SET metadata_decode_status = 'pending',
            metadata_decoded_at    = NULL
-     WHERE tx_hash   = ${row.txHash}
-       AND log_index = ${row.logIndex}
+     WHERE (tx_hash, log_index) IN (${idTuples})
        AND metadata_decode_status <> 'pending'
   `);
 
-  // Phase 0b — prune snapshots that aren't in the current decoded service
-  // set. The SPEC's `<> ALL(${array}::text[])` idiom assumes Postgres-literal
-  // array interpolation, but the Neon HTTP driver binds JS `[]` as the
-  // parameter `()` which is invalid SQL. Two branches instead:
-  //   - v2 with services: delete snapshots whose service_id is NOT IN the set
-  //   - everything else (v1/empty/decode_failed/v2-no-services): wipe all
-  //     snapshots for the (tx_hash, log_index) row.
-  if (decoded.version === 2 && decoded.services.length > 0) {
-    const idValues = sql.join(
-      decoded.services.map((s) => sql`${s.serviceId}`),
+  // Phase 0b — prune stale snapshots. The "keep" set is the union of
+  // (tx_hash, log_index, service_id) tuples decoded for v2-with-services
+  // rows; everything else (v1/empty/decode_failed/v2-no-services) keeps
+  // nothing and drops all snapshots for that settlement. Done with a
+  // NOT EXISTS join against the keep tuples — equivalent to the per-row
+  // version's "service_id NOT IN (...)" check, but unified across the batch.
+  const keepRows: Array<{ txHash: string; logIndex: number; serviceId: string }> = [];
+  for (const d of decoded) {
+    if (d.meta.version === 2 && d.meta.services.length > 0) {
+      for (const s of d.meta.services) {
+        keepRows.push({
+          txHash: d.row.txHash,
+          logIndex: d.row.logIndex,
+          serviceId: s.serviceId,
+        });
+      }
+    }
+  }
+  if (keepRows.length > 0) {
+    const keepTuples = sql.join(
+      keepRows.map(
+        (k) => sql`(${k.txHash}, ${k.logIndex}::int, ${k.serviceId})`,
+      ),
       sql`, `,
     );
     await db.execute(sql`
-      DELETE FROM settlement_service_snapshots
-       WHERE tx_hash   = ${row.txHash}
-         AND log_index = ${row.logIndex}
-         AND service_id NOT IN (${idValues})
+      DELETE FROM settlement_service_snapshots AS s
+       WHERE (s.tx_hash, s.log_index) IN (${idTuples})
+         AND NOT EXISTS (
+           SELECT 1
+             FROM (VALUES ${keepTuples}) AS k(tx_hash, log_index, service_id)
+            WHERE k.tx_hash   = s.tx_hash
+              AND k.log_index = s.log_index
+              AND k.service_id = s.service_id
+         )
     `);
   } else {
     await db.execute(sql`
       DELETE FROM settlement_service_snapshots
-       WHERE tx_hash   = ${row.txHash}
-         AND log_index = ${row.logIndex}
+       WHERE (tx_hash, log_index) IN (${idTuples})
     `);
   }
 
-  // Phase 1 — bulk-write per-service snapshots in one INSERT (v2 only).
-  // The metadata decoder caps services at MAX_DECODED_SERVICES (lib/metadata.ts)
-  // so the VALUES list stays well under any reasonable parameter cap. Without
-  // bulk-batching, an adversarial payload with hundreds of services would
-  // cost hundreds of Neon HTTP round-trips per settlement.
-  if (decoded.version === 2 && decoded.services.length > 0) {
+  // Phase 1 — bulk INSERT every v2 service snapshot across the entire batch
+  // in one statement. The metadata decoder caps services at MAX_DECODED_
+  // SERVICES (lib/metadata.ts) and the live path caps the batch size via the
+  // indexer's getLogs window, so the VALUES list stays well under any
+  // reasonable parameter cap.
+  type InsertRow = {
+    txHash: string;
+    logIndex: number;
+    channelId: string;
+    serviceId: string;
+    blockNumber: number;
+    timestamp: number;
+    amountUsdc: number;
+    inTokens: number;
+    cachedInTokens: number;
+    outTokens: number;
+    requests: number;
+  };
+  const inserts: InsertRow[] = [];
+  for (const d of decoded) {
+    if (d.meta.version === 2 && d.meta.services.length > 0) {
+      for (const s of d.meta.services) {
+        inserts.push({
+          txHash: d.row.txHash,
+          logIndex: d.row.logIndex,
+          channelId: d.row.channelId,
+          serviceId: s.serviceId,
+          blockNumber: d.row.blockNumber,
+          timestamp: d.row.timestamp,
+          amountUsdc: usdcFromAmount(s.cumulativeAmount),
+          inTokens: Number(s.cumulativeInputTokens),
+          cachedInTokens: Number(s.cumulativeCachedInputTokens),
+          outTokens: Number(s.cumulativeOutputTokens),
+          requests: Number(s.cumulativeRequestCount),
+        });
+      }
+    }
+  }
+  if (inserts.length > 0) {
     const values = sql.join(
-      decoded.services.map(
-        (s) => sql`(${row.txHash}, ${row.logIndex}, ${row.channelId}, ${s.serviceId},
-          ${row.blockNumber}, ${row.timestamp},
-          ${usdcFromAmount(s.cumulativeAmount)},
-          ${Number(s.cumulativeInputTokens)},
-          ${Number(s.cumulativeCachedInputTokens)},
-          ${Number(s.cumulativeOutputTokens)},
-          ${Number(s.cumulativeRequestCount)})`,
+      inserts.map(
+        (v) => sql`(${v.txHash}, ${v.logIndex}::int, ${v.channelId}, ${v.serviceId},
+          ${v.blockNumber}::bigint, ${v.timestamp}::bigint,
+          ${v.amountUsdc}::double precision,
+          ${v.inTokens}::bigint,
+          ${v.cachedInTokens}::bigint,
+          ${v.outTokens}::bigint,
+          ${v.requests}::bigint)`,
       ),
       sql`, `,
     );
@@ -125,26 +206,36 @@ export async function applyDecodedSettlement(row: SettlementInput): Promise<void
     `);
   }
 
-  // Phase 2 — completion marker. If we crash before this, the row stays
-  // 'pending' and the backfill worker redoes phases 0-1 idempotently.
+  // Phase 2 — bulk completion marker. UPDATE...FROM (VALUES ...) joins the
+  // per-row terminal status in one statement.
   const now = Math.floor(Date.now() / 1000);
+  const statusTuples = sql.join(
+    decoded.map(
+      (d) => sql`(${d.row.txHash}, ${d.row.logIndex}::int, ${d.status}::text)`,
+    ),
+    sql`, `,
+  );
   await db.execute(sql`
-    UPDATE events
-       SET metadata_decode_status = ${status},
+    UPDATE events e
+       SET metadata_decode_status = v.status,
            metadata_decoded_at    = ${now}
-     WHERE tx_hash   = ${row.txHash}
-       AND log_index = ${row.logIndex}
+      FROM (VALUES ${statusTuples}) AS v(tx_hash, log_index, status)
+     WHERE e.tx_hash   = v.tx_hash
+       AND e.log_index = v.log_index
   `);
 
-  if (status === "decode_failed") {
-    console.warn(
-      `[metadata] decode_failed for ${row.txHash}:${row.logIndex} (channel=${row.channelId})`,
-    );
+  for (const d of decoded) {
+    if (d.status === "decode_failed") {
+      console.warn(
+        `[metadata] decode_failed for ${d.row.txHash}:${d.row.logIndex} (channel=${d.row.channelId})`,
+      );
+    }
   }
 }
 
 // Backfill worker — pages over settled events whose metadata hasn't been
-// decoded yet and applies them. Idempotent so a crash mid-batch is harmless.
+// decoded yet and applies them in one bulk call. Idempotent so a crash mid-
+// batch is harmless (next call repicks any rows still 'pending').
 export async function decodePendingMetadata(limit = 200): Promise<number> {
   const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
   const rows = await db.execute<{
@@ -162,33 +253,41 @@ export async function decodePendingMetadata(limit = 200): Promise<number> {
      ORDER BY block_number ASC, log_index ASC
      LIMIT ${safeLimit}
   `);
+  if (rows.rows.length === 0) return 0;
 
-  let processed = 0;
-  for (const r of rows.rows) {
-    if (!r.channel_id) {
-      // No channel — can't fan out per-service snapshots. Flip terminal so
-      // the row stops counting toward pending_usdc on every coverage CTE.
-      await db.execute(sql`
-        UPDATE events
-           SET metadata_decode_status = 'decode_failed',
-               metadata_decoded_at    = ${Math.floor(Date.now() / 1000)}
-         WHERE tx_hash = ${r.tx_hash} AND log_index = ${r.log_index}
-      `);
-      processed += 1;
-      continue;
-    }
-    const metadata = extractMetadataFromRawLog(r.raw_log);
-    await applyDecodedSettlement({
-      txHash: r.tx_hash,
-      logIndex: r.log_index,
-      channelId: r.channel_id,
-      blockNumber: Number(r.block_number),
-      timestamp: Number(r.timestamp ?? 0),
-      metadata,
-    });
-    processed += 1;
+  // Rows with NULL channel_id can't fan out per-service snapshots. Flip them
+  // terminal in one UPDATE so they stop counting toward pending_usdc on
+  // every coverage CTE, and exclude them from the bulk decode path below.
+  const noChannel = rows.rows.filter((r) => !r.channel_id);
+  if (noChannel.length > 0) {
+    const noChannelTuples = sql.join(
+      noChannel.map((r) => sql`(${r.tx_hash}, ${r.log_index}::int)`),
+      sql`, `,
+    );
+    await db.execute(sql`
+      UPDATE events
+         SET metadata_decode_status = 'decode_failed',
+             metadata_decoded_at    = ${Math.floor(Date.now() / 1000)}
+       WHERE (tx_hash, log_index) IN (${noChannelTuples})
+    `);
   }
-  return processed;
+
+  const decodable = rows.rows.filter((r): r is typeof r & { channel_id: string } =>
+    Boolean(r.channel_id),
+  );
+  if (decodable.length > 0) {
+    await applyDecodedSettlementsBulk(
+      decodable.map((r) => ({
+        txHash: r.tx_hash,
+        logIndex: r.log_index,
+        channelId: r.channel_id,
+        blockNumber: Number(r.block_number),
+        timestamp: Number(r.timestamp ?? 0),
+        metadata: extractMetadataFromRawLog(r.raw_log),
+      })),
+    );
+  }
+  return rows.rows.length;
 }
 
 // raw_log is the JSON-serialized viem Log object captured at indexer time.
