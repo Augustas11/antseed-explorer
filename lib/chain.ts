@@ -50,11 +50,14 @@ const CHAIN_ID = Number(process.env.CHAIN_ID || 8453);
 
 export const chain = CHAIN_ID === 84532 ? baseSepolia : base;
 
-// 8 s timeout + 1 retry = 16 s max per RPC call.  The manual sync route has a
-// 60 s Vercel limit and a 25 s soft deadline; individual calls must finish well
-// inside that or the function is killed and returns an empty 504 body. Local
-// one-shot scripts can override via RPC_TIMEOUT_MS for wide-range getLogs calls.
-const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 8_000);
+// 20 s timeout + 1 retry = 40 s max per RPC call. Sized for archive-depth
+// eth_getLogs over paid dRPC — 8 s was tight enough that once channels fell
+// behind a day, every batch hit the timeout and the indexer stranded itself
+// (a single hairy archive query can take 2-15 s depending on log density).
+// Channels' deadline is 45 s and Vercel's function ceiling is 60 s, so 20 s
+// still leaves room for the per-batch Neon writes + cursor flush before the
+// next iteration's deadline check. Override via env for one-shot scripts.
+const RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS || 20_000);
 export const publicClient = createPublicClient({
   chain,
   transport: http(RPC_URL, { timeout: RPC_TIMEOUT_MS, retryCount: 1 }),
